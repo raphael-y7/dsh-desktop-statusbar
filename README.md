@@ -19,7 +19,13 @@
 
 ### 方式一：插件市场
 
-在 DSH 的插件市场里搜索 `dsh-desktop-statusbar` 安装。（如果市场要求 OSI 开源许可，本项目的非商业许可可能不符合 —— 见 [许可](#许可)）
+已收录进 [DSH 1024Store](https://deepseek1024.com/plugins/Rapheal-Y7/dsh-desktop-statusbar)（分类：UI 增强），也可以直接命令行安装：
+
+```powershell
+dsh plugin --profile desktop add github:Rapheal-Y7/dsh-desktop-statusbar
+```
+
+把 `desktop` 换成你自己的 profile 名。npm 包尚未发布，市场目前走 GitHub 源安装。
 
 ### 方式二：手动安装
 
