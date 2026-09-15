@@ -1,0 +1,60 @@
+{
+  "name": "dsh-desktop-statusbar",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "把 DSH 桌面端对话区底部的统计行换成可配置状态栏：10 个字段可选可排序，按官方峰谷口径估算费用，支持自定义模型单价与账户余额。",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "author": "北浮森屿 (https://github.com/Rapheal-Y7)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Rapheal-Y7/dsh-desktop-statusbar.git"
+  },
+  "homepage": "https://github.com/Rapheal-Y7/dsh-desktop-statusbar#readme",
+  "bugs": {
+    "url": "https://github.com/Rapheal-Y7/dsh-desktop-statusbar/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "statusbar",
+    "token-usage",
+    "cost"
+  ],
+  "main": "./lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node tools/test.cjs"
+  },
+  "dependencies": {
+    "zod": "^4.4.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    }
+  }
+}

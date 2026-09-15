@@ -1,0 +1,5 @@
+# dsh-desktop-statusbar bundle 层
+- insert:
+    - id: dsh-desktop-statusbar
+      name: 'dsh-desktop-statusbar'
+      config: {}
