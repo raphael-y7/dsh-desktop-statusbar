@@ -4,8 +4,8 @@
   <a href="https://github.com/raphael-y7/dsh-desktop-statusbar/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/raphael-y7/dsh-desktop-statusbar?style=social"></a>
   <a href="https://www.npmjs.com/package/dsh-desktop-statusbar"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-desktop-statusbar?color=red"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-green"></a>
-  <img alt="dsh desktop" src="https://img.shields.io/badge/dsh%20desktop-2.0.10-%238957e5">
-  <img alt="node" src="https://img.shields.io/badge/node-%5E22.19%20%7C%7C%20%3E%3D24-%235fa04e">
+  <a href="https://github.com/anywhere-labs/dsh-desktop"><img alt="dsh desktop" src="https://img.shields.io/badge/dsh%20desktop-2.0.10-%238957e5"></a>
+  <a href="https://nodejs.org/"><img alt="node" src="https://img.shields.io/badge/node-%5E22.19%20%7C%7C%20%3E%3D24-%235fa04e"></a>
   <img alt="language" src="https://img.shields.io/github/languages/top/raphael-y7/dsh-desktop-statusbar?color=yellow">
   <a href="https://deepseek1024.com/plugins/Rapheal-Y7/dsh-desktop-statusbar"><img alt="1024Store" src="https://img.shields.io/badge/1024Store-listed-orange"></a>
 </p>
@@ -16,7 +16,7 @@ Replaces the stats line under the composer in the DSH desktop app with a configu
 
 > Noncommercial license ([PolyForm Noncommercial 1.0.0](LICENSE)): free to use and modify for personal use, study, teaching and nonprofit organizations; **commercial use is not permitted**.
 
-![Status bar](docs/statusbar.png)
+![Status bar](docs/statusbar.en.png)
 
 ## Features
 
@@ -70,7 +70,7 @@ dsh plugin --profile desktop add github:raphael-y7/dsh-desktop-statusbar
 
 Open **Settings → Status bar**:
 
-![Settings page](docs/settings.png)
+![Settings page](docs/settings.en.png)
 
 - **Basics**: enable the status bar, allow wrapping
 - **Data fields**: check the fields you want, drag the six-dot handle on the right to reorder
@@ -82,7 +82,7 @@ Peak hours are **Beijing time, Monday to Friday, 09:00–12:00 and 14:00–18:00
 
 Public holidays and make-up workdays are **not handled separately**: the official rule only looks at the day of the week, so a holiday falling on a weekday is still billed as peak/off-peak, and a make-up workday falling on a weekend is still billed at the off-peak rate.
 
-![Custom model prices](docs/pricing.png)
+![Custom model prices](docs/pricing.en.png)
 
 ### Things to know
 
