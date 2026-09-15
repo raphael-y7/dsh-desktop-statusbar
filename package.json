@@ -4,6 +4,9 @@
   "type": "module",
   "description": "把 DSH 桌面端对话区底部的统计行换成可配置状态栏：10 个字段可选可排序，按官方峰谷口径估算费用，支持自定义模型单价与账户余额。",
   "license": "PolyForm-Noncommercial-1.0.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
   "author": "北浮森屿 (https://github.com/raphael-y7)",
   "repository": {
     "type": "git",
