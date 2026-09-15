@@ -1,4 +1,16 @@
-# dsh-desktop-statusbar
+<h1 align="center">dsh-desktop-statusbar</h1>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/dsh-desktop-statusbar"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-desktop-statusbar"></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue"></a>
+  <a href="https://github.com/raphael-y7/dsh-desktop-statusbar/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/raphael-y7/dsh-desktop-statusbar?style=social"></a>
+  <img alt="dsh desktop" src="https://img.shields.io/badge/dsh%20desktop-2.0.10-blue">
+  <img alt="node" src="https://img.shields.io/badge/node-%5E22.19%20%7C%7C%20%3E%3D24-brightgreen">
+  <img alt="language" src="https://img.shields.io/github/languages/top/raphael-y7/dsh-desktop-statusbar">
+  <a href="https://deepseek1024.com/plugins/Rapheal-Y7/dsh-desktop-statusbar"><img alt="1024Store" src="https://img.shields.io/badge/1024Store-listed-blue"></a>
+</p>
+
+<p align="center">中文 | <a href="README.en.md">English</a></p>
 
 把 DSH 桌面端对话区底部的统计行换成一条可配置的状态栏：字段自己挑、顺序自己排、模型单价自己填，费用按官方峰谷口径实时估算。
 
@@ -28,7 +40,7 @@ dsh plugin --profile desktop add dsh-desktop-statusbar
 把 `desktop` 换成你自己的 profile 名。不想走 npm 也可以直接装 GitHub 源（内容与 npm 版一致）：
 
 ```powershell
-dsh plugin --profile desktop add github:Rapheal-Y7/dsh-desktop-statusbar
+dsh plugin --profile desktop add github:raphael-y7/dsh-desktop-statusbar
 ```
 
 ### 方式二：手动安装
@@ -36,7 +48,7 @@ dsh plugin --profile desktop add github:Rapheal-Y7/dsh-desktop-statusbar
 1. 把本项目放进 DSH 的本地插件目录：
 
    ```powershell
-   git clone https://github.com/Rapheal-Y7/dsh-desktop-statusbar "$env:USERPROFILE\.dsh\local-plugins\dsh-desktop-statusbar"
+   git clone https://github.com/raphael-y7/dsh-desktop-statusbar "$env:USERPROFILE\.dsh\local-plugins\dsh-desktop-statusbar"
    ```
 
 2. 安装依赖（只有一个，`zod`）：

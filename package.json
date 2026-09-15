@@ -1,17 +1,17 @@
 {
   "name": "dsh-desktop-statusbar",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "把 DSH 桌面端对话区底部的统计行换成可配置状态栏：10 个字段可选可排序，按官方峰谷口径估算费用，支持自定义模型单价与账户余额。",
   "license": "PolyForm-Noncommercial-1.0.0",
-  "author": "北浮森屿 (https://github.com/Rapheal-Y7)",
+  "author": "北浮森屿 (https://github.com/raphael-y7)",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Rapheal-Y7/dsh-desktop-statusbar.git"
+    "url": "git+https://github.com/raphael-y7/dsh-desktop-statusbar.git"
   },
-  "homepage": "https://github.com/Rapheal-Y7/dsh-desktop-statusbar#readme",
+  "homepage": "https://github.com/raphael-y7/dsh-desktop-statusbar#readme",
   "bugs": {
-    "url": "https://github.com/Rapheal-Y7/dsh-desktop-statusbar/issues"
+    "url": "https://github.com/raphael-y7/dsh-desktop-statusbar/issues"
   },
   "keywords": [
     "dsh",
