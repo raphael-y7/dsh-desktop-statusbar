@@ -17,15 +17,19 @@
 
 ## 安装
 
-### 方式一：插件市场
+### 方式一：插件市场 / npm
 
-已收录进 [DSH 1024Store](https://deepseek1024.com/plugins/Rapheal-Y7/dsh-desktop-statusbar)（分类：UI 增强），也可以直接命令行安装：
+已发布到 [npm](https://www.npmjs.com/package/dsh-desktop-statusbar)，并收录进 [DSH 1024Store](https://deepseek1024.com/plugins/Rapheal-Y7/dsh-desktop-statusbar)（分类：UI 增强）：
+
+```powershell
+dsh plugin --profile desktop add dsh-desktop-statusbar
+```
+
+把 `desktop` 换成你自己的 profile 名。不想走 npm 也可以直接装 GitHub 源（内容与 npm 版一致）：
 
 ```powershell
 dsh plugin --profile desktop add github:Rapheal-Y7/dsh-desktop-statusbar
 ```
-
-把 `desktop` 换成你自己的 profile 名。npm 包尚未发布，市场目前走 GitHub 源安装。
 
 ### 方式二：手动安装
 
