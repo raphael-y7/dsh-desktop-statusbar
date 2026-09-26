@@ -2,3 +2,9 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+
+# 只推送插件程序本身：测试、构建脚本与草稿都是本地开发用的，不进仓库
+tools/
+tests/
+work/
+CHANGELOG.md
