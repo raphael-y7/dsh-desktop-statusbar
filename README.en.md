@@ -41,14 +41,22 @@ Replaces the stats line under the message input in the DSH desktop app with a co
 
 ## Install
 
-```powershell
-dsh plugin --profile desktop add dsh-desktop-statusbar
+In the DSH desktop app open **Plugins → Add plugin** and enter the package name:
+
+```
+dsh-desktop-statusbar
 ```
 
-Replace `desktop` with your profile name. Straight from GitHub also works:
+Then press Install. On a slow connection to the npm registry, switch the install source to the China mainland mirror in the same dialog. A GitHub URL works too:
+
+```
+https://github.com/raphael-y7/dsh-desktop-statusbar
+```
+
+The command-line equivalent:
 
 ```powershell
-dsh plugin --profile desktop add github:raphael-y7/dsh-desktop-statusbar
+dsh plugin --profile desktop add dsh-desktop-statusbar
 ```
 
 Published on npm and listed on [dshfind](https://dshfind.com/zh/plugins/raphael-y7/dsh-desktop-statusbar) and [1024Store](https://deepseek1024.com/plugins/Rapheal-Y7/dsh-desktop-statusbar).
