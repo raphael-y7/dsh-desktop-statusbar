@@ -13,7 +13,7 @@
 
 <p align="center"><a href="README.md">中文</a> | English</p>
 
-Replaces the stats line under the message input in the DSH desktop app with a configurable status bar: pick your fields, arrange their order, enter your own prices, choose the currency, and get live cost estimates using DeepSeek's official peak/off-peak rates.
+Replaces the stats line under the message input in the DSH desktop app with a configurable status bar: fields, ordering, per-model prices and currency are all configurable, with live cost estimates using DeepSeek's official peak/off-peak rates.
 
 > Noncommercial licence: free for personal, study, teaching and nonprofit use, with modification allowed; **commercial use is not permitted** ([PolyForm Noncommercial 1.0.0](LICENSE)).
 
@@ -35,25 +35,25 @@ Replaces the stats line under the message input in the DSH desktop app with a co
   | Session cost | Cumulative token breakdown for the whole session |
   | Balance | Top-up balance / granted balance |
 
-- **Cost estimation**: official peak/off-peak rules, each call priced at the moment it happened and with the model it used
-- **Price book**: your own prices, an optional peak/off-peak split, a CNY / USD currency switch
+- **Cost estimation**: priced with the official peak/off-peak rules; each call is computed from the moment it happened and the model it used
+- **Price book**: your own prices, an optional peak/off-peak split, and a CNY / USD currency switch
 - **Also**: one-click holiday calendar update, balance refreshed every minute, bilingual UI
 
 ## Install
 
-In the DSH desktop app open **Plugins → Add plugin** and enter the package name:
+In the DSH desktop app, open **Plugins → Add plugin** and install by package name:
 
 ```
 dsh-desktop-statusbar
 ```
 
-Then press Install. On a slow connection to the npm registry, switch the install source to the China mainland mirror in the same dialog. A GitHub URL works too:
+Where the npm registry is not reachable, the same dialog offers the China mainland mirror as the install source. A GitHub repository URL is also accepted:
 
 ```
 https://github.com/raphael-y7/dsh-desktop-statusbar
 ```
 
-The command-line equivalent:
+Command line:
 
 ```powershell
 dsh plugin --profile desktop add dsh-desktop-statusbar
@@ -67,12 +67,12 @@ Open **Settings → Status bar**:
 
 ![Settings page](docs/settings.en.png)
 
-- **Session status**: the ring at the front of the bar — progress shows context occupancy, colour shows the run state (grey idle / green running / red error / amber pending approval). Click it to see how much the system prompt, tool definitions and messages each take up
-- **Stats fields**: tick what you want to show; unticking only hides a field without moving it. Drag the six-dot handle on the right to reorder, or use "Reset settings" to restore the factory order
-- **Custom model prices**: type a model name and click "Add" to create an entry; "Edit" opens the editor and only "Save" writes it. Tick "peak / off-peak pricing" when you need the time-of-day split — otherwise a flat all-day price is used
-- **Currency**: the CNY / USD switch in the top-right corner of the editor. Switching swaps the two built-in models to that currency's official reference prices (entries you edited are kept) and changes the symbol in the cost fields; the balance always follows the currency the API reports
+- **Session status**: the ring at the front of the bar — progress shows context occupancy and colour the run state (grey idle / green running / red error / amber pending approval); click it for the token composition
+- **Stats fields**: ticking controls visibility only, so unticking hides a field without moving it; drag the handle on the right to reorder; "Reset settings" restores the factory order
+- **Custom model prices**: enter a model name and "Add" to create an entry; "Edit" opens the editor and changes are written on save; tick "peak / off-peak pricing" to split by time of day, otherwise a flat all-day price applies
+- **Currency**: CNY or USD in the top-right corner of the editor. Switching replaces the two built-in models with that currency's official reference prices (edited entries are kept) and changes the symbol in the cost fields; the balance follows the currency reported by the API
 - **Holidays**: "Update holidays" fetches and writes the next year's public-holiday calendar
-- **Balance**: refreshed automatically once a minute
+- **Balance**: refreshed once a minute
 
 ### Billing rules
 
@@ -83,7 +83,7 @@ Peak hours are **09:00–12:00 and 14:00–18:00 Beijing time, Monday to Friday*
 ## Known limitations
 
 - Fastest / slowest TTFT and speed come from a new host-side projection: **you must fully quit and restart DSH** before it starts collecting
-- A model without a price is skipped rather than mis-priced; adding the price back-fills its earlier calls
+- A model with no price is not billed; adding the price back-fills its earlier calls
 
 ## Development
 
