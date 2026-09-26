@@ -41,14 +41,22 @@
 
 ## 安装
 
-```powershell
-dsh plugin --profile desktop add dsh-desktop-statusbar
+在 DSH 桌面端打开 **插件 → 添加插件**，填包名后点「安装」：
+
+```
+dsh-desktop-statusbar
 ```
 
-把 `desktop` 换成你的 profile 名。也可直接装 GitHub 源：
+国内网络可在同一个对话框里把安装源切成「中国大陆镜像源」。填 GitHub 地址也可以：
+
+```
+https://github.com/raphael-y7/dsh-desktop-statusbar
+```
+
+习惯命令行的等价做法：
 
 ```powershell
-dsh plugin --profile desktop add github:raphael-y7/dsh-desktop-statusbar
+dsh plugin --profile desktop add dsh-desktop-statusbar
 ```
 
 已发布到 npm，并收录进 [dshfind](https://dshfind.com/zh/plugins/raphael-y7/dsh-desktop-statusbar) 与 [1024Store](https://deepseek1024.com/plugins/Rapheal-Y7/dsh-desktop-statusbar)。
