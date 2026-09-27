@@ -27,9 +27,9 @@ Replaces the stats line under the message input in the DSH desktop app with a co
   | Field | Content |
   | --- | --- |
   | Session status | Context occupancy: system prompt / tool definitions / messages |
-  | Combined hit | Highest / lowest cache hit rate |
-  | TTFT | Fastest / slowest first-token delay |
-  | TPS | Fastest / slowest output speed |
+  | Combined hit | This turn / highest / lowest cache hit rate |
+  | TTFT | This turn / fastest / slowest first-token delay |
+  | TPS | This turn / fastest / slowest output speed |
   | Run time | Model time / tool calls |
   | This turn cost | Token breakdown for this turn |
   | Session cost | Cumulative token breakdown for the whole session |
