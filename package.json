@@ -1,9 +1,10 @@
 {
   "name": "dsh-desktop-statusbar",
-  "version": "2.0.2",
+  "version": "2.1.0",
   "type": "module",
-  "description": "把 DSH 桌面端对话区底部的统计行换成可配置状态栏：9 个字段可选可排序，按官方峰谷口径估算费用，支持自定义模型单价与账户余额。",
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "description": "把 DSH 桌面端对话区底部的统计行换成可配置状态栏：10 个字段可选可排序，按官方峰谷口径估算费用，支持自定义模型单价与账户余额。",
+  "icon": "icon.svg",
+  "license": "MIT",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
@@ -38,6 +39,7 @@
     "lib",
     "docs",
     "cordis.patch.yml",
+    "icon.svg",
     "README.md",
     "README.en.md",
     "LICENSE"

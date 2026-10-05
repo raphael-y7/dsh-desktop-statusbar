@@ -2,39 +2,44 @@
 
 <p align="center">
   <a href="https://github.com/raphael-y7/dsh-desktop-statusbar/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/raphael-y7/dsh-desktop-statusbar?style=social"></a>
-  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek%20Harness-0.2.0--rc.1-%234d6bfe"></a>
+  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek%20Harness-0.2.0--rc.2-%234d6bfe"></a>
   <a href="https://dshfind.com/zh/plugins/raphael-y7/dsh-desktop-statusbar"><img alt="dshfind" src="https://img.shields.io/badge/dshfind-listed-%2300a884"></a>
   <a href="https://deepseek1024.com/plugins/Rapheal-Y7/dsh-desktop-statusbar"><img alt="1024Store" src="https://img.shields.io/badge/1024Store-listed-orange"></a>
   <a href="https://www.npmjs.com/package/dsh-desktop-statusbar"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-desktop-statusbar?color=red"></a>
   <a href="https://nodejs.org/"><img alt="node" src="https://img.shields.io/badge/node-%5E22.19%20%7C%7C%20%3E%3D24-%235fa04e"></a>
   <img alt="language" src="https://img.shields.io/github/languages/top/raphael-y7/dsh-desktop-statusbar?color=yellow">
-  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-green"></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-green"></a>
 </p>
 
 <p align="center">中文 | <a href="README.en.md">English</a></p>
 
 以一条可配置的状态栏替换 DSH 桌面端对话区底部的统计行：字段、顺序、模型单价与计价单位均可配置，费用按官方峰谷口径实时估算。
 
-> 非商业许可：个人、学习、教学与非营利使用均可自由使用和修改，**禁止商业用途**（[PolyForm Noncommercial 1.0.0](LICENSE)）。
+> 开源许可：[MIT](LICENSE)——可自由使用、修改与再分发（含商业用途），保留版权与许可声明即可。
 
 ![底栏效果](docs/statusbar.png)
 
 ## 功能
 
-- **10 个可选字段**：会话状态、峰谷判断、轮次与步数、综合命中、首字平均、输出速度、运行用时、本轮费用、总计费用、余额
+- **10 个可选字段**：上下文占用（栏首圆环）、峰谷判断、轮次与步数、综合命中、首字平均、输出速度、运行用时、本轮费用、总计费用、余额
 - **点击字段可查看详情**：
 
   | 字段 | 内容 |
   | --- | --- |
-  | 会话状态 | 上下文占用：系统提示词 / 工具定义 / 对话消息 |
+  | 上下文占用（栏首圆环） | 系统提示词 / 工具定义 / 对话消息 |
+  | 峰谷判断 | 活跃总览：按天统计的 API 请求次数与消费金额，含周 / 全年视图 |
+  | 轮次与步数 | 会话数据：上下文压缩 / 技能注入 / 工具调用；每一行都能再点开看明细 |
   | 综合命中 | 本轮 / 最高 / 最低缓存命中率 |
   | 首字平均 | 本轮 / 最快 / 最慢首字延迟 |
   | 输出速度 | 本轮 / 最快 / 最慢输出速度 |
-  | 运行用时 | 模型用时 / 工具调用 |
+  | 运行用时 | 等待用时 / 模型用时 / 工具调用 |
   | 本轮费用 | 本轮会话的 token 明细 |
   | 总计费用 | 整个会话累计的 token 明细 |
-  | 余额 | 充值余额 / 赠金余额 |
+  | 余额 | 充值余额 / 赠金余额 / 剩余配额 |
 
+- **会话数据可下钻**：点开「轮次与步数」得到三行——上下文压缩（逐次列出压缩发生在第几轮第几步）、技能注入（含注入进会话的全局提示词 `AGENTS.md`，排在最前）、工具调用（按次数列出用过的每个工具）；再点某一行继续展开明细，点标题回到上一层
+- **版本自检与一键更新**：启动时比对 npm 上的最新版本，有新版就在「状态栏」导航项旁挂一个提示胶囊，设置页里出现「更新」按钮，点一下直接装
+- **活跃总览**：鼠标移到「峰谷判断」上看当天用量，点开是整月热力图，可切到周与全年。数据来自本地用量账本，**会话记录被删也不会丢**
 - **费用估算**：按官方峰谷口径计价，每条调用按其发生时刻与所用模型分别计算
 - **价格库**：自定义单价、峰谷分档、CNY / USD 计价单位
 - **其他**：节假日日历一键更新、账户余额每分钟刷新、中英双语
@@ -101,4 +106,4 @@ node tools/test.cjs
 
 ## 许可
 
-[PolyForm Noncommercial 1.0.0](LICENSE)：允许个人、研究、学习、教学与非营利使用，允许修改与再分发（保留署名），**禁止商业用途**。
+[MIT](LICENSE)：可自由使用、修改与再分发，包括商业用途；保留版权与许可声明即可。

@@ -1,0 +1,10 @@
+<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M5.01 28.5A15 15 0 1 1 30.99 28.5" stroke="url(#gauge)" stroke-width="2.8" stroke-linecap="round" />
+  <path d="M18 21l6-6" stroke="url(#gauge)" stroke-width="2.8" stroke-linecap="round" />
+  <defs>
+    <linearGradient id="gauge" x1="5" y1="12" x2="31" y2="29" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#54ECE7" />
+      <stop offset="1" stop-color="#658EFF" />
+    </linearGradient>
+  </defs>
+</svg>
