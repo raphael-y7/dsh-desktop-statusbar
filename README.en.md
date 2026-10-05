@@ -2,39 +2,44 @@
 
 <p align="center">
   <a href="https://github.com/raphael-y7/dsh-desktop-statusbar/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/raphael-y7/dsh-desktop-statusbar?style=social"></a>
-  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek%20Harness-0.2.0--rc.1-%234d6bfe"></a>
+  <a href="https://github.com/deepseek-ai/deepseek-harness"><img alt="DeepSeek Harness" src="https://img.shields.io/badge/DeepSeek%20Harness-0.2.0--rc.2-%234d6bfe"></a>
   <a href="https://dshfind.com/zh/plugins/raphael-y7/dsh-desktop-statusbar"><img alt="dshfind" src="https://img.shields.io/badge/dshfind-listed-%2300a884"></a>
   <a href="https://deepseek1024.com/plugins/Rapheal-Y7/dsh-desktop-statusbar"><img alt="1024Store" src="https://img.shields.io/badge/1024Store-listed-orange"></a>
   <a href="https://www.npmjs.com/package/dsh-desktop-statusbar"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-desktop-statusbar?color=red"></a>
   <a href="https://nodejs.org/"><img alt="node" src="https://img.shields.io/badge/node-%5E22.19%20%7C%7C%20%3E%3D24-%235fa04e"></a>
   <img alt="language" src="https://img.shields.io/github/languages/top/raphael-y7/dsh-desktop-statusbar?color=yellow">
-  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-green"></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-green"></a>
 </p>
 
 <p align="center"><a href="README.md">中文</a> | English</p>
 
 Replaces the stats line under the message input in the DSH desktop app with a configurable status bar: fields, ordering, per-model prices and currency are all configurable, with live cost estimates using DeepSeek's official peak/off-peak rates.
 
-> Noncommercial licence: free for personal, study, teaching and nonprofit use, with modification allowed; **commercial use is not permitted** ([PolyForm Noncommercial 1.0.0](LICENSE)).
+> Open source licence: [MIT](LICENSE) — free to use, modify and redistribute, including commercially, as long as the copyright and licence notice are kept.
 
 ![Status bar](docs/statusbar.en.png)
 
 ## Features
 
-- **10 optional fields**: session status, peak / off-peak check, turns and steps, combined hit, TTFT, TPS, run time, this turn cost, session cost, balance
+- **10 optional fields**: context occupancy (the ring at the head of the bar), peak / off-peak check, turns and steps, combined hit, TTFT, TPS, run time, this turn cost, session cost, balance
 - **Click a field for details**:
 
   | Field | Content |
   | --- | --- |
-  | Session status | Context occupancy: system prompt / tool definitions / messages |
+  | Context ring (bar head) | System prompt / tool definitions / messages |
+  | Peak / off-peak check | Activity overview: API calls and cost per day, with week and whole-year views |
+  | Turns and steps | Session data: context compactions / skills injected / tool calls — each row opens its own breakdown |
   | Combined hit | This turn / highest / lowest cache hit rate |
   | TTFT | This turn / fastest / slowest first-token delay |
   | TPS | This turn / fastest / slowest output speed |
-  | Run time | Model time / tool calls |
+  | Run time | Wait time / model time / tool calls |
   | This turn cost | Token breakdown for this turn |
   | Session cost | Cumulative token breakdown for the whole session |
-  | Balance | Top-up balance / granted balance |
+  | Balance | Top-up balance / granted balance / quota left |
 
+- **Session data drills down**: click "turns and steps" for three rows — context compactions (each with the turn and step it happened at), skills injected (including the global `AGENTS.md` prompt, listed first), and tool calls (every tool used, by count). Click a row to go deeper, click the title to go back
+- **Version check and one-click update**: the plugin compares against the latest npm version on startup, shows a badge next to the "Status bar" nav item when one is available, and the settings page grows an "Update" button that installs it
+- **Activity overview**: hover the peak / off-peak field for that day's usage, click for the whole month as a heat map, with week and whole-year views. The data comes from a local usage ledger, so **deleting a session's logs never loses it**
 - **Cost estimation**: priced with the official peak/off-peak rules; each call is computed from the moment it happened and the model it used
 - **Price book**: your own prices, an optional peak/off-peak split, and a CNY / USD currency switch
 - **Also**: one-click holiday calendar update, balance refreshed every minute, bilingual UI
@@ -101,4 +106,4 @@ node tools/test.cjs
 
 ## Licence
 
-[PolyForm Noncommercial 1.0.0](LICENSE): permitted for personal, research, study, teaching and nonprofit use, and for modification and redistribution (keep attribution); **commercial use is not permitted**.
+[MIT](LICENSE): free to use, modify and redistribute, including commercially; keep the copyright and licence notice.
