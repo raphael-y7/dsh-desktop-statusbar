@@ -19,25 +19,25 @@ Replaces the stats line under the message input in the DSH desktop app with a co
 
 ## Features
 
-- **10 optional fields**: context occupancy (the ring at the head of the bar), peak / off-peak check, turns and steps, combined hit, TPS, TTFT, run time, this turn cost, session cost, balance
+- **10 optional fields**: context occupancy (the ring at the head of the bar), peak / off-peak check, turns & steps, cache hit rate, output speed, TTFT, run time, this turn cost, session cost, balance
 - **Click a field for details**:
 
   | Field | Content |
   | --- | --- |
   | Context ring (bar head) | System prompt / tool definitions / messages |
   | Peak / off-peak check | Usage heat map: day / week / month / year |
-  | Turns and steps | Context compactions / skills injected / tool calls |
+  | Turns & steps | Context compactions / skills injected / tool calls |
   | Combined hit | This turn / highest / lowest cache hit rate |
   | TPS | This turn / fastest / slowest speed |
   | TTFT | This turn / fastest / slowest first-token delay |
   | Run time | Wait time / model time / tool calls |
   | This turn cost | Token breakdown for this turn |
-  | Session cost | Cumulative token breakdown for the whole session |
+  | Session cost | Cumulative token breakdown for this session |
   | Balance | Top-up balance / granted balance / quota left |
 
-- **Drill down from "turns and steps"**: three rows — context compactions (each with the turn and step it happened at), skills injected (including the global `AGENTS.md` prompt, listed first), and tool calls (every tool used, by count). Click a row to go deeper, click the title to go back
-- **Version check and one-click update**: the plugin compares against the latest npm version on startup, shows a badge next to the "Status bar" nav item when one is available, and the settings page grows an "Update" button that installs it
-- **Activity overview**: hover the peak / off-peak field for that day's usage, click for the whole month as a heat map, with week and whole-year views. The data comes from a local usage ledger, so **deleting a session's logs never loses it**
+- **Session data drill-down**: context compactions mark the node they happened at, skills injected counts the skills injected in this session, and tool calls list every tool the session used by count; click the title to go back up
+- **Version check and update**: DSH checks for the latest version on startup, shows a hint next to the "Status bar" nav item when one is available, and offers a one-click update button in settings
+- **GitHub support**: your support is the biggest motivation for the developer to keep going! Click the button to open the GitHub project page and help with a star — thanks, everyone!
 - **Cost estimation**: priced with the official peak/off-peak rules; each call is computed from the moment it happened and the model it used
 - **Price book**: your own prices, an optional peak/off-peak split, and a CNY / USD currency switch
 - **Also**: one-click holiday calendar update, balance refreshed every minute, bilingual UI
@@ -78,11 +78,11 @@ Open **Settings → Status bar**:
 
 ![Settings page](docs/settings.en.png)
 
-- **Session status**: the ring at the front of the bar — progress shows context occupancy and colour the run state (grey idle / green running / red error / amber pending approval); click it for the token composition
+- **Context occupancy**: the ring at the head of the bar — progress shows the share of context used, the gap marks the compaction threshold, and the colour shows the run state (grey idle / green running / red error / amber pending approval)
 - **Stats fields**: ticking controls visibility only, so unticking hides a field without moving it; drag the handle on the right to reorder; "Reset settings" restores the factory order
 - **Custom model prices**: enter a model name and "Add" to create an entry; "Edit" opens the editor and changes are written on save; tick "peak / off-peak pricing" to split by time of day, otherwise a flat all-day price applies
 - **Currency**: CNY or USD in the top-right corner of the editor. Switching replaces the two built-in models with that currency's official reference prices (edited entries are kept) and changes the symbol in the cost fields; the balance follows the currency reported by the API
-- **Holidays**: "Update holidays" fetches and writes the next year's public-holiday calendar
+- **Holidays**: click "Update holidays" to fetch and write the next year's public-holiday calendar
 - **Balance**: refreshed once a minute
 
 ### Billing rules
@@ -104,4 +104,4 @@ node tools/test.cjs
 
 ## Licence
 
-[MIT](LICENSE): free to use, modify and redistribute, including commercially; keep the copyright and licence notice.
+[MIT](LICENSE): free to use, modify and redistribute; keep the copyright and licence notice.
