@@ -15,29 +15,27 @@
 
 Replaces the stats line under the message input in the DSH desktop app with a configurable status bar: fields, ordering, per-model prices and currency are all configurable, with live cost estimates using DeepSeek's official peak/off-peak rates.
 
-> Open source licence: [MIT](LICENSE) — free to use, modify and redistribute, including commercially, as long as the copyright and licence notice are kept.
-
 ![Status bar](docs/statusbar.en.png)
 
 ## Features
 
-- **10 optional fields**: context occupancy (the ring at the head of the bar), peak / off-peak check, turns and steps, combined hit, TTFT, TPS, run time, this turn cost, session cost, balance
+- **10 optional fields**: context occupancy (the ring at the head of the bar), peak / off-peak check, turns and steps, combined hit, TPS, TTFT, run time, this turn cost, session cost, balance
 - **Click a field for details**:
 
   | Field | Content |
   | --- | --- |
   | Context ring (bar head) | System prompt / tool definitions / messages |
-  | Peak / off-peak check | Activity overview: API calls and cost per day, with week and whole-year views |
-  | Turns and steps | Session data: context compactions / skills injected / tool calls — each row opens its own breakdown |
+  | Peak / off-peak check | Usage heat map: day / week / month / year |
+  | Turns and steps | Context compactions / skills injected / tool calls |
   | Combined hit | This turn / highest / lowest cache hit rate |
+  | TPS | This turn / fastest / slowest speed |
   | TTFT | This turn / fastest / slowest first-token delay |
-  | TPS | This turn / fastest / slowest output speed |
   | Run time | Wait time / model time / tool calls |
   | This turn cost | Token breakdown for this turn |
   | Session cost | Cumulative token breakdown for the whole session |
   | Balance | Top-up balance / granted balance / quota left |
 
-- **Session data drills down**: click "turns and steps" for three rows — context compactions (each with the turn and step it happened at), skills injected (including the global `AGENTS.md` prompt, listed first), and tool calls (every tool used, by count). Click a row to go deeper, click the title to go back
+- **Drill down from "turns and steps"**: three rows — context compactions (each with the turn and step it happened at), skills injected (including the global `AGENTS.md` prompt, listed first), and tool calls (every tool used, by count). Click a row to go deeper, click the title to go back
 - **Version check and one-click update**: the plugin compares against the latest npm version on startup, shows a badge next to the "Status bar" nav item when one is available, and the settings page grows an "Update" button that installs it
 - **Activity overview**: hover the peak / off-peak field for that day's usage, click for the whole month as a heat map, with week and whole-year views. The data comes from a local usage ledger, so **deleting a session's logs never loses it**
 - **Cost estimation**: priced with the official peak/off-peak rules; each call is computed from the moment it happened and the model it used
