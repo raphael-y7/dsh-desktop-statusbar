@@ -399,6 +399,25 @@ assert.ok(code.includes('scroller.scrollTop = (typeof scroller.scrollTop === "nu
 	'按"底边 + 余量 − 容器可视底边"的差值加 scrollTop');
 assert.ok(code.includes('if (overflow <= 0) return;'), '没被遮住时一动不动（不平白往上滚）');
 assert.ok(code.includes('window.requestAnimationFrame(retry)'), '稳定后补滚一次走 rAF（不是定时器）');
+/* task-21：底边滚入统一成一个钩子 `useRevealBottom(ref, active, extraKey)`，**恰好两处调用**
+   （价格编辑浮层 / 币种菜单）；气泡、跟手浮层、悬停提示有意不接。 */
+const revealLines = code.split('\n').filter((one) => one.indexOf('useRevealBottom(') !== -1);
+assert.strictEqual(revealLines.length, 2, 'useRevealBottom 恰好两处调用（定义那行是 `useRevealBottom = (`，不匹配），实际 ' + revealLines.length);
+assert.strictEqual((code.match(/const useRevealBottom = \(ref, active, extraKey\)/g) || []).length, 1,
+	'只有一份实现（不要各写一份）');
+assert.ok(code.includes('useRevealBottom(editPopRef, editing !== null'), '第一处：价格编辑浮层');
+assert.ok(code.includes('useRevealBottom(currencyMenuRef, currencyOpen === true, null)'), '第二处：币种菜单');
+revealLines.forEach((one) => {
+	const wired = one.indexOf('editPopRef') !== -1 || one.indexOf('currencyMenuRef') !== -1;
+	assert.ok(wired, 'useRevealBottom 只允许接在价格浮层/币种菜单上，实际这行：' + one.trim());
+});
+['dsb-tip', 'dsb-drag-card', 'dsb-star-tip'].forEach((cls) => {
+	assert.ok(revealLines.every((one) => one.indexOf(cls) === -1),
+		cls + ' 不该接 useRevealBottom（气泡向上展开、跟手浮层跟指针、悬停提示会抢用户操作）');
+});
+assert.strictEqual((code.match(/setInterval\(/g) || []).length, 2, '定时器仍只有两处（时钟 + 余额轮询）');
+assert.ok(code.includes('className: "dsb-select-menu", role: "listbox", ref: currencyMenuRef'),
+	'币种菜单的 ref 挂在**菜单节点**上（不是那个按钮）');
 assert.ok(settings.includes('上下文占用'), '设置页要出现上下文占用开关');
 
 /* ------------------------------------------- 出厂默认：点「恢复默认设置」的顺序与勾选 */

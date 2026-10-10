@@ -108,6 +108,12 @@ const SCROLLER = {
 	getBoundingClientRect: () => ({ top: 0, bottom: 300, height: 300, left: 0, right: 100, width: 100 })
 };
 const POP = { box: { top: 100, bottom: 400, height: 300, left: 0, right: 100, width: 100 } };
+/* task-21：币种菜单也走同一个钩子。菜单底边与"按钮"底边**故意不同**（420 vs 170），
+   用来确保量的是菜单节点本身 —— 量错节点时滚动量会变成 0。 */
+const MENU = {
+	box: { top: 150, bottom: 420, height: 270, left: 0, right: 100, width: 100 },
+	buttonBox: { top: 120, bottom: 170, height: 50, left: 0, right: 100, width: 100 }
+};
 let rafSeq = 0;
 const rafQueue = new Map();
 /** 手动跑掉排队中的 rAF 回调（复现"稳定后补滚一次"）。 */
@@ -168,6 +174,12 @@ const reactStub = {
 		const cls = typeof node.props.className === 'string' ? node.props.className.split(' ') : [];
 		if (cls.indexOf('dsb-edit-pop') !== -1) {
 			node.getBoundingClientRect = () => POP.box;
+			const box = node.props.ref;
+			if (box !== null && typeof box === 'object') box.current = node;
+		}
+		/* task-21：币种菜单（ref 挂在**菜单节点**上，不是那个按钮） */
+		if (cls.indexOf('dsb-select-menu') !== -1) {
+			node.getBoundingClientRect = () => MENU.box;
 			const box = node.props.ref;
 			if (box !== null && typeof box === 'object') box.current = node;
 		}
@@ -550,6 +562,43 @@ flushRaf();
 assert.strictEqual(scrollCalls, beforeRaf + 2, '下一帧再补一次（rAF，不是定时器）');
 assert.strictEqual(rafQueue.size, 0, '补滚走的是 rAF，不新增定时器');
 console.log('14 底部自动滚入：被裁时按"底边 + 12px − 容器底"滚 · 没被裁一动不动 · 下一帧补一次（rAF）');
+
+/* -------------------------------------------- 15：币种菜单的底部自动滚入（task-21 钩子的第二处调用） */
+const selectBtn = () => collectByClass(renderSettings(), 'dsb-select-btn')[0];
+const toggleMenu = () => { selectBtn().props.onClick(); renderSettings(); };
+/* ① 菜单被裁：滚动量按**菜单节点**底边算（按按钮算会是 0，因为按钮本身在视野内） */
+MENU.box = { top: 150, bottom: 420, height: 270, left: 0, right: 100, width: 100 };
+rafQueue.clear();
+const beforeMenu = scrollCalls;
+const beforeMenuTop = SCROLLER.scrollTop;
+toggleMenu();
+assert.strictEqual(collectByClass(renderSettings(), 'dsb-select-menu').length, 1, '前置：菜单已展开');
+assert.ok(MENU.buttonBox.bottom + MARGIN - 300 <= 0, '前置：按钮本身没被裁（按按钮算会是 0）');
+assert.strictEqual(scrollCalls, beforeMenu + 1, '菜单被裁时滚一次，实际 ' + (scrollCalls - beforeMenu));
+assert.strictEqual(SCROLLER.scrollTop - beforeMenuTop, MENU.box.bottom + MARGIN - 300,
+	'滚动量 = 菜单节点底边 + 12px 余量 − 容器可视底边：' + (SCROLLER.scrollTop - beforeMenuTop));
+/* ② 没被裁：菜单底边收进容器内 ⇒ 一动不动 */
+MENU.box = { top: 40, bottom: 240, height: 200, left: 0, right: 100, width: 100 };
+rafQueue.clear();
+const beforeMenuInside = scrollCalls;
+toggleMenu();   /* 收起 */
+toggleMenu();   /* 再展开（依赖 true → false → true，effect 会重跑） */
+assert.strictEqual(scrollCalls, beforeMenuInside, '菜单完全在视野里时一动不动，实际多了 ' + (scrollCalls - beforeMenuInside));
+/* ③ 首帧没被裁、下一帧长高 ⇒ rAF 补滚一次；再 flush 不重复滚（幂等） */
+MENU.box = { top: 40, bottom: 240, height: 200, left: 0, right: 100, width: 100 };
+rafQueue.clear();
+const beforeGrow = scrollCalls;
+toggleMenu();   /* 收起 */
+toggleMenu();   /* 再展开：第一帧还没被裁 */
+assert.strictEqual(scrollCalls, beforeGrow, '第一帧没被裁 ⇒ 先不滚');
+MENU.box = { top: 150, bottom: 420, height: 270, left: 0, right: 100, width: 100 };   /* 下一帧长高 */
+flushRaf();
+assert.strictEqual(scrollCalls, beforeGrow + 1, '下一帧复测发现被裁 ⇒ 补滚一次，实际 ' + (scrollCalls - beforeGrow));
+const grownTop = SCROLLER.scrollTop;
+flushRaf();
+assert.strictEqual(scrollCalls, beforeGrow + 1, 'rAF 已消费完，再 flush 不重复滚（幂等）');
+assert.strictEqual(SCROLLER.scrollTop, grownTop, '滚动位置也不再变');
+console.log('15 币种菜单：按**菜单节点**底边滚（按钮在视野内 → 按它算会是 0）· 没被裁不动 · 下一帧长高补滚一次且幂等');
 
 /* -------------------------------------------- 9：host 收到带 null 的价格库照样只按数值计价 */
 const BEIJING = 8 * 3600 * 1000;
