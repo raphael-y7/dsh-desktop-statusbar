@@ -16,7 +16,8 @@ const assert = require('assert');
 const PLUGIN = path.join(__dirname, '..', 'lib', 'client.js');
 let code = fs.readFileSync(PLUGIN, 'utf8');
 code = code.replace('\t\texports.apply = apply;',
-	'\t\texports.__t = { pricesMissing, loadConfig, segmentView, isPeakTime, PRICE_VERSION };\n\t\texports.apply = apply;');
+	'\t\texports.__t = { pricesMissing, loadConfig, segmentView, isPeakTime, PRICE_VERSION,'
+	+ ' mainModelOf, displayCurrencyOf, REFERENCE_RATE };\n\t\texports.apply = apply;');
 
 /* 明确填 0（用户说的"免费"）：有数字格 ⇒ 不算缺失、要原样留住 */
 const ZERO_BOOK = {
@@ -105,6 +106,9 @@ console.log('明确填 0 的价格库被原样保留:', JSON.stringify(currentCf
    deepseek-flash 被顶回官方价，白改）。 */
 const USER_FLASH = {
 	tiered: true,
+	/* task-22：币种改成每个条目自带 —— 读配置时会把入口的默认币种落成显式 `currency`，
+	   所以这份"用户改过的条目"基准也要带上它。 */
+	currency: 'CNY',
 	peak: { input: 99, cacheRead: 8, cacheWrite: 7, output: 66 },
 	offPeak: { input: 44, cacheRead: 4, cacheWrite: 3, output: 33 }
 };
@@ -171,5 +175,35 @@ const cfg2 = api2.loadConfig();
 assert.strictEqual(cfg2.models['my-model'].peak.input, 3, 'custom price kept');
 assert.ok(cfg2.models['my-model'] !== undefined, 'custom model kept');
 console.log('自定义价格未被覆盖:', JSON.stringify(cfg2.models['my-model']));
+
+/* 5. 底栏币种 = **当前会话主模型的条目币种**（task-22）；混币会话按参考价折成**一个数字** */
+assert.strictEqual(api.REFERENCE_RATE, 6.742424242424242, '折算率 = 两套官方参考价表推出的中位数');
+const CURRENCY_BOOK = {
+	'model-a': { tiered: false, currency: 'CNY', peak: { input: 2, cacheRead: 0, cacheWrite: 0, output: 0 }, offPeak: { input: 2, cacheRead: 0, cacheWrite: 0, output: 0 } },
+	'model-b': { tiered: false, currency: 'USD', peak: { input: 1, cacheRead: 0, cacheWrite: 0, output: 0 }, offPeak: { input: 1, cacheRead: 0, cacheWrite: 0, output: 0 } }
+};
+const AGG_A = { 'model-a': { input: 2000000 }, 'model-b': { input: 1000000 } };
+assert.strictEqual(api.mainModelOf({ models: AGG_A }), 'model-a', '主模型 = 四项 token 之和最大者');
+assert.strictEqual(api.mainModelOf({ models: { 'model-a': { input: 0 }, 'model-b': { input: 0 } } }), null, '没有任何正用量 ⇒ 没有主模型');
+assert.strictEqual(api.mainModelOf({ models: { 'model-a': { input: 5 }, 'model-b': { input: 5 } } }), 'model-a', '并列时按名字定序（同输入同输出）');
+assert.strictEqual(api.displayCurrencyOf(CURRENCY_BOOK, 'CNY', { models: AGG_A }), 'CNY', 'A 主（CNY）⇒ 底栏用 ¥');
+assert.strictEqual(api.displayCurrencyOf(CURRENCY_BOOK, 'CNY', { models: { 'model-a': { input: 1000000 }, 'model-b': { input: 3000000 } } }),
+	'USD', 'B 主（USD）⇒ 底栏用 $');
+assert.strictEqual(api.displayCurrencyOf(CURRENCY_BOOK, 'USD', null), 'USD', '认不出主模型 ⇒ 退回"新增条目的默认币种"');
+const currencyApi = boot({ version: 6, priceVersion: api.PRICE_VERSION, enabled: true, currency: 'CNY', models: CURRENCY_BOOK, modelOrder: ['model-a', 'model-b'] });
+const costText = (models, calls, display) => currencyApi.segmentView('cost', {
+	sessionUsage: { models: models, calls: calls, current: null, last: null, turn: 1 },
+	sessionModel: { provider: 'test', model: 'model-a' },
+	models: CURRENCY_BOOK, defaultCurrency: 'CNY',
+	currency: display, now: Date.now(), turnUsage: null
+}, t).text;
+const CALL_A1M = { at: Date.now(), model: 'model-a', input: 1000000, cacheRead: 0, cacheWrite: 0, output: 0 };
+const CALL_B1M = { at: Date.now(), model: 'model-b', input: 1000000, cacheRead: 0, cacheWrite: 0, output: 0 };
+const CALL_B3M = { at: Date.now(), model: 'model-b', input: 3000000, cacheRead: 0, cacheWrite: 0, output: 0 };
+assert.strictEqual(costText(AGG_A, [CALL_A1M, CALL_B1M], 'CNY'), '总计 ¥8.74',
+	'A 主：¥2.00 + $1.00 × 6.742424 = ¥8.74（混币折成一个数字）');
+assert.strictEqual(costText({ 'model-a': { input: 1000000 }, 'model-b': { input: 3000000 } }, [CALL_A1M, CALL_B3M], 'USD'),
+	'总计 $3.30', 'B 主：¥2.00 / 6.742424 + $3.00 = $3.30（同一个比率反着折）');
+console.log('币种：主模型判定 · 底栏显示币种（¥/$）· 混币折成一个数字（¥8.74 / $3.15）');
 
 console.log('\nPRICE SELF-HEAL CHECKS PASSED');

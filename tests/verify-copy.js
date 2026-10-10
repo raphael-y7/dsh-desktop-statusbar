@@ -66,7 +66,9 @@ const ZH = {
 	tipTopUp: '充值余额',
 	tipGranted: '赠金余额',
 	priceNewModel: '自定义模型',
-	secPricesHint: '填写你使用的模型单价（每百万 tokens / {currency}）。',
+	/* task-22：这里只校验**实现侧**文案。README 里还是旧的"({currency})"写法 —— 用户明确要求 README 保持原样，
+	   所以本文件不再要求"与 README 逐字一致"，README 那处不一致已由 Lead 如实报给用户。 */
+	secPricesHint: '填写你使用的模型单价（每百万 tokens）。每个条目按它自己的币种计价。',
 	priceTierPeak: '高峰时段',
 	priceTierOffPeak: '空闲时段',
 	/* task-19：未勾峰谷计价时价格行前面显示「全时段」档位名，中英都要有 */
@@ -79,7 +81,8 @@ const EN = {
 	secSegments: 'Stats fields',
 	secSegmentsHint: 'Select to show; drag to reorder.',
 	secPrices: 'Custom model prices',
-	secPricesHint: 'Prices per million tokens, in {currency}.',
+	/* task-22：只校验实现侧文案（README 那处保持旧写法不动，见 zh 那边的说明）。 */
+	secPricesHint: 'Prices per million tokens. Each entry is priced in its own currency.',
 	updatePill: 'Update available',
 	updateTo: 'Update to {version}',
 	updateRunning: 'Updating',

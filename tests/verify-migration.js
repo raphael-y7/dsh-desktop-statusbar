@@ -153,4 +153,23 @@ const LEGACY_CONFIG = JSON.stringify({
 	console.log('计价单位：USD 保留、非法值回落 CNY、缺省 CNY');
 }
 
+/* 5b. 条目币种（task-22）：迁移用全局 currency 给**已有条目**落成显式值；条目自带值优先 */
+{
+	const legacyCur = JSON.stringify({ version: 6, currency: 'USD', hidden: [], modelOrder: ['my-model'],
+		models: { 'my-model': { peak: { input: 1, cacheRead: 0, cacheWrite: 0, output: 2 }, offPeak: null } } });
+	const migratedCur = loadWith({ [NEW_KEY]: legacyCur }).api.snapshot();
+	assert.strictEqual(migratedCur.currency, 'USD', '全局字段保留（现在只是"新增条目的默认币种"）');
+	assert.strictEqual(migratedCur.models['my-model'].currency, 'USD', '已有条目按全局币种落成显式 currency');
+	const mixedCur = JSON.stringify({ version: 6, currency: 'CNY', hidden: [], modelOrder: ['a', 'b'],
+		models: {
+			a: { currency: 'USD', peak: { input: 1, cacheRead: 0, cacheWrite: 0, output: 2 }, offPeak: null },
+			b: { peak: { input: 1, cacheRead: 0, cacheWrite: 0, output: 2 }, offPeak: null }
+		} });
+	const mixedSnap = loadWith({ [NEW_KEY]: mixedCur }).api.snapshot();
+	assert.strictEqual(mixedSnap.models.a.currency, 'USD', '条目自带币种优先于默认值');
+	assert.strictEqual(mixedSnap.models.b.currency, 'CNY', '没带的条目落成默认币种');
+	assert.strictEqual(mixedSnap.currency, 'CNY', '默认币种字段不被条目值改写');
+	console.log('条目币种：迁移落成显式值（全局 currency 当初值）· 条目自带优先 · 默认字段不被改写');
+}
+
 console.log('\nMIGRATION CHECKS PASSED');

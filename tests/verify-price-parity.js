@@ -193,12 +193,21 @@ function compareBook(client, host, raw) {
 	const sanitized = host.sanitizePriceBook(clone(raw));
 	const hBook = sanitized === null ? {} : sanitized;
 
-	/* 形状：哪些键活下来、逐格的值、tiered 标记 */
+	/* 形状：哪些键活下来、逐格的值、tiered 标记。
+	   task-22 起 client 读配置时会**把入口的默认币种落成显式 `currency`**，而 host 的
+	   `sanitizePriceBook` **不补**（没带就保持"没带"，见文件头第 ④ 条边界）——
+	   比对前把两侧的 `currency` 都摘掉，这两条口径另有专门用例钉住。 */
 	const cNames = Object.keys(cBook).filter((name) => name.length > 0).sort();
 	const hNames = Object.keys(hBook).sort();
 	compareJson('活下来的键', cNames, hNames, context);
+	const shapeOf = (entry) => {
+		if (entry === null || entry === undefined || typeof entry !== 'object') return entry;
+		const copy = Object.assign({}, entry);
+		delete copy.currency;
+		return copy;
+	};
 	cNames.forEach((name) => {
-		compareJson('条目形状 ' + JSON.stringify(name), cBook[name], hBook[name], context);
+		compareJson('条目形状 ' + JSON.stringify(name), shapeOf(cBook[name]), shapeOf(hBook[name]), context);
 		/* 谓词：client 吃原始条目、host 吃它门口 sanitize 后的产物（各自真实管线） */
 		compare('priceIsBlank ' + JSON.stringify(name),
 			client.priceIsBlank(raw[name]), host.priceIsBlank(hBook[name]), context);
@@ -277,11 +286,26 @@ function compareBook(client, host, raw) {
 		const bothNull = { x: { peak: null, offPeak: null } };
 		const cBothNull = client.normalizeModels(bothNull);
 		assert.deepStrictEqual(JSON.parse(JSON.stringify(cBothNull.x)),
-			{ tiered: true, peak: { input: null, cacheRead: null, cacheWrite: null, output: null }, offPeak: { input: null, cacheRead: null, cacheWrite: null, output: null } },
-			'client 把两档皆 null 的条目保留成八格全 null');
+			{ tiered: true, currency: 'CNY', peak: { input: null, cacheRead: null, cacheWrite: null, output: null }, offPeak: { input: null, cacheRead: null, cacheWrite: null, output: null } },
+			'client 把两档皆 null 的条目保留成八格全 null（task-22 起还带入口默认币种 currency）');
 		assert.strictEqual(host.sanitizePriceBook(bothNull), null, 'host 丢掉两档皆 null 的条目');
 		assert.strictEqual(client.pickPriceKey(cBothNull, 'x'), null, '八格全 null 的条目两侧都不参选（client）');
 		assert.strictEqual(host.pickPriceKey({}, 'x'), null, '八格全 null 的条目两侧都不参选（host）');
+		/* ④ 币种（task-22）：client 读配置时把入口默认币种落成显式 `currency`；
+		      host 的 `sanitizePriceBook` 只保留合法值、**不补默认** —— 有意的不对称，
+		      好处是缺省条目二次往返不会凭空多出键（幂等）。 */
+		const noCur = { x: { peak: { input: 1, cacheRead: 0, cacheWrite: 0, output: 2 }, offPeak: null } };
+		assert.strictEqual(client.normalizeModels(noCur).x.currency, 'CNY', 'client 缺币种 ⇒ 落成入口默认 CNY');
+		assert.strictEqual(host.sanitizePriceBook(noCur).x.currency, undefined, 'host 不给缺币种的条目补默认值');
+		const usdCur = { x: { currency: 'USD', peak: { input: 1, cacheRead: 0, cacheWrite: 0, output: 2 }, offPeak: null } };
+		assert.strictEqual(client.normalizeModels(usdCur).x.currency, 'USD', '显式 USD 原样保留（client）');
+		assert.strictEqual(host.sanitizePriceBook(usdCur).x.currency, 'USD', '显式 USD 原样保留（host）');
+		const junkCur = { x: { currency: 'JPY', peak: { input: 1, cacheRead: 0, cacheWrite: 0, output: 2 }, offPeak: null } };
+		assert.strictEqual(client.normalizeModels(junkCur).x.currency, 'CNY', '非法币种回落 CNY（client）');
+		assert.strictEqual(host.sanitizePriceBook(junkCur).x.currency, undefined, '非法币种 host 直接不带这个键');
+		const once = host.sanitizePriceBook(noCur);
+		assert.deepStrictEqual(JSON.parse(JSON.stringify(host.sanitizePriceBook(once))), JSON.parse(JSON.stringify(once)),
+			'host 二次往返幂等（缺省条目不凭空多出 currency）');
 		/* ③ 非法输入（非数字字符串 / 非有限数）：client 载入时就归一成 null ——
 		      host 的 `numOrZero` 会把它们压成 0，两侧口径不同，但**线上收不到**这种格：
 		      client POST 的是 `normalizeModels` 之后的形态（只有 null 与数字）。这里把该前提锁住。 */
