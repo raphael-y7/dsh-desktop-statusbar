@@ -15,7 +15,7 @@ let code = fs.readFileSync(PLUGIN, 'utf8');
 const marker = '\t\texports.apply = apply;';
 assert.ok(code.includes(marker), 'exports.apply marker not found');
 code = code.replace(marker,
-  '\t\texports.__test = { segmentView, segmentText, detectLocale, formatDuration, formatSeconds, formatThroughput, SEGMENTS, DEFAULT_SEGMENTS, STORAGE_KEY, snapshot, StatusBar, SettingsSection, dropIndexAt, moveItem };\n' + marker);
+  '\t\texports.__test = { segmentView, segmentText, detectLocale, formatDuration, formatSeconds, formatThroughput, SEGMENTS, DEFAULT_SEGMENTS, STORAGE_KEY, DEFAULT_PRICES, snapshot, StatusBar, SettingsSection, dropIndexAt, moveItem };\n' + marker);
 
 const store = new Map();
 /* 预置一份"乱序 + 只勾四段 + 非默认币种"的旧配置：出厂默认要从这种状态拉回来 */
@@ -467,25 +467,27 @@ assert.strictEqual(saved.contextMeter, true, '恢复默认设置应恢复上下�
 assert.deepStrictEqual(segmentNames(renderSettings()), factoryLabels, '恢复默认设置后设置页顺序应等于出厂顺序');
 console.log('恢复默认设置后：', saved.segments.join(' → '));
 
-/* 「恢复默认」只回**界面配置**，不得动用户的价格库：改过的官方模型、自造模型、明确填的 0 都要原样还在。
-   关键：插件的 config 是**模块加载时读一次**（`let config = loadConfig()`），之后 `setConfig` 只合并
-   内存里那一份并写回 store —— 所以"加载后再 store.set 换配置"是无效的（那份新配置进不了内存）。
-   这里按"**先种配置、再加载模块**"另起一份沙箱 + 独立 store 来验，免得动到上面主流程的夹具。 */
+/* task-25：「恢复默认」**区分两类条目** —— 官方内置（键命中 `DEFAULT_PRICES`）回官方默认价（含被删掉的加回来），
+   用户自建（键不在官方表里）逐字段不变。fixture 故意：官方 flash 改乱值 + 切成 USD、官方 v4-pro **删掉**、
+   自建两条（一条含明确填的 0 与 null、都带自己的 currency）。 */
 {
 	const store2 = new Map();
 	const USER_MODELS = {
 		'deepseek-flash': {
 			tiered: false,
-			peak: { input: 1.5, cacheRead: 0, cacheWrite: 0, output: 8 },
+			currency: 'USD',
+			peak: { input: 99, cacheRead: 0, cacheWrite: 0, output: 8 },
 			offPeak: { input: 0.02, cacheRead: 0.02, cacheWrite: 0, output: 0.1 }
 		},
 		'my-own-model': {
 			tiered: true,
+			currency: 'USD',
 			peak: { input: 9, cacheRead: 1, cacheWrite: 0, output: 20 },
 			offPeak: { input: 4.5, cacheRead: 0.5, cacheWrite: 0, output: 10 }
 		},
 		'zero-model': {
 			tiered: false,
+			currency: 'CNY',
 			peak: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
 			offPeak: { input: null, cacheRead: null, cacheWrite: null, output: null }
 		}
@@ -493,8 +495,10 @@ console.log('恢复默认设置后：', saved.segments.join(' → '));
 	store2.set(CONFIG_KEY, JSON.stringify({
 		version: 5, priceVersion: 2, enabled: true, wrap: false,
 		segments: MESSY_SEGMENTS.slice(), hidden: ['counts'],
-		/* task-22 起 `currency` 只是"新增条目的默认币种"（不再全局换算）；恢复默认仍不得动价格库。 */
-		currency: 'USD', contextMeter: false, models: USER_MODELS
+		/* `currency` 只是"新增条目的默认币种"；官方顺序那个键**故意排在自建键后面**，验恢复默认会覆盖它 */
+		currency: 'USD', contextMeter: false,
+		modelOrder: ['zzz-first', 'my-own-model', 'deepseek-flash', 'zero-model'],
+		models: USER_MODELS
 	}));
 	let captured2 = null;
 	const window2 = Object.assign({}, fakeWindow, {
@@ -525,8 +529,19 @@ console.log('恢复默认设置后：', saved.segments.join(' → '));
 		throw new Error('unexpected require: ' + name);
 	}).__test;
 	const modelsInMemory = api2.snapshot().models;   /* 加载后内存里那一份（可能被归一化过，所以拿它当基准） */
+	const customKeys = ['my-own-model', 'zero-model'];
+	const officialKeys = Object.keys(api2.DEFAULT_PRICES);
 	assert.deepStrictEqual(Object.keys(modelsInMemory).sort(), ['deepseek-flash', 'my-own-model', 'zero-model'],
-		'前置：内存里的价格库就是用户那份（3 个模型，没被官方参考价合并）');
+		'前置：内存里的价格库 = 用户那份（官方 v4-pro 已被删掉，且没被官方参考价合并回来）');
+	/* 恢复默认后：官方键回官方表、自建键逐字段不变、官方键加回来、顺序 = 官方 + 自建 */
+	for (const name of customKeys) {
+		const one = modelsInMemory[name];
+		assert.strictEqual(one.currency !== undefined && one.currency !== null, true,
+			'前置：自建条目自带 currency（' + name + '）');
+	}
+	const officialBefore = JSON.parse(JSON.stringify(modelsInMemory['deepseek-flash']));
+	assert.strictEqual(officialBefore.peak.input, 99, '前置：官方 flash 被改成 99');
+	assert.strictEqual(officialBefore.currency, 'USD', '前置：官方 flash 被切成 USD');
 	const hooks2 = makeHooks();
 	const resetBtn2 = (function find(node) {
 		let found = null;
@@ -545,17 +560,37 @@ console.log('恢复默认设置后：', saved.segments.join(' → '));
 	assert.deepStrictEqual(afterReset.hidden, [], '界面配置仍要清空未勾选标记');
 	assert.strictEqual(afterReset.currency, 'CNY', '界面配置仍要回到默认**币种**（task-22 起只是新增条目的默认值）');
 	assert.strictEqual(afterReset.contextMeter, true, '界面配置仍要回到默认开关');
-	/* 价格库逐字段不变（用加载后的内存那份当基准，避免把归一化当成 bug）。
-	   注意 vm 出来的对象原型与主域不同，deepStrictEqual 会因此失败 —— 两边都先 JSON 化。 */
+	/* task-25：官方键回官方默认值、自建键逐字段不变、被删的官方键加回来、顺序 = 官方 + 自建。
+	   vm 出来的对象原型与主域不同，deepStrictEqual 会因此失败 —— 两边都先 JSON 化。 */
 	const plain = (value) => JSON.parse(JSON.stringify(value));
-	assert.deepStrictEqual(plain(afterReset.models), plain(modelsInMemory),
-		'「恢复默认」不得动价格库：改过的官方模型 / 自造模型 / 明确填的 0 都要逐字段还在');
-	assert.strictEqual(afterReset.models['deepseek-flash'].peak.input, 1.5, '用户改过的官方模型价还在');
-	assert.strictEqual(afterReset.models['deepseek-flash'].peak.cacheRead, 0, '用户明确填的 0 还在（不是 null）');
-	assert.deepStrictEqual(afterReset.models['my-own-model'].peak, { input: 9, cacheRead: 1, cacheWrite: 0, output: 20 },
-		'自造模型两档价原样保留');
-	assert.strictEqual(afterReset.models['zero-model'].peak.cacheRead, 0, '明确填 0 的条目仍是 0');
-	console.log('恢复默认：界面配置回默认，价格库逐字段不变（' + Object.keys(afterReset.models).length + ' 个模型）');
+	assert.deepStrictEqual(Object.keys(afterReset.models).sort(), officialKeys.concat(customKeys).sort(),
+		'恢复默认后价格库 = 官方键 + 自建键（被删掉的官方 v4-pro 加回来了）');
+	/* ① 官方键：逐字段等于官方默认表（含 tiered / 两档 / 官方 0 与 null），币种回 CNY */
+	for (const name of officialKeys) {
+		assert.deepStrictEqual(plain(afterReset.models[name]),
+			{ tiered: true, currency: 'CNY', peak: plain(api2.DEFAULT_PRICES[name].peak), offPeak: plain(api2.DEFAULT_PRICES[name].offPeak) },
+			'官方条目恢复成官方默认值（' + name + '）');
+	}
+	assert.deepStrictEqual(plain(afterReset.models['deepseek-flash'].peak),
+		{ input: 2, cacheRead: 0.04, cacheWrite: 0, output: 8 }, '官方 flash 回官方 CNY 价');
+	assert.strictEqual(afterReset.models['deepseek-flash'].currency, 'CNY', '官方条目币种回 CNY');
+	assert.strictEqual(afterReset.models['deepseek-flash'].peak.input, 2,
+		'官方模型先前被改成 99 ⇒ 恢复默认后被覆盖回官方值（有意取舍）');
+	assert.ok(afterReset.models['deepseek-v4-pro'] !== undefined, '被删掉的官方条目要加回来');
+	assert.deepStrictEqual(plain(afterReset.models['deepseek-v4-pro'].offPeak),
+		{ input: 4.5, cacheRead: 0.15, cacheWrite: 0, output: 13.5 }, '加回来的官方条目就是官方价');
+	/* ② 自建键：逐字段不变（含明确填的 0 与 null、以及它自己的 currency） */
+	for (const name of customKeys) {
+		assert.deepStrictEqual(plain(afterReset.models[name]), plain(modelsInMemory[name]),
+			'自建条目逐字段不变（' + name + '）');
+	}
+	assert.strictEqual(afterReset.models['zero-model'].peak.cacheRead, 0, '自建条目明确填的 0 仍是 0');
+	assert.deepStrictEqual(plain(afterReset.models['my-own-model'].peak),
+		{ input: 9, cacheRead: 1, cacheWrite: 0, output: 20 }, '自建条目两档价原样保留');
+	/* ③ 顺序：官方键（官方顺序）在前 + 自建键（原相对顺序）在后 */
+	assert.deepStrictEqual(plain(afterReset.modelOrder), officialKeys.concat(customKeys),
+		'modelOrder = 官方键（官方顺序）在前 + 自建键（原相对顺序）在后');
+	console.log('恢复默认：界面配置回默认 · 官方键回官方价（含被删的加回）· 自建键逐字段不变 · 顺序 ' + afterReset.modelOrder.join(' → '));
 }
 
 /* ------------------------------------------- 价格库：折叠两态 / 峰谷计价 / 草稿 */
