@@ -94,8 +94,28 @@ const fakeWindow = {
 	setInterval: () => 0, clearInterval: () => {},
 	setTimeout: () => 0, clearTimeout: () => {},
 	addEventListener: () => {}, removeEventListener: () => {},
+	requestAnimationFrame: (fn) => { rafSeq += 1; rafQueue.set(rafSeq, fn); return rafSeq; },
+	cancelAnimationFrame: (id) => { rafQueue.delete(id); },
 	innerWidth: 1280, innerHeight: 800
 };
+/* task-19：底部自动滚入不再用 scrollIntoView，而是"找最近的可滚祖先 → 按底边差值加 scrollTop"，
+   所以替身要给：滚动容器的假几何 + 浮层的假矩形。`POP.box` 可改，用来测"没被裁就不动"。 */
+const MARGIN = 12;
+const SCROLLER = {
+	clientHeight: 300, scrollHeight: 900, _top: 0,
+	get scrollTop() { return this._top; },
+	set scrollTop(value) { this._top = value; scrollCalls += 1; scrollWrites.push(value); },
+	getBoundingClientRect: () => ({ top: 0, bottom: 300, height: 300, left: 0, right: 100, width: 100 })
+};
+const POP = { box: { top: 100, bottom: 400, height: 300, left: 0, right: 100, width: 100 } };
+let rafSeq = 0;
+const rafQueue = new Map();
+/** 手动跑掉排队中的 rAF 回调（复现"稳定后补滚一次"）。 */
+function flushRaf() {
+	const list = Array.from(rafQueue.values());
+	rafQueue.clear();
+	list.forEach((fn) => fn());
+}
 let captured = null;
 fakeWindow.__ModuleLoader__ = { load: (entry) => { captured = entry; } };
 const sandbox = {
@@ -104,6 +124,7 @@ const sandbox = {
 		querySelector: () => null,
 		createElement: () => ({ dataset: {}, style: {}, appendChild() {} }),
 		head: { appendChild() {} },
+		scrollingElement: SCROLLER,
 		addEventListener: () => {}, removeEventListener: () => {}
 	},
 	console, Promise, Date, Math, JSON, Object, Array, Number, String, Boolean, Symbol, Set, Map, Error,
@@ -131,11 +152,12 @@ function hookSlot(init) {
 		set: (value) => { bucket.values[at] = typeof value === 'function' ? value(bucket.values[at]) : value; }
 	};
 }
-/* 编辑浮层的滚动 effect 要能真跑：只挑"会调 scrollIntoView"的那个 effect 执行，
+/* 编辑浮层的滚动 effect 要能真跑：只挑"会调 revealBottom"的那个 effect 执行，
    别的 effect（拉活跃模型 / 点外部收起 / 拉假期）不跑，免得替身里触发异步 setState。 */
 let pendingEffects = [];
 let effectDeps = [];
 let scrollCalls = 0;
+const scrollWrites = [];
 const reactStub = {
 	createElement: (type, props, ...children) => {
 		const node = {
@@ -145,7 +167,7 @@ const reactStub = {
 		};
 		const cls = typeof node.props.className === 'string' ? node.props.className.split(' ') : [];
 		if (cls.indexOf('dsb-edit-pop') !== -1) {
-			node.scrollIntoView = () => { scrollCalls += 1; };
+			node.getBoundingClientRect = () => POP.box;
 			const box = node.props.ref;
 			if (box !== null && typeof box === 'object') box.current = node;
 		}
@@ -169,7 +191,7 @@ function flushEffects() {
 			&& deps.every((value, index) => value === prev[index]);
 		next[at] = Array.isArray(deps) ? deps.slice() : undefined;
 		if (same === true) return;
-		if (String(one.fn).indexOf('scrollIntoView') === -1) return;
+		if (String(one.fn).indexOf('revealBottom') === -1) return;
 		one.fn();
 	});
 	effectDeps = next;
@@ -186,7 +208,8 @@ const api = captured.factory((name) => {
 /* 替身 i18n：只备断言要用到的几个键，其余回退成键名（不影响渲染路径） */
 const DICT = {
 	segCounts: '轮次＆步数', secPrices: '自定义模型价格',
-	priceEdit: '修改', priceSave: '保存', priceRemove: '删除', priceAdd: '添加', priceNewModel: '自定义模型'
+	priceEdit: '修改', priceSave: '保存', priceRemove: '删除', priceAdd: '添加', priceNewModel: '自定义模型',
+	priceTierAllDay: '全时段', priceTierPeak: '高峰时段', priceTierOffPeak: '空闲时段', priceTiered: '峰谷计价'
 };
 const t = (key, params) => {
 	let out = DICT[key] !== undefined ? DICT[key] : key;
@@ -421,14 +444,15 @@ assert.strictEqual(specificity('.dsb-settings .dsb-field input[type=number]')[1]
 	specificity('.dsb-settings input[type=number]')[1] + 1, '价格框比通用规则正好多一个类（.dsb-field）');
 assert.strictEqual(propOf('.dsb-settings .dsb-fields', 'margin-left'), 'auto', '价格三组字段默认整体贴右（左边留给档位名）');
 assert.strictEqual(propOf('.dsb-settings .dsb-fields', 'display'), 'flex', '价格三组字段是 flex 行');
-assert.strictEqual(propOf('.dsb-settings .dsb-tier:not(:has(.dsb-tier-name)) .dsb-fields', 'flex'), '1',
-	'单档价格行（没有档位名）撑满一行');
-assert.strictEqual(propOf('.dsb-settings .dsb-tier:not(:has(.dsb-tier-name)) .dsb-fields', 'justify-content'), 'space-between',
-	'单档价格行双边对齐（左右各贴一边）');
+/* task-19：单档价格行改用「全时段」档位名 + 常规规则；靠"没有档位名"判断的双边对齐规则已被舍弃。
+   这里作为**负断言**钉住，防止它被加回来（加回来会让单档行与两档行的对齐方式不一致）。 */
+assert.strictEqual(cssText.indexOf('dsb-tier:not(:has(.dsb-tier-name))'), -1,
+	'单档价格行的双边对齐规则（:not(:has(.dsb-tier-name))）已被舍弃，不该再出现');
 assert.strictEqual(propOf('.dsb-settings .dsb-action', 'height'), '28px', '按钮高度保持 28px（不被这轮改动波及）');
 assert.strictEqual(propOf('.dsb-settings .dsb-edit-pop', 'gap'), '8px', '编辑浮层 gap 保持 8px');
 assert.strictEqual(propOf('.dsb-settings .dsb-edit-pop', 'padding'), '10px 12px', '编辑浮层 padding 保持 10px 12px');
-console.log('8 样式：价格输入框 24px 高 / 52px 宽、三组字段双边对齐；通用输入框与按钮 28px、浮层 gap:8px/padding:10px 12px');
+console.log('8 样式：价格输入框 24px 高 / 52px 宽；通用输入框与按钮 28px、浮层 gap:8px/padding:10px 12px'
+	+ '（单档行的 :not(:has(.dsb-tier-name)) 双边对齐规则已按 task-19 舍弃）');
 
 /* -------------------------------------------- 10：峰谷联动 linkedTierValue */
 assert.strictEqual(api.linkedTierValue(50, true), '25', '填高峰 50 → 空闲 25（÷2）');
@@ -470,6 +494,62 @@ renderSettings();
 assert.strictEqual(scrollCalls, beforeOpen + 2,
 	'勾上「峰谷计价」后浮层长高一截，要再滚一次（依赖里带 draft.tiered），实际 ' + (scrollCalls - beforeOpen));
 console.log('12 自动滚动：打开编辑区滚一次 · 依赖没变不重滚 · 勾上峰谷计价后再滚一次');
+
+/* -------------------------------------------- 13：勾「峰谷计价」时单档填过的值必须清空 + 未勾时有「全时段」名 */
+/* 第 12 节已经把 paid-real 这张卡打开了（且被勾成了两档），这里直接用它，别再点一次「修改」。 */
+if (collectByClass(cardByKey(renderSettings(), 'paid-real'), 'dsb-tier-name').length > 1) {
+	findInput(collectByClass(cardByKey(renderSettings(), 'paid-real'), 'dsb-inline-check')[0], 'checkbox')
+		.props.onChange({ target: { checked: false } });
+}
+let toggleCard = cardByKey(renderSettings(), 'paid-real');
+assert.deepStrictEqual(collectByClass(toggleCard, 'dsb-tier-name').map(textOf), ['全时段'],
+	'未勾峰谷计价时价格行前面要有「全时段」档位名（task-19）');
+assert.strictEqual(numberValues(toggleCard).length, 3, '未勾时只有三个价格框');
+fieldsOf(toggleCard).forEach((input) => input.props.onChange({ target: { value: '7' } }));
+toggleCard = cardByKey(renderSettings(), 'paid-real');
+assert.deepStrictEqual(numberValues(toggleCard), ['7', '7', '7'], '前置：单档三个框都填上了 7');
+findInput(collectByClass(toggleCard, 'dsb-inline-check')[0], 'checkbox').props.onChange({ target: { checked: true } });
+const tieredCard = cardByKey(renderSettings(), 'paid-real');
+const tieredValues = numberValues(tieredCard);
+assert.ok(tieredValues.length >= 4, '勾上峰谷计价后应至少四个价格框，实际 ' + tieredValues.length);
+assert.deepStrictEqual(tieredValues, tieredValues.map(() => ''),
+	'勾上「峰谷计价」后所有价格框必须全空（单档填过的 7 不得出现在高峰/空闲行里）');
+assert.strictEqual(JSON.stringify(tieredValues).indexOf('7'), -1, '渲染结果里不许残留单档填过的 7');
+assert.deepStrictEqual(collectByClass(tieredCard, 'dsb-tier-name').map(textOf), ['空闲时段', '高峰时段'],
+	'勾上后两档都带档位名，且不再有「全时段」');
+console.log('13 勾「峰谷计价」：单档填过的值全部清空（' + tieredValues.length + ' 个框全为 ""）· 未勾时有「全时段」名');
+
+/* -------------------------------------------- 14：底部自动滚入（task-19）—— 按差值滚 / 没被裁不动 / rAF 补一次 */
+rafQueue.clear();
+POP.box = { top: 100, bottom: 400, height: 300, left: 0, right: 100, width: 100 };   /* 被裁 */
+const beforeWrites14 = scrollCalls;
+const beforeTop14 = SCROLLER.scrollTop;
+/* 触发一次滚动 effect：切换勾选（依赖里带 draft.tiered） */
+findInput(collectByClass(cardByKey(renderSettings(), 'paid-real'), 'dsb-inline-check')[0], 'checkbox')
+	.props.onChange({ target: { checked: false } });
+renderSettings();
+assert.strictEqual(scrollCalls, beforeWrites14 + 1, '被裁时滚一次，实际 ' + (scrollCalls - beforeWrites14));
+assert.strictEqual(SCROLLER.scrollTop - beforeTop14, POP.box.bottom + MARGIN - 300,
+	'每次滚的量 = 浮层底边 + 12px 余量 − 容器可视底边（不是"底部对齐"那样平白上滚）');
+/* 没被裁：浮层底边收进容器内 ⇒ 一动不动 */
+POP.box = { top: 40, bottom: 240, height: 200, left: 0, right: 100, width: 100 };
+const beforeInside = scrollCalls;
+findInput(collectByClass(cardByKey(renderSettings(), 'paid-real'), 'dsb-inline-check')[0], 'checkbox')
+	.props.onChange({ target: { checked: false } });
+renderSettings();
+assert.strictEqual(scrollCalls, beforeInside, '浮层完全在视野里时一动不动（旧版会平白上滚）');
+/* 稳定后补一次：下一帧再测，仍被裁就再补一笔 */
+POP.box = { top: 100, bottom: 400, height: 300, left: 0, right: 100, width: 100 };
+rafQueue.clear();
+const beforeRaf = scrollCalls;
+findInput(collectByClass(cardByKey(renderSettings(), 'paid-real'), 'dsb-inline-check')[0], 'checkbox')
+	.props.onChange({ target: { checked: true } });
+renderSettings();
+assert.strictEqual(scrollCalls, beforeRaf + 1, '依赖变化后立刻滚一次');
+flushRaf();
+assert.strictEqual(scrollCalls, beforeRaf + 2, '下一帧再补一次（rAF，不是定时器）');
+assert.strictEqual(rafQueue.size, 0, '补滚走的是 rAF，不新增定时器');
+console.log('14 底部自动滚入：被裁时按"底边 + 12px − 容器底"滚 · 没被裁一动不动 · 下一帧补一次（rAF）');
 
 /* -------------------------------------------- 9：host 收到带 null 的价格库照样只按数值计价 */
 const BEIJING = 8 * 3600 * 1000;

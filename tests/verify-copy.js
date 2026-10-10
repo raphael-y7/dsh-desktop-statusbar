@@ -68,10 +68,13 @@ const ZH = {
 	priceNewModel: '自定义模型',
 	secPricesHint: '填写你使用的模型单价（每百万 tokens / {currency}）。',
 	priceTierPeak: '高峰时段',
-	priceTierOffPeak: '空闲时段'
+	priceTierOffPeak: '空闲时段',
+	/* task-19：未勾峰谷计价时价格行前面显示「全时段」档位名，中英都要有 */
+	priceTierAllDay: '全时段'
 };
 
 const EN = {
+	priceTierAllDay: 'All day',
 	intro: 'Replaces the stats line under the message input. Select the fields to show, drag to reorder, or set model prices.',
 	secSegments: 'Stats fields',
 	secSegmentsHint: 'Select to show; drag to reorder.',
@@ -149,7 +152,6 @@ const STYLES = [
 	['分列列表高度不越过屏幕可用高度的一半', 'max-height:calc(50vh - 46px)'],
 	['分列子视图放开面板宽度上限（560px 会把三列挤扁）', 'dsb-tip.dsb-meter-wide{max-width:min(880px,100vw - 24px)}'],
 	['价格三组字段整体贴右（有档位名那两行）', 'dsb-fields{display:flex;flex-wrap:wrap;gap:8px;margin-left:auto}'],
-	['单档价格行双边对齐（没有档位名的那种）', 'dsb-tier:not(:has(.dsb-tier-name)) .dsb-fields{flex:1;justify-content:space-between}'],
 	['价格输入框够放 xx.xx（52px 宽、24px 高；选择器带 input[type] 才压得住通用规则）', 'dsb-field input[type=text],.dsb-settings .dsb-field input[type=number]{width:52px;height:24px;text-align:right}'],
 	['峰谷计价勾选只占自身宽度', 'dsb-inline-check{display:flex;align-self:flex-start'],
 	['勾选与计价单位同一行两端对齐', 'dsb-tier-head{display:flex;align-items:center;justify-content:space-between'],
@@ -197,6 +199,20 @@ STYLES.forEach(([label, needle]) => {
 	}
 	bad += 1;
 	console.log('× 样式 ' + label + ' 缺失: ' + needle);
+});
+
+/* task-19：单档价格行改用「全时段」档位名 + 常规规则，靠"没有档位名"判断的双边对齐规则已被舍弃。
+   这里作为**负断言**钉住，防止有人把它加回来（加回来会让单档行的对齐方式与两档行不一致）。 */
+const GONE = [
+	['单档价格行双边对齐（已被舍弃：改由「全时段」档位名 + 常规规则）', 'dsb-tier:not(:has(.dsb-tier-name))']
+];
+GONE.forEach(([label, needle]) => {
+	if (raw.indexOf(needle) >= 0) {
+		bad += 1;
+		console.log('× 样式 ' + label + ' 仍在: ' + needle);
+		return;
+	}
+	console.log('= 样式 ' + label + '（已移除）');
 });
 
 console.log('');

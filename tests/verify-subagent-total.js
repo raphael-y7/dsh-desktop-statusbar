@@ -67,7 +67,8 @@ function loadClient(stored) {
 	assert.ok(code.includes(marker), 'client.js 的 exports.apply 标记找不到');
 	code = code.replace(marker,
 		'\t\texports.__test = { segmentView, subagentSummary, subagentOf, mergeTokenParts, sessionTokenParts,'
-		+ ' billableParts, tokenPanelView, SUBAGENT_REFRESH_MS, SUBAGENT_TIMEOUT_MS, BALANCE_POLL_MS };\n' + marker);
+		+ ' billableParts, tokenPanelView, SUBAGENT_REFRESH_MS, SUBAGENT_TIMEOUT_MS, BALANCE_POLL_MS,'
+		+ ' nextSubagentState, applyTurnFloor, SUBAGENT_STATE_EMPTY };\n' + marker);
 
 	const store = new Map();
 	if (stored !== undefined) store.set('dsh.desktopStatusBar.v1', JSON.stringify(stored));
@@ -564,7 +565,8 @@ const zeroTokens = () => ({ input: 0, cacheRead: 0, cacheWrite: 0, output: 0 });
 	assert.ok(turnSlice.indexOf('null') >= 0, '不一致时当 null（改由 host 代推）');
 	console.log('二 ③b F1 客户端：正确窗口 ¥4.00/2,000,000 · 陈旧窗口 ¥5.00/3,000,000（偏大 ¥1）· 闸门按轮号判起点');
 
-	/* ④ 拿不到数据 / 失败 / 形状异常：退回"仅本会话"，且界面上没有"加载中"字样 */
+	/* ④ 场景限定为**首次加载（还没有旧值）**：拿不到数据就退回"仅本会话"。
+	   task-20 起，同轮内已经成功拿到过时不许再退回（要沿用上一次的值）—— 那条在 ⑦ 组验。 */
 	const BAD = [
 		{ name: '整块缺失', sub: undefined },
 		{ name: '两段都是 null', sub: { session: null, turn: null } },
@@ -596,7 +598,7 @@ const zeroTokens = () => ({ input: 0, cacheRead: 0, cacheWrite: 0, output: 0 });
 	assert.strictEqual(mixed.text, '总计 ¥3.00', 'cost 不是数字 ⇒ 金额只算本会话');
 	assert.strictEqual(mixed.tip.panel.totalText, '6,000,003', '未命中多出的 3 个 token 照样并进去');
 	assert.strictEqual(JSON.stringify(mixed).indexOf('NaN'), -1, '不许把 NaN 带到界面上');
-	console.log('二 ④ 六种缺数据/异常形态退回仅本会话；部分坏字段只丢坏格子（无「加载中」字样）');
+	console.log('二 ④ 首次加载（还没有旧值）：六种缺数据/异常形态退回仅本会话；部分坏字段只丢坏格子（无「加载中」字样）');
 
 	/* ⑤ 节流 1 秒（用户要"实时"），且不新增定时器 */
 	assert.strictEqual(api.SUBAGENT_REFRESH_MS, 1000, '节流 60s → 1s（用户要实时）');
@@ -690,6 +692,89 @@ const zeroTokens = () => ({ input: 0, cacheRead: 0, cacheWrite: 0, output: 0 });
 	});
 	console.log('二 ⑥ 会话级三项并入队友：首字 0.5s→0.6s · 速度 2000→1800t/s · 命中率 60.00%→50.00%'
 		+ '（分母含缓存写入）· 缺半组整组不计 · 坏 stats 逐字退回且无 NaN/Infinity · 本轮与极值不含队友');
+
+	/* ⑦ 跨请求状态机（task-20）：「本轮」一轮之内单调不减、没拿到不归零、换轮归零重算。
+	   用户实测症状是"同一轮内跳大跳小"（¥2.25 → ¥1.00 → ¥2.25）：每年两问里任一次
+	   没拿到就把队友那段当 0。实现方导出了两个纯函数 + 空状态，这里直接驱动它们。 */
+	const EMPTY = api.SUBAGENT_STATE_EMPTY;
+	assert.deepStrictEqual(deep(EMPTY), { sessionId: null, turnKey: null, sessionPayload: null, turnPayload: null },
+		'空状态形状：没有会话 / 没有轮 / 两段都没有值');
+	const payloadOf = (cost, output) => ({
+		ok: true, sessionId: 'p-1', children: [],
+		total: { cost: cost, calls: 1, tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: output } }
+	});
+	const TURN_A = payloadOf(2.25, 1000);
+	const TURN_B = payloadOf(3.5, 2000);
+	const act = (sessionId, turnKey, slice, ok, value) => ({ sessionId: sessionId, turnKey: turnKey, slice: slice, ok: ok, value: value });
+
+	/* ⑦1 同轮内「成功 → 失败/超时 → 成功」：数字不回落 */
+	const st1 = api.nextSubagentState(EMPTY, act('p-1', 7, 'turn', true, TURN_A));
+	assert.deepStrictEqual(deep(st1.turnPayload), deep(TURN_A), '成功 ⇒ 存下这一份值');
+	const st1Snapshot = JSON.stringify(deep(st1));
+	const st2 = api.nextSubagentState(st1, act('p-1', 7, 'turn', false, null));
+	assert.deepStrictEqual(deep(st2.turnPayload), deep(TURN_A), '同轮内失败/超时 ⇒ 沿用上一次成功的值（不归零）');
+	assert.strictEqual(JSON.stringify(deep(st1)), st1Snapshot, '纯函数：不改入参');
+	const st3 = api.nextSubagentState(st2, act('p-1', 7, 'turn', true, TURN_B));
+	assert.deepStrictEqual(deep(st3.turnPayload), deep(TURN_B), '下一次成功再把值更新上去');
+	/* 下限那条也喂一遍：失败那一拍调用方传 null，由同轮粘性下限顶住 */
+	const step = (value) => { const one = api.applyTurnFloor(hold, 'p-1', 7, value); hold = one.hold; return one.value; };
+	let hold = null;
+	assert.deepStrictEqual([step(2.25), step(null), step(2.25)], [2.25, 2.25, 2.25],
+		'失败那一拍传 null ⇒ 被下限顶住，金额不回落');
+
+	/* ⑦2 同轮内窗口变小（2.5 → 0.5 → 0.1）：显示单调不减 */
+	hold = null;
+	assert.deepStrictEqual([step(2.5), step(0.5), step(0.1)], [2.5, 2.5, 2.5],
+		'一轮之内窗口收窄也不能跳小（只增不减）');
+
+	/* ⑦3 换轮：本轮归零重算，且下限作废（不许上一轮的较大值顶住） */
+	hold = null;
+	assert.strictEqual(step(2.5), 2.5, '第 7 轮：先显示 2.5');
+	const rolled = api.applyTurnFloor(hold, 'p-1', 8, 0.1);
+	assert.strictEqual(rolled.value, 0.1, '换轮 ⇒ 下限作废，用新一轮的真实值（不许 2.5 顶住）');
+	const turnRolled = api.nextSubagentState(st3, act('p-1', 8, 'turn', false, null));
+	assert.strictEqual(turnRolled.turnPayload, null, '换轮后本轮窗口归零（不许沿用上一轮的旧值）');
+
+	/* ⑦4 换会话：本轮窗口清空；整会话那段跨轮保留（否则「总计」每轮抖一下） */
+	const sess = api.nextSubagentState(EMPTY, act('p-1', 7, 'session', true, TURN_A));
+	const nextTurn = api.nextSubagentState(sess, act('p-1', 8, 'turn', false, null));
+	assert.deepStrictEqual(deep(nextTurn.sessionPayload), deep(TURN_A), '整会话那段跨轮保留');
+	assert.strictEqual(nextTurn.turnPayload, null, '本轮窗口随轮清空');
+	const otherSession = api.nextSubagentState(nextTurn, act('p-2', 1, 'session', false, null));
+	assert.strictEqual(otherSession.sessionPayload, null, '换会话 ⇒ 整会话那段也要清空（不拿别的会话的值顶）');
+	assert.strictEqual(otherSession.turnPayload, null, '换会话 ⇒ 本轮窗口同样清空');
+
+	/* ⑦5 `amount === null`（界面横杠）时下限不许把它降成 0 */
+	const none = api.applyTurnFloor(null, 'p-1', 7, null);
+	assert.strictEqual(none.value, null, '没有下限时 null 原样传出（横杠不该变成 ¥0.00）');
+	assert.strictEqual(none.hold.value, 0, '盒子里记的下限仍是 0');
+	hold = api.applyTurnFloor(null, 'p-1', 7, 1.5).hold;
+	const held = api.applyTurnFloor(hold, 'p-1', 7, null);
+	assert.strictEqual(held.value, 1.5, '同轮内已显示过金额 ⇒ 不该退回横杠');
+	assert.notStrictEqual(held.value, 0, '也不许把旧值降成 0');
+	const unknownTurn = api.applyTurnFloor(hold, 'p-1', null, 0.1);
+	assert.strictEqual(unknownTurn.value, 0.1, '认不出轮次（turnKey 为 null）⇒ 不做粘性');
+
+	/* ⑦6 首次加载（还没有旧值）⇒ 两段都是 null ⇒ 界面按"仅本会话"显示 */
+	assert.deepStrictEqual(deep(api.nextSubagentState(EMPTY, act('p-1', 7, 'turn', false, null))),
+		deep({ sessionId: 'p-1', turnKey: 7, sessionPayload: null, turnPayload: null }),
+		'首次就没拿到 ⇒ 本轮窗口 null（没有旧值可留）');
+	assert.strictEqual(api.applyTurnFloor(null, 'p-1', 7, null).value, null, '首次也没金额 ⇒ 横杠');
+
+	/* ⑦7 端到端：状态机的结果喂给界面，用户看到的「本轮」同样不跳 */
+	const turnText = (state) => api.segmentView('lastCost',
+		Object.assign({}, baseSrc, { subagent: { session: SUB_OK.session, turn: state.turnPayload } }), t).text;
+	let live = api.nextSubagentState(EMPTY, act('p-1', 11, 'turn', true, TURN_A));
+	const shownOk = turnText(live);
+	assert.strictEqual(shownOk, '本轮 ¥5.25', '本轮 = 本会话 ¥3 + 队友本轮 ¥2.25');
+	live = api.nextSubagentState(live, act('p-1', 11, 'turn', false, null));
+	assert.strictEqual(turnText(live), shownOk, '失败那一拍界面数字不变（不跳小）');
+	live = api.nextSubagentState(live, act('p-1', 11, 'turn', true, TURN_A));
+	assert.strictEqual(turnText(live), shownOk, '恢复那一拍也不跳大');
+	live = api.nextSubagentState(live, act('p-1', 12, 'turn', false, null));
+	assert.strictEqual(turnText(live), '本轮 ¥3.00', '换轮 ⇒ 本轮归零重算（只剩本会话 ¥3）');
+	console.log('二 ⑦ 跨请求状态机：同轮内 ¥2.25 失败拍不变、窗口收窄不退（2.5→0.5→0.1 仍 2.5）'
+		+ '、换轮归零且下限作废、换会话两段清空（整会话跨轮保留）、null 不降 0、首次退回仅本会话');
 
 	console.log('');
 	console.log('SUBAGENT TOTAL CHECKS PASSED');

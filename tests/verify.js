@@ -203,6 +203,7 @@ const zh = {
 	holidayUpdateOk: '已写入 {year} 年 {count} 个节假日',
 	priceInput: '输入(缓存未命中)', priceCacheRead: '输入(缓存命中)', priceOutput: '输出',
 	priceTierPeak: '高峰时段', priceTierOffPeak: '空闲时段', priceTiered: '峰谷计价',
+	priceTierAllDay: '全时段',
 	priceEdit: '修改', priceSave: '保存', priceCurrency: '币种',
 	secPricesHint: '填写你使用的模型单价。', peakNow: '当前处于{period}', offPeakNow: '当前处于{period}',
 	peakPeriod: '高峰期', offPeakPeriod: '空闲时段',
@@ -390,7 +391,14 @@ assert.ok(settings.includes('数据字段'), 'settings section should render');
 assert.ok(settings.includes('按住拖动调整顺序'), 'settings hint should describe drag reorder');
 assert.ok(!settings.includes('基础'), '设置页不再有「基础」区块');
 assert.ok(!settings.includes('启用状态栏') && !settings.includes('允许换行'), '启用状态栏 / 允许换行 两个开关已移除');
-assert.ok(code.includes('scrollIntoView({ block: "nearest"'), '编辑浮层只在被遮住时滚动，别平白往上滚');
+/* task-19：编辑浮层底部自动滚入改成"按底边差值滚最近的可滚祖先 + 下一帧补一次"，
+   不再用浏览器自带的 scrollIntoView（它只保证顶部对齐，且滚不动面板内部的可滚容器）。 */
+assert.ok(!code.includes('scrollIntoView('), '编辑浮层不该再用 scrollIntoView（task-19 已换实现）');
+assert.ok(code.includes('function revealBottom(node)'), '底部自动滚入要有独立实现');
+assert.ok(code.includes('scroller.scrollTop = (typeof scroller.scrollTop === "number" ? scroller.scrollTop : 0) + overflow'),
+	'按"底边 + 余量 − 容器可视底边"的差值加 scrollTop');
+assert.ok(code.includes('if (overflow <= 0) return;'), '没被遮住时一动不动（不平白往上滚）');
+assert.ok(code.includes('window.requestAnimationFrame(retry)'), '稳定后补滚一次走 rAF（不是定时器）');
 assert.ok(settings.includes('上下文占用'), '设置页要出现上下文占用开关');
 
 /* ------------------------------------------- 出厂默认：点「恢复默认设置」的顺序与勾选 */
@@ -432,6 +440,96 @@ assert.strictEqual(saved.currency, 'CNY', '恢复默认设置应恢复币种');
 assert.strictEqual(saved.contextMeter, true, '恢复默认设置应恢复上下文占用开关');
 assert.deepStrictEqual(segmentNames(renderSettings()), factoryLabels, '恢复默认设置后设置页顺序应等于出厂顺序');
 console.log('恢复默认设置后：', saved.segments.join(' → '));
+
+/* 「恢复默认」只回**界面配置**，不得动用户的价格库：改过的官方模型、自造模型、明确填的 0 都要原样还在。
+   关键：插件的 config 是**模块加载时读一次**（`let config = loadConfig()`），之后 `setConfig` 只合并
+   内存里那一份并写回 store —— 所以"加载后再 store.set 换配置"是无效的（那份新配置进不了内存）。
+   这里按"**先种配置、再加载模块**"另起一份沙箱 + 独立 store 来验，免得动到上面主流程的夹具。 */
+{
+	const store2 = new Map();
+	const USER_MODELS = {
+		'deepseek-flash': {
+			tiered: false,
+			peak: { input: 1.5, cacheRead: 0, cacheWrite: 0, output: 8 },
+			offPeak: { input: 0.02, cacheRead: 0.02, cacheWrite: 0, output: 0.1 }
+		},
+		'my-own-model': {
+			tiered: true,
+			peak: { input: 9, cacheRead: 1, cacheWrite: 0, output: 20 },
+			offPeak: { input: 4.5, cacheRead: 0.5, cacheWrite: 0, output: 10 }
+		},
+		'zero-model': {
+			tiered: false,
+			peak: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
+			offPeak: { input: null, cacheRead: null, cacheWrite: null, output: null }
+		}
+	};
+	store2.set(CONFIG_KEY, JSON.stringify({
+		version: 5, priceVersion: 2, enabled: true, wrap: false,
+		segments: MESSY_SEGMENTS.slice(), hidden: ['counts'],
+		currency: 'USD', contextMeter: false, models: USER_MODELS
+	}));
+	let captured2 = null;
+	const window2 = Object.assign({}, fakeWindow, {
+		opened: [],
+		localStorage: {
+			getItem: (k) => (store2.has(k) ? store2.get(k) : null),
+			setItem: (k, v) => { store2.set(k, v); },
+			removeItem: (k) => { store2.delete(k); }
+		}
+	});
+	window2.__ModuleLoader__ = { load: (entry) => { captured2 = entry; } };
+	const sandbox2 = {
+		window: window2,
+		document: {
+			querySelector: () => null,
+			createElement: () => ({ dataset: {}, style: {}, appendChild() {} }),
+			head: { appendChild() {} },
+			addEventListener: () => {}, removeEventListener: () => {}
+		},
+		console, Promise, Date, Math, JSON, Object, Array, Number, String, Boolean, Symbol, Set, Map, Error,
+		setTimeout: () => 0, clearTimeout: () => {}
+	};
+	sandbox2.globalThis = sandbox2;
+	vm.createContext(sandbox2);
+	vm.runInContext(code, sandbox2, { filename: 'client.js' });
+	const api2 = captured2.factory((name) => {
+		if (name === 'react') return reactStub;
+		throw new Error('unexpected require: ' + name);
+	}).__test;
+	const modelsInMemory = api2.snapshot().models;   /* 加载后内存里那一份（可能被归一化过，所以拿它当基准） */
+	assert.deepStrictEqual(Object.keys(modelsInMemory).sort(), ['deepseek-flash', 'my-own-model', 'zero-model'],
+		'前置：内存里的价格库就是用户那份（3 个模型，没被官方参考价合并）');
+	const hooks2 = makeHooks();
+	const resetBtn2 = (function find(node) {
+		let found = null;
+		(function walk(n) {
+			if (found !== null || n === null || n === undefined || typeof n !== 'object') return;
+			if (Array.isArray(n)) { n.forEach(walk); return; }
+			if (n.type === 'button' && textOf(n) === t('reset')) { found = n; return; }
+			walk(n.children);
+		})(node);
+		return found;
+	})(withHooks(hooks2, () => api2.SettingsSection(props)));
+	assert.ok(resetBtn2 !== null, '（独立沙箱）恢复默认按钮仍在');
+	resetBtn2.props.onClick();
+	const afterReset = JSON.parse(store2.get(CONFIG_KEY));
+	assert.deepStrictEqual(afterReset.segments, FACTORY_ORDER, '界面配置仍要回到出厂顺序');
+	assert.deepStrictEqual(afterReset.hidden, [], '界面配置仍要清空未勾选标记');
+	assert.strictEqual(afterReset.currency, 'CNY', '界面配置仍要回到默认币种');
+	assert.strictEqual(afterReset.contextMeter, true, '界面配置仍要回到默认开关');
+	/* 价格库逐字段不变（用加载后的内存那份当基准，避免把归一化当成 bug）。
+	   注意 vm 出来的对象原型与主域不同，deepStrictEqual 会因此失败 —— 两边都先 JSON 化。 */
+	const plain = (value) => JSON.parse(JSON.stringify(value));
+	assert.deepStrictEqual(plain(afterReset.models), plain(modelsInMemory),
+		'「恢复默认」不得动价格库：改过的官方模型 / 自造模型 / 明确填的 0 都要逐字段还在');
+	assert.strictEqual(afterReset.models['deepseek-flash'].peak.input, 1.5, '用户改过的官方模型价还在');
+	assert.strictEqual(afterReset.models['deepseek-flash'].peak.cacheRead, 0, '用户明确填的 0 还在（不是 null）');
+	assert.deepStrictEqual(afterReset.models['my-own-model'].peak, { input: 9, cacheRead: 1, cacheWrite: 0, output: 20 },
+		'自造模型两档价原样保留');
+	assert.strictEqual(afterReset.models['zero-model'].peak.cacheRead, 0, '明确填 0 的条目仍是 0');
+	console.log('恢复默认：界面配置回默认，价格库逐字段不变（' + Object.keys(afterReset.models).length + ' 个模型）');
+}
 
 /* ------------------------------------------- 价格库：折叠两态 / 峰谷计价 / 草稿 */
 function collectByClass(tree, className) {
@@ -496,7 +594,7 @@ findInput(tieredLabel, 'checkbox').props.onChange({ target: { checked: false } }
 priceTree = renderSettings();
 cards = modelCards(priceTree);
 assert.strictEqual(collectByClass(cards[0], 'dsb-field').length, 3, '全天同价应只有 3 个输入框');
-assert.strictEqual(collectByClass(cards[0], 'dsb-tier-name').length, 0, '全天同价不显示档位标签');
+assert.deepStrictEqual(collectByClass(cards[0], 'dsb-tier-name').map(textOf), ['全时段'], '全天同价要显示「全时段」档位名（task-19：不再靠"没有档位名"做双边对齐）');
 
 /* 改值 → 保存 → 写入配置并收起 */
 findInput(cards[0], 'number').props.onChange({ target: { value: '1.5' } });
@@ -510,7 +608,9 @@ assert.ok(buttonByLabel(cards[0], '修改') !== undefined, '收起后应回到�
 const flash = savedModels()['deepseek-flash'];
 assert.strictEqual(flash.tiered, false, '全天同价标记应写入配置');
 assert.strictEqual(flash.peak.cacheRead, 1.5, '输入(缓存命中) 的值应写入 peak');
-/* 全天同价只影响"用哪一档"（tiered），空闲价照实留着：取消勾选再勾回来不会丢 */
+/* 全天同价只影响"用哪一档"（tiered），取消勾选**不丢已填值**：
+   单档显示/使用的就是 peak 那一行（peak → peak 同一行，不存在串档），
+   "只在勾上时清空"是 Lead 的裁决（双向清空会静默丢掉用户没动过的价格）。 */
 assert.strictEqual(flash.offPeak.cacheRead, 0.02, '取消勾选峰谷计价后，空闲价仍保留原值');
 
 /* 计价单位：切 USD 时内置参考价跟着换（改过的保留），卡片开着的话框里数字也要立刻换 */
