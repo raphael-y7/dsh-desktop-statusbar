@@ -404,15 +404,13 @@ assert.ok(code.includes('window.requestAnimationFrame(retry)'), '稳定后补滚
 /* task-21：底边滚入统一成一个钩子 `useRevealBottom(ref, active, extraKey)`，**恰好两处调用**
    （价格编辑浮层 / 币种菜单）；气泡、跟手浮层、悬停提示有意不接。 */
 const revealLines = code.split('\n').filter((one) => one.indexOf('useRevealBottom(') !== -1);
-assert.strictEqual(revealLines.length, 3,
-	'useRevealBottom 恰好三处调用（定义那行是 `useRevealBottom = (`，不匹配）：价格浮层 / 条目币种菜单 / 默认币种菜单，实际 ' + revealLines.length);
+assert.strictEqual(revealLines.length, 2,
+	'useRevealBottom 恰好两处调用（价格浮层 / 条目币种菜单；顶部默认币种选择器 task-24 已删），实际 ' + revealLines.length);
 assert.strictEqual((code.match(/const useRevealBottom = \(ref, active, extraKey\)/g) || []).length, 1,
 	'只有一份实现（不要各写一份）');
 assert.ok(code.includes('useRevealBottom(editPopRef, editing !== null'), '第一处：价格编辑浮层');
 assert.ok(code.includes('useRevealBottom(currencyMenuRef, currencyOpen === true, null)'), '第二处：条目币种菜单');
-assert.ok(code.includes('useRevealBottom(defaultCurrencyMenuRef, defaultCurrencyOpen === true, null)'),
-	'第三处：新增条目的默认币种菜单（task-22 新加）');
-const wiredRefs = ['editPopRef', 'currencyMenuRef', 'defaultCurrencyMenuRef'];
+const wiredRefs = ['editPopRef', 'currencyMenuRef'];
 revealLines.forEach((one) => {
 	assert.ok(wiredRefs.some((ref) => one.indexOf(ref) !== -1),
 		'useRevealBottom 只允许接在这三个下拉/浮层上，实际这行：' + one.trim());
@@ -424,10 +422,9 @@ revealLines.forEach((one) => {
 assert.strictEqual((code.match(/setInterval\(/g) || []).length, 2, '定时器仍只有两处（时钟 + 余额轮询）');
 assert.ok(code.includes('className: "dsb-select-menu", role: "listbox", ref: menuRef'),
 	'币种菜单的 ref 挂在**菜单节点**上（不是那个按钮）');
-assert.ok(code.includes('currencySelect("__entrycur", { kind: "entry", draft: draft }, currencyOpen, setCurrencyOpen, currencyMenuRef'),
+assert.ok(code.includes('currencySelect("__entrycur", draft, currencyOpen, setCurrencyOpen, currencyMenuRef'),
 	'条目级选择器把菜单 ref 传进 currencySelect');
-assert.ok(code.includes('currencySelect("__defcurpick", { kind: "default" }, defaultCurrencyOpen, setDefaultCurrencyOpen, defaultCurrencyMenuRef'),
-	'默认币种选择器把菜单 ref 传进 currencySelect');
+
 assert.ok(settings.includes('上下文占用'), '设置页要出现上下文占用开关');
 
 /* ------------------------------------------- 出厂默认：点「恢复默认设置」的顺序与勾选 */
@@ -651,8 +648,7 @@ const RATE = 6.742424242424242;   /* 人民币 ÷ 该值 = 美元（官方两张
 const proCard = modelCards(priceTree).filter((one) => textOf(one).indexOf('V4-Pro') !== -1)[0];
 buttonByLabel(proCard, '修改').props.onClick();
 priceTree = renderSettings();
-assert.strictEqual(collectByClass(priceTree, 'dsb-default-currency').length, 1,
-	'价格区顶部有「新增条目的默认币种」那个选择器');
+assert.strictEqual(collectByClass(priceTree, 'dsb-default-currency').length, 0, '顶部选择器已删除（task-24），条目选择器在浮层里');
 const entryPick = collectByClass(collectByClass(cardByKey(priceTree, 'deepseek-v4-pro'), 'dsb-edit-pop')[0], 'dsb-currency-pick')[0];
 assert.ok(entryPick !== undefined, '条目级选择器在**编辑浮层里**（不是顶部那个）');
 const entryBtn = collectByClass(entryPick, 'dsb-select-btn')[0];
@@ -668,10 +664,13 @@ usdItem.props.onClick();
 const afterEntry = JSON.parse(store.get(api.STORAGE_KEY));
 assert.strictEqual(afterEntry.models['deepseek-v4-pro'].currency, 'USD', '被切的那一条改成 USD');
 assert.deepStrictEqual(afterEntry.models['deepseek-v4-pro'].peak,
-	{ input: 1.334831, cacheRead: 0.044494, cacheWrite: 0, output: 4.004494 },
-	'该条目的数字按参考价比例换算（¥9 / 0.3 / 27 ÷ ' + RATE + '，6 位小数）');
+	{ input: 1.32, cacheRead: 0.044, cacheWrite: 0, output: 3.96 },
+	'官方内置条目切币种 ⇒ 整条换成官方**另一套参考价表**（不是按汇率换算）');
 assert.deepStrictEqual(afterEntry.models['deepseek-v4-pro'].offPeak,
-	{ input: 0.667416, cacheRead: 0.022247, cacheWrite: 0, output: 2.002247 }, '空闲档同样换算');
+	{ input: 0.66, cacheRead: 0.022, cacheWrite: 0, output: 1.98 }, '空闲档同样等于官方另一套表');
+assert.strictEqual(afterEntry.models['deepseek-v4-pro'].tiered, true, 'tiered 标记保留');
+assert.notStrictEqual(afterEntry.models['deepseek-v4-pro'].peak.input, 1.334831,
+	'不等于按比率算出来的 1.334831（用户明确反对按汇率改数值）');
 assert.deepStrictEqual(afterEntry.models['deepseek-flash'], beforeModels['deepseek-flash'],
 	'其它条目**逐字段不变**（切换只作用被切的那一条）');
 assert.strictEqual(afterEntry.currency, 'CNY', '切换条目币种**不改写**默认币种字段');
@@ -686,17 +685,43 @@ const shownValues = [];
 	if (node.type === 'input') shownValues.push(node.props.value);
 	walkInputs(node.children);
 })(editPop);
-assert.ok(shownValues.indexOf('4.004494') !== -1,
-	'正在编辑的这张卡立刻换成新币种的数字，实际 ' + JSON.stringify(shownValues));
-/* 顶部选择器：只管"新增条目的默认币种"，一个已有条目都不动 */
-const defaultBtn = collectByClass(collectByClass(renderSettings(), 'dsb-default-currency')[0], 'dsb-select-btn')[0];
-assert.strictEqual(textOf(defaultBtn), 'CNY', '顶部默认币种初值 CNY');
-defaultBtn.props.onClick();
+assert.ok(shownValues.indexOf('3.96') !== -1,
+	'正在编辑的这张卡立刻换成官方另一套表的数字，实际 ' + JSON.stringify(shownValues));
+/* task-24：顶部那个"新增条目的默认币种"选择器**整个删除**（用户说还残留）—— 负断言钉住 */
+assert.strictEqual(collectByClass(renderSettings(), 'dsb-default-currency').length, 0, '顶部默认币种选择器已删除');
+assert.strictEqual(code.indexOf('dsb-default-currency'), -1, 'CSS/代码里不该再有 dsb-default-currency');
+assert.strictEqual(code.indexOf('setDefaultCurrency'), -1, 'setDefaultCurrency 已删除');
+['defaultCurrencyOpen', 'defaultCurrencyMenuRef', 'defaultCurrencyRef', 'picker.kind'].forEach((gone) => {
+	assert.strictEqual(code.indexOf(gone), -1, '顶部选择器的残留标识不该再出现：' + gone);
+});
+const settingsTextNoPick = textOf(renderSettings());
+assert.strictEqual(settingsTextNoPick.indexOf('默认币种'), -1, '设置页不该再有"默认币种"文字');
+assert.strictEqual(settingsTextNoPick.indexOf('default currency'), -1, '设置页不该再有 default currency 文字');
+assert.strictEqual(collectByClass(renderSettings(), 'dsb-currency-pick').length, 1, '币种选择器只剩**打开的那张卡浮层里**那一个');
+/* 改过数值的条目（deepseek-flash 手改过）切币种 ⇒ 数值一字不变、只改 currency */
+buttonByLabel(cardByKey(priceTree, 'deepseek-flash'), '修改').props.onClick();
+priceTree = renderSettings();
+const flashBefore = JSON.parse(store.get(api.STORAGE_KEY)).models['deepseek-flash'];
+const flashPick = collectByClass(collectByClass(cardByKey(priceTree, 'deepseek-flash'), 'dsb-edit-pop')[0], 'dsb-currency-pick')[0];
+assert.ok(flashPick !== undefined, '改过数值的条目也有条目级选择器');
+collectByClass(flashPick, 'dsb-select-btn')[0].props.onClick();
 priceTree = renderSettings();
 collectByClass(priceTree, 'dsb-select-item').filter((one) => textOf(one) === 'USD')[0].props.onClick();
-const afterDefault = JSON.parse(store.get(api.STORAGE_KEY));
-assert.strictEqual(afterDefault.currency, 'USD', '默认币种写进配置（它只管新增条目）');
-assert.deepStrictEqual(afterDefault.models, afterEntry.models, '切换默认币种**一个已有条目都不动**');
+const flashAfter = JSON.parse(store.get(api.STORAGE_KEY)).models['deepseek-flash'];
+assert.strictEqual(flashAfter.currency, 'USD', '改过数值的条目：只改币种标记');
+assert.deepStrictEqual({ peak: flashAfter.peak, offPeak: flashAfter.offPeak, tiered: flashAfter.tiered },
+	{ peak: flashBefore.peak, offPeak: flashBefore.offPeak, tiered: flashBefore.tiered },
+	'改过数值的条目切币种 ⇒ 数值一字不变（不按比率换算）');
+/* task-23：三处新增文案已回退 —— 界面不出现这些文字，后两个 i18n 键连键删除 */
+const sectionText = textOf(renderSettings());
+['每个条目按它自己的币种计价', 'Each entry is priced in its own currency', '新增条目的默认币种', '本条目的币种'].forEach((bad) => {
+	assert.strictEqual(sectionText.indexOf(bad), -1, '设置页不该再出现这段文字：' + bad);
+});
+['priceEntryCurrency', 'priceDefaultCurrency'].forEach((key) => {
+	assert.strictEqual(code.indexOf(key), -1, 'i18n 里这个键（中英）都已删除：' + key);
+});
+assert.strictEqual(collectByClass(renderSettings(), 'dsb-default-currency').length, 0, '顶部默认币种选择器已删除（task-24）');
+assert.strictEqual(collectByClass(renderSettings(), 'dsb-currency-pick').length, 1, '条目级币种选择器仍在（只是没有文字标签）');
 console.log('计价单位：条目级切换只换算这一条（¥9→$1.334831）· 其它条目逐字段不变 · 顶部选择器只管新增条目的默认币种');
 
 /* 点别处收起编辑浮层并丢弃草稿：effect 里挂 document click → 落在浮层外就 cancelEdit。
@@ -728,8 +753,7 @@ assert.ok(added !== undefined, '新模型应按 GLM 全大写规则显示');
 assert.strictEqual(collectByClass(added, 'dsb-field').length, 3, '新模型应默认展开且为单档（3 个输入框）');
 assert.strictEqual(savedModels()['glm-5.3-flash'].tiered, false, '新模型默认不勾峰谷计价');
 assert.ok(savedModels()['glm-5.3-flash'] !== undefined, '新模型应写入配置');
-assert.strictEqual(savedModels()['glm-5.3-flash'].currency, 'USD',
-	'新增条目带上「新增条目的默认币种」（上一节已把它切成 USD）');
+assert.strictEqual(savedModels()['glm-5.3-flash'].currency, 'CNY', '新增条目带默认币种 CNY（顶部选择器已删除，写死 CNY）');
 assert.strictEqual(collectByClass(priceTree, 'dsb-models').length, 1, '模型列表应有一个容器');
 assert.deepStrictEqual(collectByClass(priceTree, 'dsb-model-name').map(textOf),
 	['DeepSeek-Flash', 'DeepSeek-V4-Pro', 'GLM-5.3-Flash'], '新模型应排在列表最后');
