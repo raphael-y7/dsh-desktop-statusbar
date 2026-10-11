@@ -189,6 +189,35 @@ globalThis.setInterval = () => 0;
 	assert.deepStrictEqual(progress.toolCounts, { read: 2, bash: 1, skill: 3 }, '没有工具名的那次只进总数，不进名单');
 	assert.strictEqual(progress.toolCalls, 7, '没有工具名也算一次调用');
 
+	/* 斜杠命令注入技能走的是另一条路：一条 user/message，source.kind = 'skill-invocation'。
+	   skill-catalog（可用技能清单，每次会话都注入）不是技能注入，必须排除 */
+	let slash = progressProj.init();
+	slash = progressProj.apply(slash, { type: 'user/message', time: Date.now(), data: { source: { kind: 'skill-invocation', name: 'i-have-adhd', form: 'instructions' } } });
+	progressProj.stateSchema.parse(slash);
+	assert.deepStrictEqual(slash.skills, ['i-have-adhd'], '斜杠命令注入的技能进 skills');
+	/* 夹具特意带一个顶层 name：真实 skill-catalog 目前没有它，但排除规则必须钉在 kind 上 ——
+	   否则哪天宿主给 catalog 补个 name，"只靠 name 缺失"的实现就会把 60+ 个技能名全收进 skills */
+	slash = progressProj.apply(slash, { type: 'user/message', time: Date.now(), data: { source: { kind: 'skill-catalog', name: 'catalog-marker', entries: [{ name: 'ponytail' }, { name: 'my-dow-theory' }] } } });
+	progressProj.stateSchema.parse(slash);
+	assert.deepStrictEqual(slash.skills, ['i-have-adhd'], 'skill-catalog 不进 skills（每会话都注入，算进去会虚增）');
+	assert.strictEqual(slash.globalInstruction, null, 'skill-catalog 也不冒充全局提示词');
+	/* 两种来源混在一起：顺序按注入先后，不看来源 */
+	slash = progressProj.apply(slash, { type: 'tool/call', time: Date.now(), data: { turn: 1, step: 1, name: 'skill', arguments: '{"name":"ponytail"}' } });
+	slash = progressProj.apply(slash, { type: 'user/message', time: Date.now(), data: { source: { kind: 'skill-invocation', name: 'my-dow-theory' } } });
+	progressProj.stateSchema.parse(slash);
+	assert.deepStrictEqual(slash.skills, ['i-have-adhd', 'ponytail', 'my-dow-theory'], '工具调用与斜杠命令两种来源按注入先后合并');
+	/* 取不到名字时不落一项，也不能因此崩掉 */
+	slash = progressProj.apply(slash, { type: 'user/message', time: Date.now(), data: { source: { kind: 'skill-invocation', form: 'instructions' } } });
+	slash = progressProj.apply(slash, { type: 'user/message', time: Date.now(), data: undefined });
+	slash = progressProj.apply(slash, { type: 'user/message', time: Date.now() });
+	progressProj.stateSchema.parse(slash);
+	assert.deepStrictEqual(slash.skills, ['i-have-adhd', 'ponytail', 'my-dow-theory'], 'source 缺 name / 整个 data 都没有时只跳过这一条');
+	/* 全局提示词那条路没被新分支挤掉：agent-instructions 照旧只进 globalInstruction */
+	slash = progressProj.apply(slash, { type: 'user/message', time: Date.now(), data: { source: { kind: 'agent-instructions', form: 'instructions', changes: [{ action: 'set', scope: 'user-global\u0000AGENTS.md', path: '~/.dsh/AGENTS.md', digest: 'x' }] } } });
+	progressProj.stateSchema.parse(slash);
+	assert.strictEqual(slash.globalInstruction, 'AGENTS.md', 'agent-instructions 仍走全局提示词那条路');
+	assert.deepStrictEqual(slash.skills, ['i-have-adhd', 'ponytail', 'my-dow-theory'], '全局提示词不算技能注入');
+
 	/* 压缩落在第 49 轮的轮首之前最后一步：轮号取自压缩事件，步号取压缩前最后一条同轮 step/start */
 	progress = progressProj.apply(progress, { type: 'compaction/start', time: Date.now(), data: { compactionId: 'x', turn: 1 } });
 	progressProj.stateSchema.parse(progress);

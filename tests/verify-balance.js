@@ -108,8 +108,11 @@ process.env.DSH_HOME = path.join(__dirname, '.dsh-test-home');
 	assert.strictEqual(wb.body.isCredits, true, '标记积分口径');
 	assert.strictEqual(wb.body.currency, '', '积分不是货币，currency 留空');
 	assert.strictEqual(asked.length, 1, '只发一次请求');
-	assert.strictEqual(asked[0], 'http://127.0.0.1:19387/plugins/dsh-workbuddy-connect/ai/status',
-		'打的是本机积分路由，不是 api.deepseek.com（旧写法就是在这里 401 的）');
+	/* 候选顺序：**新插件在前**（当前生效的是 dsh-connect-workbuddy），老插件在后。
+	   mock 对任意 URL 都返回成功，所以命中的是第一条；老插件那条只有在第一条
+	   裸 404（未注册）时才会被试到 —— 见下面"回退"那一组用例。 */
+	assert.strictEqual(asked[0], 'http://127.0.0.1:19387/plugins/dsh-connect-workbuddy/usage?region=global',
+		'打的是本机积分路由（新插件 /usage），不是 api.deepseek.com（旧写法就是在这里 401 的）');
 	console.log('= WorkBuddy 会话（模型名含 deepseek）走本机积分路由 → ' + wb.body.total + '，不再误判成 DeepSeek');
 
 	/* 未登录时本机路由给 signed-out：要如实降级，不能拿别的数字顶上 */
@@ -151,9 +154,49 @@ process.env.DSH_HOME = path.join(__dirname, '.dsh-test-home');
 	});
 	globalThis.fetch = realFetch;
 	assert.strictEqual(second.body.total, '88', 'ctx.webServer 直接挂端口时同样取得到积分');
-	assert.strictEqual(asked2[0], 'http://127.0.0.1:19400/plugins/dsh-workbuddy-connect/ai/status',
-		'用的是 ctx.webServer 上的端口');
+	assert.strictEqual(asked2[0], 'http://127.0.0.1:19400/plugins/dsh-connect-workbuddy/usage?region=global',
+		'用的是 ctx.webServer 上的端口（路径同样是新插件那条）');
 	console.log('= 端口来源兼容：ctx.webServer 直接挂服务时也能查到积分');
+
+	/* 回退：新插件那条**裸 404**（路由未注册）⇒ 要接着试老插件那条，而不是直接失败。
+	   这正是本机当前的过渡形态（两个插件都装着，只有一个在跑）。 */
+	let handler3 = null;
+	mod.apply({
+		logger: { info: () => {} },
+		effect: (fn) => fn(),
+		sessionProjections: { register: () => () => {} },
+		webServer: {
+			port: 19500,
+			register: (route) => {
+				if (route.path === '/dsh-desktop-statusbar/api') handler3 = route.handler;
+				return () => {};
+			}
+		},
+		credentials: undefined
+	});
+	const asked3 = [];
+	globalThis.fetch = async (url) => {
+		asked3.push(String(url));
+		if (String(url).indexOf('/plugins/dsh-connect-workbuddy/') >= 0) {
+			/* 宿主的"这条路由没注册"兜底：裸 404、无 Content-Type、空体 */
+			return { ok: false, status: 404, headers: { get: () => null }, json: async () => null };
+		}
+		return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({ status: 'signed-in', credits: { total: 66 } }) };
+	};
+	const fallback = await new Promise((resolve) => {
+		const req = { url: '/dsh-desktop-statusbar/api/balance?provider=workbuddy-ai&model=x', method: 'GET' };
+		const res = {
+			writeHead: (status) => { res.status = status; },
+			end: (text) => { resolve({ status: res.status, body: JSON.parse(text) }); }
+		};
+		handler3(req, res);
+	});
+	globalThis.fetch = realFetch;
+	assert.strictEqual(fallback.body.total, '66', '新插件裸 404 时回退到老插件，取到积分');
+	assert.strictEqual(asked3.length, 2, '试了两条（先新后老）');
+	assert.strictEqual(asked3[0], 'http://127.0.0.1:19500/plugins/dsh-connect-workbuddy/usage?region=global', '第一条是新插件');
+	assert.strictEqual(asked3[1], 'http://127.0.0.1:19500/plugins/dsh-workbuddy-connect/ai/status', '第二条回退到老插件');
+	console.log('= 新插件未注册（裸 404）⇒ 自动回退老插件：两条候选，先新后老');
 
 	console.log('');
 	console.log('BALANCE ROUTE CHECKS PASSED');

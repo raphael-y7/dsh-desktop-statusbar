@@ -33,11 +33,13 @@
     "./client": {
       "default": "./lib/client.js"
     },
+    "./locale/*.json": "./locale/*.json",
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
     "docs",
+    "locale",
     "cordis.patch.yml",
     "icon.svg",
     "README.md",

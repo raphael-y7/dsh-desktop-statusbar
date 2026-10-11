@@ -804,19 +804,25 @@ priceTree = renderSettings();
 assert.deepStrictEqual(collectByClass(priceTree, 'dsb-model-name').map(textOf),
 	['DeepSeek-Flash', 'DeepSeek-V4-Pro', 'GLM-5.3-Flash', '1'], '纯数字模型名同样排最后');
 
-/* 需求 C（task-5）：两档所有字段都是空字符串 = 用户什么都没填 ⇒ 不写入价格库
-   （新增条目等于取消添加）；只要明确填过数字（**包括明确填 0**）就写入，空着的格子按 0。
+/* 需求 C（task-5，本轮按用户实测反馈改口径）：两档所有字段都是空字符串 = 价格先空着
+   ⇒ **条目照样留在价格库里**（用户反馈：新建的自定义模型没填价格，点保存会被自动删掉）；
+   只要明确填过数字（**包括明确填 0**）就写入，空着的格子按 null。
    此刻展开的是刚加的那条「1」，草稿全空 —— 正好用来验第一件事。 */
 const justAdded = cardByName(priceTree, '1');
 assert.deepStrictEqual(numberValues(justAdded), ['', '', ''],
 	'新加的条目展开时三个框要留空，实际 ' + JSON.stringify(numberValues(justAdded)));
 buttonByLabel(justAdded, '保存').props.onClick();
-assert.strictEqual(Object.prototype.hasOwnProperty.call(savedModels(), '1'), false,
-	'一个字都没填就保存 ⇒ 不写入价格库（新增等于取消添加）');
+const blankSaved = savedModels()['1'];
+assert.ok(blankSaved !== undefined, '一个字都没填就保存 ⇒ 条目仍留在价格库里（不再自动删除）');
+assert.deepStrictEqual(blankSaved.peak, { input: null, cacheRead: null, cacheWrite: null, output: null },
+	'没填的格子存成 null（不是 0）');
+assert.deepStrictEqual(blankSaved.offPeak, { input: null, cacheRead: null, cacheWrite: null, output: null },
+	'用户没碰过的那一档整档 null');
+assert.strictEqual(blankSaved.currency, 'CNY', '新建条目的币种仍是界面默认的 CNY');
 priceTree = renderSettings();
-assert.strictEqual(cardByName(priceTree, '1'), undefined, '取消添加后卡片也不该留在列表里');
+assert.ok(cardByName(priceTree, '1') !== undefined, '保存后卡片仍留在列表里（不再等于取消添加）');
 assert.deepStrictEqual(collectByClass(priceTree, 'dsb-model-name').map(textOf),
-	['DeepSeek-Flash', 'DeepSeek-V4-Pro', 'GLM-5.3-Flash'], '列表回到添加之前的样子');
+	['DeepSeek-Flash', 'DeepSeek-V4-Pro', 'GLM-5.3-Flash', '1'], '列表里仍有刚建的那条');
 
 /* 明确填一个 0、另一个填 5：条目要写入，填过的格子保数字、没填的格子留 null */
 const numberInputs = (card) => collectByClass(card, 'dsb-field').map((label) => findInput(label, 'number'));
@@ -857,7 +863,36 @@ proTierKeys.forEach((tier) => ['cacheRead', 'input', 'output']
 assert.deepStrictEqual(numberValues(cardByName(priceTree, 'DeepSeek-V4-Pro')), proExpected,
 	'编辑已有条目按真实数值回填（' + proTierKeys.join('/') + '），实际 '
 	+ JSON.stringify(numberValues(cardByName(priceTree, 'DeepSeek-V4-Pro'))));
-console.log('价格库草稿：新增留空 / 全空保存不落库 / 明确填 0 保留 / 已有回填真实数值');
+console.log('价格库草稿：新增留空 / 全空保存保留条目 / 明确填 0 保留 / 已有回填真实数值');
+
+/* 用户反馈（bug 2）：新建的自定义模型填了价格、还没点保存就切币种 ⇒ 已填的输入必须留住。
+   切币种本身只该改这一条的币种标记，不能把没保存的草稿值写进价格库、更不能清空输入框。 */
+buttonByLabel(cardByKey(priceTree, 'zero-kept'), '修改').props.onClick();
+priceTree = renderSettings();
+const keptBefore = JSON.parse(JSON.stringify(savedModels()['zero-kept']));
+numberInputs(cardByKey(priceTree, 'zero-kept'))[2].props.onChange({ target: { value: '9' } });   /* 输出=9，还没保存 */
+priceTree = renderSettings();
+const keptPick = collectByClass(collectByClass(cardByKey(priceTree, 'zero-kept'), 'dsb-edit-pop')[0], 'dsb-currency-pick')[0];
+assert.ok(keptPick !== undefined, '自建条目也有条目级币种选择器');
+collectByClass(keptPick, 'dsb-select-btn')[0].props.onClick();
+priceTree = renderSettings();
+collectByClass(priceTree, 'dsb-select-item').filter((one) => textOf(one) === 'USD')[0].props.onClick();
+priceTree = renderSettings();
+const keptShown = numberValues(cardByKey(priceTree, 'zero-kept'));
+assert.deepStrictEqual(keptShown, ['0', '5', '9'],
+	'切币种后，已填还没保存的价格必须原样留在框里，实际 ' + JSON.stringify(keptShown));
+const keptAfter = savedModels()['zero-kept'];
+assert.strictEqual(keptAfter.currency, 'USD', '切币种只改这一条的币种标记');
+assert.deepStrictEqual({ peak: keptAfter.peak, offPeak: keptAfter.offPeak },
+	{ peak: keptBefore.peak, offPeak: keptBefore.offPeak },
+	'切币种不该把没保存的草稿值写进价格库');
+buttonByLabel(cardByKey(priceTree, 'zero-kept'), '保存').props.onClick();
+const keptSaved = savedModels()['zero-kept'];
+assert.strictEqual(keptSaved.peak.output, 9, '点保存后没保存的输入才落库');
+assert.strictEqual(keptSaved.peak.input, 5, '同一档其它格保持原值');
+assert.strictEqual(keptSaved.peak.cacheRead, 0, '明确填过的 0 仍是数字 0');
+assert.strictEqual(keptSaved.currency, 'USD', '落库时带上切换后的币种');
+console.log('切币种保住未保存的输入：自建条目换币种只改标记、草稿原样留下、点保存才落库');
 
 console.log('价格库交互：折叠 / 峰谷 / 草稿 / 顺序全部通过');
 

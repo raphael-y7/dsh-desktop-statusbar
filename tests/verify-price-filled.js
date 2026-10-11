@@ -6,7 +6,8 @@
  *   · 加 `filled` 标记也不够 → 全清空再点「修改」又全是 0。
  * 现方案（`filled` 标记已撤销）：
  *   · 未填的格子保存为 `null`（EMPTY_TIER / normalizeTier / normalizePrice 的 flatten 都保留 null）；
- *   · `saveDraft`：逐格 `""`（没填）或非法输入 → null，否则存数字（填 0 就是 0）；两档全部没填 → 删除该条目（= 取消添加）；
+ *   · `saveDraft`：逐格 `""`（没填）或非法输入 → null，否则存数字（填 0 就是 0）；两档全部没填也**照常写入**
+ *     （条目保留、价格留空 —— 用户反馈：新建的自定义模型没填价格，点保存会被自动删掉）；
  *   · `startEdit`：新建 → 全空；此外**唯一**的"整条没填过"判据 = 该条目所有格都是**数字 0**
  *     （旧版本遗留数据没有 null，分不清"没填"与"填了 0"，只能按没填过处理 → 显示空白）；
  *     **只要有一格是 null 就照实显示**（null → 空白，数字 → 数字）。
@@ -75,7 +76,7 @@ store.set(CONFIG_KEY, JSON.stringify({
 			peak: { input: 2, cacheRead: 0.04, cacheWrite: 0, output: 8 },
 			offPeak: { input: 1, cacheRead: 0.02, cacheWrite: 0, output: 4 }
 		},
-		/* 用来验"全清空保存 = 删掉这条" */
+		/* 用来验"全清空保存 = 条目保留、价格留空" */
 		'clear-me': {
 			tiered: false,
 			peak: { input: 3, cacheRead: null, cacheWrite: null, output: null },
@@ -323,18 +324,20 @@ assert.deepStrictEqual(numberValues(openCard('partial')), ['', '', '5'],
 	'5) 再点「修改」：只显示填过的那个 5，其余空白');
 console.log('5 只填一格保存：未填格存成 null、再打开只显示填过的那格');
 
-/* -------------------------------------------- 6：全清空保存 → 该条目从价格库消失 */
+/* -------------------------------------------- 6：全清空保存 → 条目保留、价格留空 */
 const cleared = openCard('clear-me');
 assert.deepStrictEqual(numberValues(cleared), ['', '3', ''],
 	'前置：clear-me 只填过 input=3，其余空白');
 fieldsOf(cardByKey(cleared, 'clear-me'))[1].props.onChange({ target: { value: '' } });
 tree = renderSettings();
 buttonByLabel(cardByKey(tree, 'clear-me'), t('priceSave')).props.onClick();
-assert.strictEqual(Object.prototype.hasOwnProperty.call(savedModels(), 'clear-me'), false,
-	'6) 全部格子清空后保存 ⇒ 该条目不留在价格库里');
+assert.strictEqual(Object.prototype.hasOwnProperty.call(savedModels(), 'clear-me'), true,
+	'6) 全部格子清空后保存 ⇒ 条目仍留在价格库里（用户反馈：不该被自动删掉）');
+assert.deepStrictEqual(savedModels()['clear-me'].peak,
+	{ input: null, cacheRead: null, cacheWrite: null, output: null }, '6) 清空的格子存成 null（不是 0）');
 tree = renderSettings();
-assert.strictEqual(cardByKey(tree, 'clear-me'), undefined, '6) 列表里也不该再有这张卡');
-console.log('6 全清空保存：条目从价格库与列表里一起消失（等于取消添加）');
+assert.ok(cardByKey(tree, 'clear-me') !== undefined, '6) 卡片仍留在列表里');
+console.log('6 全清空保存：条目保留、价格留空（不再等于取消添加）');
 
 /* -------------------------------------------- 7：逐格语义 + 匹配层（全 0 / 全 null 都算"没定价"） */
 /* tierValue：没填（null / undefined / ""）→ null；填了就是数字 —— 明确填的 0 是数字 0，不是"没填" */
@@ -479,10 +482,11 @@ console.log('10 峰谷联动：高峰→空闲 ÷2、空闲→高峰 ×2；空�
 
 /* -------------------------------------------- 11：没勾「峰谷计价」= 全天一个价（两档都取 peak） */
 const ONE_M_INPUT = { input: 1000000, cacheRead: 0, cacheWrite: 0, output: 0 };
-/* 北京时间昨天 20:00（空闲）与 10:00（高峰）；用昨天是为了稳稳落在峰谷判断与近 7 天窗口里 */
-const bjToday = new Date(Date.now() + 8 * 3600 * 1000);
-const atOffPeak = Date.UTC(bjToday.getUTCFullYear(), bjToday.getUTCMonth(), bjToday.getUTCDate() - 1, 20 - 8, 0, 0);
-const atPeak = Date.UTC(bjToday.getUTCFullYear(), bjToday.getUTCMonth(), bjToday.getUTCDate() - 1, 10 - 8, 0, 0);
+/* 峰谷样本用**固定日期**，不要用「昨天」：那样样本日落在周六/周日时
+   isPeakTime 会正确返回 false，测试每周有两天必挂，且报错信息还会把矛头指向实现。
+   2026-09-14 是周一，两个时刻都落在工作日。 */
+const atOffPeak = Date.UTC(2026, 8, 14, 20 - 8, 0, 0);
+const atPeak = Date.UTC(2026, 8, 14, 10 - 8, 0, 0);
 assert.strictEqual(api.isPeakTime(atOffPeak), false, '前置：20:00 是空闲时段');
 assert.strictEqual(api.isPeakTime(atPeak), true, '前置：10:00 是高峰时段');
 assert.strictEqual(api.priceOf('paid-real').tiered, false, 'priceOf 要把 tiered 带出来');

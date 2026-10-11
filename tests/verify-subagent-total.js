@@ -182,6 +182,31 @@ const zeroTokens = () => ({ input: 0, cacheRead: 0, cacheWrite: 0, output: 0 });
 	for (let i = 1; i <= 120; i += 1) {
 		writeSession('f-' + i, 'p-perf', [usageEvent(1, 1, 1, ROUND_AT, 'kid-model', { input: M })]);
 	}
+	/* 3b 专用夹具（"本轮起点被误判"的回归）：父会话**自己已经产出**（turn/start + 一条带
+	   usage 的 assistant/message），而队友那一份**只有头部、还没有任何用量事件**。
+	   旧实现这道校验看的是"队友的 total.calls" —— 这几秒里它必然是 0，于是把起点判成
+	   无效（sinceSource 从 host 掉成 none，实测复现）。正确判据是**父会话自己**在窗口内
+	   有没有用量事件：有，就说明这个 turn/start 是活的、起点有效。 */
+	writeSession('p-warm', null, [
+		turnStartEvent(ROUND_AT),
+		usageEvent(1, 1, 1, ROUND_AT + 5000, 'lead-model', { input: M })
+	]);
+	/* 队友只在**上一轮**花过钱（¥3）：这样"整会话（总计）"有非零值，
+	   而"本轮窗口"里队友是 0 —— 正好用来钉住"修正只动 host 那条路，
+	   since=0 的整会话口径一个字都不许变"。 */
+	writeSession('q-1', 'p-warm', [usageEvent(1, 1, 1, AT, 'kid-model', { input: M })]);
+	/* 反面对照：父会话有 turn/start，但它自己**也没有**窗口内用量事件，队友同样没有
+	   ⇒ 起点无从验证，仍按"宁少不多"归零 —— 这道校验不能被改没。 */
+	writeSession('p-quiet', null, [turnStartEvent(ROUND_AT)]);
+	writeSession('r-1', 'p-quiet', []);
+	/* 反面对照 2（防"修过头"）：父会话**有用量事件，但它在窗口之前**（上一轮）。
+	   证据必须是"窗口内"的，不能拿"父会话这一辈子有过用量"当通行证 ——
+	   否则一个陈旧的 turn/start 会被永远当成有效起点。 */
+	writeSession('p-old', null, [
+		usageEvent(1, 1, 1, AT, 'lead-model', { input: M }),
+		turnStartEvent(ROUND_AT)
+	]);
+	writeSession('s-1', 'p-old', []);
 
 	/* fs 读探针：index.js 用 `import { readFileSync } from 'node:fs'`，
 	   必须在 **import 之前**替换 builtin 上那个函数，才数得到它真实的读取次数
@@ -304,6 +329,52 @@ const zeroTokens = () => ({ input: 0, cacheRead: 0, cacheWrite: 0, output: 0 });
 	const ghostWhole = await get('sessionId=p-ghost&since=0');
 	assert.strictEqual(ghostWhole.body.total.cost, 3, '显式 since=0 才拿整会话（¥3）');
 	console.log('一 6/7 推不出窗口 ⇒ sinceSource=none、本轮全 0（队友仍列出）· 父会话日志没了也一样 · 要整会话必须显式 since=0');
+
+	/* 7b. 「本轮起点被误判」回归（本轮修复）：父会话**自己已经产出**（turn/start 之后一条
+	       带 usage 的 assistant/message），而队友那一份只有头部、窗口内一个用量事件都没有。
+	       旧实现这道校验只看队友的 `total.calls` ⇒ 这几秒里必然是 0 ⇒ 把起点判成无效
+	       （sinceSource 从 host 掉成 none）。父会话自己那条用量事件就是"起点是活的"的
+	       直接证据，起点必须保住为 host。 */
+	const warm = await get('sessionId=p-warm');
+	assert.strictEqual(warm.status, 200, '父会话有产出、队友未产出：HTTP 200');
+	assert.strictEqual(warm.body.ok, true, '仍然是 ok:true（形状不变）');
+	assert.strictEqual(warm.body.sinceSource, 'host',
+		'父会话自己窗口内有用量事件 ⇒ 起点有效、来源仍是 host（修复前这里是 none），实际 ' + warm.body.sinceSource);
+	assert.strictEqual(warm.body.total.cost, 0, '队友本轮确实没产出 ⇒ 本轮队友费用 0（不是靠"判起点无效"得到的 0）');
+	assert.strictEqual(warm.body.total.calls, 0, '队友窗口内 0 次调用');
+	assert.strictEqual(warm.body.children.length, 1, '队友仍列出来');
+	assert.deepStrictEqual(deep(warm.body.children),
+		[{ id: 'q-1', cost: 0, tokens: zeroTokens(), calls: 0 }], '队友全 0（它只在上一轮花过钱）');
+	/* 关键边界：这只影响 host 推窗口那条路。`since=0`（「总计」）走的是 client 分支，
+	   队友上一轮那笔 ¥3 必须原样在，口径一个字都不许变。 */
+	const warmWhole = await get('sessionId=p-warm&since=0');
+	assert.strictEqual(warmWhole.body.sinceSource, 'client', '显式 since=0 仍是 client');
+	assert.strictEqual(warmWhole.body.total.cost, 3, '总计口径不变：队友上一轮那笔 ¥3 照算，实际 ' + warmWhole.body.total.cost);
+	assert.strictEqual(warmWhole.body.total.calls, 1, '总计 1 次调用');
+	/* 客户端显式给起点那条路（client 分支）同样不受影响：起点取本轮 ⇒ 队友 0；
+	   起点取 0 ⇒ 整会话 ¥3。与 host 那条路的差别只在"起点从哪来"。 */
+	const warmClientTurn = await get('sessionId=p-warm&since=' + encodeURIComponent(String(ROUND_AT)));
+	assert.strictEqual(warmClientTurn.body.sinceSource, 'client', '客户端给起点 ⇒ client（不参与这道校验）');
+	assert.strictEqual(warmClientTurn.body.total.cost, 0, '客户端给的本轮起点里队友 0');
+	const warmClientAll = await get('sessionId=p-warm&since=0');
+	assert.deepStrictEqual(deep(warmClientAll.body.total), deep(warmWhole.body.total),
+		'client 分支的整会话结果稳定（两次问同一口径逐字段相同）');
+	/* 反面：父会话有 turn/start，但它自己窗口内也没有用量事件、队友也没有 ⇒ 起点仍无从验证，
+	   继续按"宁少不多"归零 —— 这道校验不能被改没。 */
+	const quiet = await get('sessionId=p-quiet');
+	assert.strictEqual(quiet.body.sinceSource, 'none',
+		'父会话自己也没产出 ⇒ 起点无从验证，仍归零为 none，实际 ' + quiet.body.sinceSource);
+	assert.strictEqual(quiet.body.total.cost, 0, '仍然是 0');
+	assert.deepStrictEqual(deep(quiet.body.children),
+		[{ id: 'r-1', cost: 0, tokens: zeroTokens(), calls: 0 }], '队友仍列出、全 0');
+	/* 反面 2（防"修过头"）：父会话有用量事件，但落在**窗口之前**（上一轮）。
+	   证据必须是窗口内的，不能拿"父会话这辈子有过用量"当通行证。 */
+	const oldParent = await get('sessionId=p-old');
+	assert.strictEqual(oldParent.body.sinceSource, 'none',
+		'父会话的用量事件在窗口之前 ⇒ 不算窗口内证据，仍归零，实际 ' + oldParent.body.sinceSource);
+	assert.strictEqual(oldParent.body.total.cost, 0, '仍然 0');
+	console.log('一 7b 起点证据：父会话已产出+队友未产出 ⇒ sinceSource=host（修复前 none）、费用仍 0 · '
+		+ '父会话自己也没产出 / 用量落在窗口之前 ⇒ 仍 none · since=0 的整会话口径不变（¥3）');
 
 	/* 8. 后代数量：52 个与 120 个都**全部计入**（上限已放宽到 2000 的畸形数据保险值，不再截断） */
 	const many = await get('sessionId=p-many&since=0');

@@ -16,6 +16,28 @@ async function main() {
 	assert.strictEqual(m.adapterFor('openrouter', 'x-ai/grok-4').id, 'openrouter', 'OpenRouter');
 	assert.strictEqual(m.adapterFor('zhipu', 'glm-4-plus').id, 'zhipu', '智谱按量计费走余额（不是配额）');
 	assert.strictEqual(m.adapterFor('bigmodel', 'glm-4.6').id, 'zhipu', '智谱别名同样走余额');
+	/* 但"按量计费走余额"只说了**主选**是谁，没说配额那条路存在 —— 这正是原来缺的另一半：
+	   智谱两种计费通道是**独立的两条路**，keys 完全重叠（zhipu/glm/bigmodel 全一样），
+	   单选的 adapterFor 永远只命中第一个。必须靠 `adaptersFor` 给出"依次尝试"的链，
+	   否则 coding plan 用户永远拿不到配额（客户端 isPercent 分支恒不可达）。 */
+	assert.deepStrictEqual(m.adaptersFor('zhipu', 'glm-4-plus').map((one) => one.id), ['zhipu', 'zhipu-quota'],
+		'智谱要给出两条路：先现金余额、再 coding plan 配额（两者独立，不能二选一）');
+	assert.deepStrictEqual(m.adaptersFor('bigmodel', 'glm-4.6').map((one) => one.id), ['zhipu', 'zhipu-quota'],
+		'智谱别名（bigmodel）同样要带上配额那条路');
+	assert.deepStrictEqual(m.adaptersFor('zai', 'glm-5.3').map((one) => one.id), ['zhipu', 'zhipu-quota'],
+		'z.ai（国际站）provider 名同样要带上配额那条路');
+	/* 配额适配器必须还在（它含已实测的上游协议知识），而且必须是链上的下一跳 */
+	assert.strictEqual(byId('zhipu-quota').fallbackOf, 'zhipu', 'zhipu-quota 挂在 zhipu 后面（不是被删掉）');
+	assert.strictEqual(byId('zhipu-quota').keys.indexOf('zhipu') >= 0, true,
+		'配额那条的 keys 与余额重叠（这正是它选不中的原因，必须靠 fallbackOf 显式挂链）');
+	/* 非智谱平台链长恒为 1：行为与旧版逐字节一致 */
+	assert.deepStrictEqual(m.adaptersFor('deepseek', 'deepseek-v4-pro').map((one) => one.id), ['deepseek'], 'DeepSeek 只有一条路');
+	assert.deepStrictEqual(m.adaptersFor('openrouter', 'x-ai/grok-4').map((one) => one.id), ['openrouter'], 'OpenRouter 只有一条路');
+	assert.deepStrictEqual(m.adaptersFor('moonshot', 'kimi-k2').map((one) => one.id), ['moonshot'], 'Kimi 只有一条路');
+	assert.deepStrictEqual(m.adaptersFor('workbuddy-ai', 'deepseek-v4.1-flash-sg').map((one) => one.id), ['workbuddy'], 'WorkBuddy 只有一条路');
+	assert.deepStrictEqual(m.adaptersFor('xiaomi', 'MiMo-V2.6-Pro-Ultraspeed'), [], '认不出平台 ⇒ 空链（不硬凑）');
+	assert.deepStrictEqual(m.adaptersFor(undefined, undefined), [], '缺参数 ⇒ 空链');
+	assert.deepStrictEqual(m.adaptersFor('my-gateway', 'deepseek-chat').map((one) => one.id), ['deepseek'], 'provider 认不出时退回模型名，链长仍为 1');
 	assert.strictEqual(m.adapterFor('moonshot', 'kimi-k2').id, 'moonshot', 'Kimi');
 	assert.strictEqual(m.adapterFor('siliconflow', 'Qwen/Qwen3-8B').id, 'siliconflow', '硅基流动');
 	assert.strictEqual(m.adapterFor('b-ai', 'gpt-5').id, 'bai', 'B.AI');
@@ -24,9 +46,7 @@ async function main() {
 	assert.strictEqual(m.adapterFor('openai', 'gpt-5'), null, 'OpenAI 没有余额端点');
 	assert.strictEqual(m.adapterFor('', ''), null, '空线索返回 null');
 	assert.strictEqual(m.adapterFor(undefined, undefined), null, '缺参数返回 null');
-	assert.strictEqual(m.isDeepSeek('deepseek', 'deepseek-chat'), true, 'isDeepSeek 命中');
-	assert.strictEqual(m.isDeepSeek('xiaomi', 'MiMo-V2.6-Pro-Ultraspeed'), false, 'isDeepSeek 不误判');
-	console.log('识别：8 家命中 / 3 类不该命中 / isDeepSeek 正常');
+	console.log('识别：8 家命中 / 3 类不该命中 / 适配器识别正常');
 
 	/* ------------------------------------------- provider 优先于模型名（实测坑） */
 	/* 实测 2026-10-07：WorkBuddy AI 会话跑 deepseek-v4.1-flash-sg，模型名里的 "deepseek"
@@ -127,15 +147,32 @@ async function main() {
 	/* ------------------------------------------------- WorkBuddy 积分（本机路由） */
 	const wb = byId('workbuddy');
 	assert.strictEqual(wb.local, true, 'WorkBuddy 不发外部请求，只读本机路由');
-	assert.deepStrictEqual(wb.refs, [], '不解析任何凭据引用（凭据由 workbuddy-connect 持有）');
-	assert.strictEqual(wb.request(null, null, 'workbuddy-ai').path, '/plugins/dsh-workbuddy-connect/ai/status', '国际版路由');
-	assert.strictEqual(wb.request(null, null, 'workbuddy').path, '/plugins/dsh-workbuddy-connect/status', '国内版路由');
-	assert.strictEqual(wb.request(null, null, 'WorkBuddy-AI').path, '/plugins/dsh-workbuddy-connect/ai/status', 'provider 名大小写不敏感');
-	assert.strictEqual(wb.request(null, null, '').path, '/plugins/dsh-workbuddy-connect/status', 'provider 缺失时按国内版路由');
+	assert.deepStrictEqual(wb.refs, [], '不解析任何凭据引用（凭据由 connect 插件持有）');
+	/* 两个插件（新 dsh-connect-workbuddy / 老 dsh-workbuddy-connect）的路径**都**要在候选里：
+	   用户明确说旧插件后续可能还会用，所以不能只留一条。新插件在前（当前生效的是它）。 */
+	assert.deepStrictEqual(wb.pathsOf('workbuddy'),
+		['/plugins/dsh-connect-workbuddy/usage?region=cn', '/plugins/dsh-workbuddy-connect/status'],
+		'国内版：先试新插件 /usage，再试老插件 /status');
+	assert.deepStrictEqual(wb.pathsOf('workbuddy-ai'),
+		['/plugins/dsh-connect-workbuddy/usage?region=global', '/plugins/dsh-workbuddy-connect/ai/status'],
+		'国际版（-ai）：新插件带 region=global，老插件走 /ai/status');
+	assert.deepStrictEqual(wb.pathsOf('workbuddy-global'),
+		['/plugins/dsh-connect-workbuddy/usage?region=global', '/plugins/dsh-workbuddy-connect/ai/status'],
+		'国际版（-global）：与 -ai 同一套候选');
+	assert.deepStrictEqual(wb.pathsOf('WorkBuddy-AI'),
+		['/plugins/dsh-connect-workbuddy/usage?region=global', '/plugins/dsh-workbuddy-connect/ai/status'],
+		'provider 名大小写不敏感');
+	assert.deepStrictEqual(wb.pathsOf(''),
+		['/plugins/dsh-connect-workbuddy/usage?region=cn', '/plugins/dsh-workbuddy-connect/status'],
+		'provider 缺失时按国内版候选');
 
-	/* 实测形状：/plugins/dsh-workbuddy-connect/ai/status 的 credits 段 */
+	/* 实测形状：新旧插件的积分都在**顶层 credits.total**（口径一致，解析器一份就够）。
+	   新插件实测（2026-10-12）credits 是 { total, packages, expiringSoon, nearestExpiryMs }。 */
 	const wbOut = wb.parse({ status: 'signed-in', credits: { total: 177, accounts: [{ packageName: 'Bonus Pack', remain: 30, size: 30 }] } });
-	assert.strictEqual(wbOut.total, '177', 'WorkBuddy 取 credits.total');
+	assert.strictEqual(wbOut.total, '177', 'WorkBuddy 取 credits.total（老插件形状）');
+	const wbNew = wb.parse({ status: 'signed-in', region: 'cn', credits: { total: 1072, packages: [], expiringSoon: 0, nearestExpiryMs: 0 } });
+	assert.strictEqual(wbNew.total, '1,072', '新插件 /usage 的 credits.total 同样能解析（口径一致）');
+	assert.strictEqual(wbNew.isCredits, true, '新插件同样是积分口径');
 	assert.strictEqual(wbOut.currency, '', '积分不是货币：currency 必须留空，客户端才不拼 ¥');
 	assert.strictEqual(wbOut.isCredits, true, '标记积分口径（客户端据此不显示货币符号、不列构成行）');
 	assert.deepStrictEqual(wbOut.parts, [], '按用户要求不给套餐构成行，气泡只显示总数');
@@ -147,6 +184,54 @@ async function main() {
 	assert.strictEqual(wb.parse({ status: 'signed-in', credits: {} }), null, 'credits 里没有 total 给 null');
 	assert.strictEqual(wb.parse(null), null, 'null 输入给 null');
 	console.log('WorkBuddy：本机路由映射 + 积分口径（不带货币符号、不列构成）');
+
+	/* ------------------------------------- connect 类插件的通用发现（白名单 + 具名抽取器） */
+	/* 路由筛选：只认 /plugins/<id>/<只读动词>，写操作与 SSE 一律不进候选 */
+	const fakeTable = new Map([
+		['/plugins/dsh-connect-workbuddy/usage', {}],
+		['/plugins/dsh-connect-workbuddy/account-credits', {}],
+		['/plugins/dsh-workbuddy-connect/status', {}],
+		['/plugins/dsh-connect-workbuddy/pool', {}],            /* 写/敏感：必须排除 */
+		['/plugins/dsh-connect-workbuddy/refresh', {}],         /* 写：必须排除 */
+		['/plugins/dsh-connect-workbuddy/checkin', {}],         /* 会真领奖励：必须排除 */
+		['/plugins/dsh-connect-workbuddy/transfer', {}],        /* 凭据转移：必须排除 */
+		['/plugins/dsh-connect-workbuddy/oauth', {}],           /* 登录：必须排除 */
+		['/plugins/dsh-connect-workbuddy/__save', {}],          /* 写配置：必须排除 */
+		['/plugins/events', {}],                                /* SSE：GET 会挂住：必须排除 */
+		['/plugins/dsh-connect-qoder/usage', {}],
+		['/dsh-desktop-statusbar/api', {}]                      /* 非 /plugins 前缀：排除 */
+	]);
+	const found = m.pluginRoutesIn(fakeTable);
+	const foundPaths = found.map((one) => one.path).sort();
+	assert.deepStrictEqual(foundPaths, [
+		'/plugins/dsh-connect-qoder/usage',
+		'/plugins/dsh-connect-workbuddy/account-credits',
+		'/plugins/dsh-connect-workbuddy/usage',
+		'/plugins/dsh-workbuddy-connect/status'
+	].sort(), '只筛出只读动词（usage/status/account-credits），写操作与 SSE 全排除');
+	assert.deepStrictEqual(m.LOCAL_READONLY_VERBS, ['usage', 'status', 'account-credits'], '只读动词白名单');
+	assert.strictEqual(m.LOCAL_NEVER_PROBE.indexOf('/plugins/events') >= 0, true, 'SSE 端点列在永不探测名单里');
+	/* 拿不到路由表（宿主改实现）时给空数组，不能抛错 —— 调用方据此回退声明表 */
+	assert.deepStrictEqual(m.pluginRoutesIn(null), [], '表为 null ⇒ 空数组（优雅回退）');
+	assert.deepStrictEqual(m.pluginRoutesIn(undefined), [], '表为 undefined ⇒ 空数组');
+	assert.deepStrictEqual(m.pluginRoutesIn('not-a-map'), [], '非 Map ⇒ 空数组');
+	assert.deepStrictEqual(m.pluginRoutesIn({ forEach: undefined }), [], '没有 forEach ⇒ 空数组');
+
+	/* 具名抽取器：**绝不自由猜字段**。这条是"宁可不显示也不显示错数"的唯一防线。 */
+	assert.strictEqual(m.balanceFromLocalDoc({ credits: { total: 1072 } }).total, '1,072', 'workbuddy 形状：credits.total 是余额');
+	assert.strictEqual(m.balanceFromLocalDoc({ data: { limits: [{ type: 'TOKENS_LIMIT', percentage: 37.5 }] } }).total, '37.50%', '配额形状：limits 里的 percentage');
+	assert.strictEqual(m.balanceFromLocalDoc({ data: { limits: [{ type: 'TOKENS_LIMIT', percentage: 37.5 }] } }).isPercent, true, '配额形状标记 isPercent');
+	/* qoder 那种结构：`userQuota.total` 是**配额容量**、`remaining` 才是余额 —— 必须认不出，
+	   而不是"找到 total 就当余额"（那会显示一个看起来合理的错数）。 */
+	assert.strictEqual(m.balanceFromLocalDoc({ usage: { userQuota: { total: 1000, used: 200, remaining: 800, percentage: 20 } }, atMs: 1 }), null,
+		'qoder 形状：userQuota.total 是容量不是余额 ⇒ 必须认不出（不猜字段）');
+	assert.strictEqual(m.balanceFromLocalDoc({ status: 'signed-out' }), null, '未登录文档 ⇒ null');
+	assert.strictEqual(m.balanceFromLocalDoc({ credits: {} }), null, 'credits 里没有 total ⇒ null');
+	assert.strictEqual(m.balanceFromLocalDoc({ credits: { total: 'abc' } }), null, 'total 不是数字 ⇒ null');
+	assert.strictEqual(m.balanceFromLocalDoc(null), null, 'null ⇒ null');
+	assert.strictEqual(m.balanceFromLocalDoc(undefined), null, 'undefined ⇒ null');
+	assert.strictEqual(m.balanceFromLocalDoc([]), null, '数组 ⇒ null');
+	console.log('connect 通用发现：只读动词白名单（写操作/SSE 全排除）+ 具名抽取器（qoder 形状认不出、不猜数）');
 
 	console.log('');
 	console.log('BALANCE API CHECKS PASSED');

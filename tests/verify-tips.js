@@ -292,6 +292,11 @@ assert.deepStrictEqual(labels(onlyPrompt[1].sub.rows), ['AGENTS.md'], '只有全
 const noPrompt = countsWith({ turn: 3, turnSteps: 4, toolCalls: 10, skills: ['ponytail'], globalInstruction: null, toolCounts: {}, compactCount: 0, compactTurn: null, compactStep: null, compacts: [] });
 assert.strictEqual(noPrompt[1].value, '1', '没有全局提示词时技能注入只数技能');
 assert.deepStrictEqual(labels(noPrompt[1].sub.rows), ['ponytail'], '没有全局提示词时子视图不出现 AGENTS.md');
+/* 技能有两种来源（skill 工具调用 + 斜杠命令 /i-have-adhd 这类）：host 那边已经并进同一个 skills 数组，
+   这里只按名字去重；重复注入同一技能只留一行，但计数仍按注入次数（与工具调用口径一致） */
+const mixedSkills = countsWith({ turn: 1, turnSteps: 1, toolCalls: 3, skills: ['i-have-adhd', 'ponytail', 'i-have-adhd'], globalInstruction: null, toolCounts: {}, compactCount: 0, compactTurn: null, compactStep: null, compacts: [] });
+assert.strictEqual(mixedSkills[1].value, '3', '斜杠命令注入的技能与工具调用注入的技能并进同一行计数');
+assert.deepStrictEqual(labels(mixedSkills[1].sub.rows), ['i-have-adhd', 'ponytail'], '两种来源合并后按注入顺序去重，重复注入只留一行');
 /* 压缩落点拿不到步号（压缩落在轮首）时只给轮号，整条也不至于给横杠 */
 assert.deepStrictEqual(
 	pairs(countsWith({ turn: 1, turnSteps: 0, toolCalls: 3, skills: [], toolCounts: {}, compactCount: 1, compactTurn: 7, compactStep: null, compacts: [{ turn: 7, step: null }] })[0].sub.rows),
