@@ -167,6 +167,45 @@ const { tmpdir } = require('os');
 		assert.ok(kept.text.includes('other@0.4.4'), 'flow 写法里的原有条目必须保留：' + kept.text);
 		console.log('不产生重复键：flow / 行尾注释 / 空数组 / 块风格 都只写一个键，且原有条目保留');
 
+		/* ------------------------------------------------- 末行无换行 / 零缩进（实测缺陷）
+		   两个都会让 YAML 解析失败，且都是「看着不像问题」的输入：
+		     · **末行没有换行符**（编辑器保存的常见形态）：正则原先要求键行后必须跟 \n，
+		       匹配不上就走「文件里没这个键」分支，追加出第二个同名键。
+		     · **零缩进的序列**（`- a@1.0.0` 顶格）：YAML 里合法，但重排后新旧条目
+		       缩进不一致（一条两空格一条顶格），解析同样报错。 */
+		const EDGE_CASES = [
+			['末行无换行 + 空数组', 'packages:\n  - .\nminimumReleaseAgeExclude: []'],
+			['末行无换行 + flow', 'packages:\n  - .\nminimumReleaseAgeExclude: ["other@0.4.4"]'],
+			['末行无换行 + 块', 'packages:\n  - .\nminimumReleaseAgeExclude:\n  - other@0.4.4'],
+			['末行无换行 + 注释', 'packages:\n  - .\nminimumReleaseAgeExclude:  # 表'],
+			['零缩进序列', 'packages:\n  - .\nminimumReleaseAgeExclude:\n- other@0.4.4\n'],
+		];
+		for (const [label, source] of EDGE_CASES) {
+			const merged = mergeExcludeIntoYaml(source, 'dsh-desktop-statusbar', '2.1.2');
+			const keyCount = (merged.text.match(/^minimumReleaseAgeExclude:/gm) || []).length;
+			assert.strictEqual(keyCount, 1, label + '：同名键只能有一个，实际 ' + keyCount + ' 个');
+			/* 块内所有条目行必须同一缩进，否则 YAML 会解析失败 */
+			const entryIndents = merged.text.split('\n')
+				.filter((line) => /^\s*-\s/.test(line))
+				.map((line) => line.match(/^\s*/)[0].length);
+			const kinds = Array.from(new Set(entryIndents));
+			assert.strictEqual(kinds.length <= 1, true, label + '：条目缩进必须一致，实际 ' + JSON.stringify(kinds));
+			assert.ok(merged.text.includes('dsh-desktop-statusbar@2.1.2'), label + '：写入了我们的版本');
+		}
+		console.log('末行无换行 / 零缩进：都只写一个键、缩进一致');
+
+		/* ------------------------------------------------- 裸包名不能被收窄（实测缺陷）
+		   用户写 `- dsh-desktop-statusbar`（无 @版本）的语义是**放行该包所有版本**。
+		   早先无条件重排，会把它改成 `- dsh-desktop-statusbar@2.1.2`，
+		   静默把「整包放行」收窄成「只放行这一个版本」—— 是倒退，不是修复。 */
+		const bare = mergeExcludeIntoYaml(
+			'packages:\n  - .\nminimumReleaseAgeExclude:\n  - dsh-desktop-statusbar\n',
+			'dsh-desktop-statusbar', '2.1.2');
+		assert.strictEqual(bare.changed, false, '裸包名已覆盖目标版本，不该改动');
+		assert.ok(bare.text.includes('  - dsh-desktop-statusbar\n'), '裸包名必须原样保留（语义是放行所有版本）');
+		assert.ok(bare.text.includes('dsh-desktop-statusbar@') === false, '不得把裸包名收窄成带版本的写法');
+		console.log('裸包名：原样保留，不被收窄成单个版本');
+
 		/* findProfileDir 能从一个嵌套位置向上找到 profile */
 		const { mkdirSync } = require('fs');
 		mkdirSync(join(dir, 'node_modules', 'dsh-desktop-statusbar'), { recursive: true });
