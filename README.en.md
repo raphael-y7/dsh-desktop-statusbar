@@ -86,6 +86,23 @@ Open **Settings → Status bar**:
 - **Holidays**: click "Update holidays" to fetch and write the next year's public-holiday calendar
 - **Balance**: refreshed once a minute
 
+### About the one-click update
+
+When a new version exists, use the update button on the settings page. The plugin performs
+the update itself, which is worth explaining on two counts:
+
+- **It needs neither the plugin market nor any other plugin.** The update runs in this plugin's
+  own host half, so it works for people who never installed the market.
+- **It is not subject to pnpm's "24 hours since publish" rule.** pnpm 11 skips releases younger
+  than 24 hours as a supply-chain policy. This plugin exempts the exact version it is about to
+  install, through the mechanism pnpm itself supports, so a freshly published version installs
+  immediately.
+
+Afterwards **DSH must be restarted** — a page refresh is not enough: the metadata of a client
+plugin bundle is cached at startup and only updates on restart (the official plugin manager says
+the same: "Installed; it loads at the next start."). The version line at the bottom of the
+settings page changes to the new number, which is the quickest way to confirm.
+
 ### Billing rules
 
 Peak hours are **09:00–12:00 and 14:00–18:00 Beijing time, Monday to Friday**, and off-peak rates are half the peak rates; Chinese public holidays and weekends are billed off-peak all day (matching the [official docs](https://api-docs.deepseek.com/quick_start/pricing), checked 2026-09).
@@ -99,9 +116,27 @@ Peak hours are **09:00–12:00 and 14:00–18:00 Beijing time, Monday to Friday*
 
 ## Development
 
+Every test is a standalone script meant to be run with plain node — no test framework.
+
 ```powershell
-node tools/test.cjs
+npm test          # runs every verify*.js under tests/, then checks project vs installed plugin dir
+npm run sync      # copies lib/ into the installed plugin dir (run after editing, then restart DSH)
 ```
+
+Scripts under `tools/` are local-only and are **not published in the npm package**
+(the `files` field excludes them):
+
+| Script | Purpose |
+|---|---|
+| `tools/test.cjs` | full test run + consistency guard (fails when project and plugin dir differ) |
+| `tools/sync-to-plugin.cjs` | project `lib/` → installed plugin dir |
+| `tools/sync-from-plugin.cjs` | installed plugin dir → project `lib/` |
+| `tools/plugin-dir.cjs` | locates the plugin dir (shared by the scripts above) |
+| `tools/shot.cjs` | regenerates the README screenshots |
+
+The plugin directory is located automatically: environment variable `DSH_STATUS_BAR_PLUGIN_DIR` →
+known layouts under `~/.dsh` (`local-plugins/`, each `profiles/*/node_modules/`) → derived from the
+`tools/` location. No code changes needed when switching machine or user name.
 
 ## Licence
 

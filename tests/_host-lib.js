@@ -18,15 +18,20 @@ const fs = require('fs');
 const path = require('path');
 
 const LIB = path.join(__dirname, '..', 'lib');
-/* index.js 相对导入的两个兄弟文件（本仓库里只有这两个） */
-const SIBLINGS = ['balance-api.js', 'holiday.js'];
 
 /** 复制 lib/ 到 dir 并 patch index.js 导出 names；返回 index.js 的绝对路径。 */
 function prepare(dir, names) {
 	fs.rmSync(dir, { recursive: true, force: true });
 	fs.mkdirSync(dir, { recursive: true });
 	fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ type: 'module' }), 'utf8');
-	SIBLINGS.forEach((one) => fs.copyFileSync(path.join(LIB, one), path.join(dir, one)));
+	/* 复制 lib 下的**全部**文件，而不是列一份固定清单：index.js 的相对导入会随功能
+	   增删（例如自更新用到的 self-update.js / release-age.js）。写死清单时，新加的
+	   兄弟文件不会被带上，测试就会以 ERR_MODULE_NOT_FOUND 失败，且报错信息看不出
+	   是工具没同步 —— 这条曾经真的踩到过。 */
+	for (const entry of fs.readdirSync(LIB, { withFileTypes: true })) {
+		if (entry.isFile() !== true || entry.name.endsWith('.js') !== true) continue;
+		fs.copyFileSync(path.join(LIB, entry.name), path.join(dir, entry.name));
+	}
 	let code = fs.readFileSync(path.join(LIB, 'index.js'), 'utf8');
 	code += '\nexport { ' + names.join(', ') + ' };\n';
 	const target = path.join(dir, 'index.js');

@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop-statusbar",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "type": "module",
   "description": "把 DSH 桌面端对话区底部的统计行换成可配置状态栏：10 个字段可选可排序，按官方峰谷口径估算费用，支持自定义模型单价与账户余额。",
   "icon": "icon.svg",
@@ -62,5 +62,9 @@
       ],
       "platform": "web"
     }
+  },
+  "scripts": {
+    "test": "node tools/test.cjs",
+    "sync": "node tools/sync-to-plugin.cjs"
   }
 }

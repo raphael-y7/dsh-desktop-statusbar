@@ -271,6 +271,12 @@ assert.ok(emptyAll.some((one) => one.includes('余额 ¥-')), 'balance stays in 
 assert.ok(!emptyAll.some((x) => x.includes('tokens')), 'token 段已并入总计，不该再单独占一段：' + emptyAll.join(' | '));
 
 /* ------------------------------------------------------------ 有数据：不变样 */
+/* 时刻必须**钉死**，不能用 Date.now()：金额同时取决于「用量」与「发生时刻是高峰还是空闲」，
+   deepseek-flash 空闲价是高峰价的一半。用当前时刻会让这条用例一天里有 8 小时失败
+   （实测：下午 14:48 跑得 ¥0.46，而期望写的是空闲价的 ¥0.23）。
+   这里固定为北京时间周三 20:00（空闲时段），与期望值 ¥0.23 对应。
+   2026-10-14 是周三；20:00 CST = 12:00 UTC。 */
+const FIXED_NOW = Date.UTC(2026, 9, 14, 12, 0, 0);
 const fullSrc = {
 	stats: { turns: 2, steps: 51, llmMs: 125000, toolMs: 45000, ttftMs: 92500, ttftSteps: 10, decodeMs: 13000, decodeTokens: 2963000 },
 	usage: { uncachedInputTokens: 29631, cacheReadTokens: 1900000, cacheWriteTokens: 0, outputTokens: 41007 },
@@ -278,11 +284,11 @@ const fullSrc = {
 	sessionModel: { provider: 'deepseek-official', model: 'deepseek-flash' },
 	sessionUsage: {
 		models: { 'deepseek-flash': { input: 29631, cacheRead: 1900000, cacheWrite: 0, output: 41007 } },
-		calls: [{ at: Date.now(), model: 'deepseek-flash', input: 29631, cacheRead: 1900000, cacheWrite: 0, output: 41007 }],
+		calls: [{ at: FIXED_NOW, model: 'deepseek-flash', input: 29631, cacheRead: 1900000, cacheWrite: 0, output: 41007 }],
 		current: null, last: null
 	},
 	running: true, partial: null, runningCalls: [], lastAgentError: null,
-	timeline: undefined, now: Date.now(),
+	timeline: undefined, now: FIXED_NOW,
 	timeRange: { turns: 5400000, since: null, steps: 0, stepSince: null },
 	balance: { ok: true, total: '12.34', currency: 'CNY' },
 	turnUsage: { input: 29631, cacheRead: 1900000, cacheWrite: 0, output: 41007 },

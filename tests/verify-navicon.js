@@ -1,5 +1,12 @@
 /**
- * 验证设置导航图标替换：只改本插件那一项，其他项不动，重复扫描不重复替换，结构异常不报错。
+ * 验证设置导航图标替换 + 一键更新的接线。
+ *
+ * 更新那部分是本文件的核心回归点：它必须断言「点击更新**不依赖** ctx.remote」。
+ * 曾经的实现读 `ctx.remote.pluginManager`，而客户端模块没声明注入 `remote`，
+ * DSH 的依赖注入对未声明的服务会**同步抛错**，异常从 onClick 冒出没人接 ——
+ * 界面表现就是「点了完全没反应」。所以这里的替身**故意不提供** remote，
+ * 只要实现退回去读它就会立刻暴露。
+ *
  * 用法：node verify-navicon.js
  */
 const fs = require('fs');
@@ -11,7 +18,7 @@ const PLUGIN = path.join(__dirname, '..', 'lib', 'client.js');
 let code = fs.readFileSync(PLUGIN, 'utf8');
 const marker = '\t\texports.apply = apply;';
 assert.ok(code.includes(marker), 'exports.apply marker not found');
-code = code.replace(marker, '\t\texports.__test = { installNavIcon, startPluginUpdate, snapshotUpdate, setUpdateState, setCtx: (c) => { pluginCtx = c; } };\n' + marker);
+code = code.replace(marker, '\t\texports.__test = { installNavIcon, startPluginUpdate, snapshotUpdate, setUpdateState };\n' + marker);
 
 /* ---------------------------------------------------------- 最小 DOM 替身 */
 const cells = [];
@@ -184,39 +191,90 @@ const feedVersion = (hasUpdate) => {
 	stopPill();
 	assert.strictEqual(observers, 0, '胶囊用例的观察者也已卸载');
 
-	/* ③ 一键更新：调 DSH 官方的安装接口，点名要装的版本并带上 requestId */
-	const installs = [];
-	api.setCtx({ remote: { pluginManager: {
-		installBundle: (spec, options) => { installs.push({ spec, options }); return Promise.resolve({ ok: true }); }
-	} } });
+	/* ③ 一键更新：打的是**本插件自己的** host 路由，且完全不碰 ctx.remote。
+	   替身里**故意不放** remote —— 这正是原来的 bug：读未声明的注入会同步抛错，
+	   界面表现为「点了没反应」。实现一旦退回读远程接口，下面的断言立刻失败。 */
+	const calls = [];
+	sandbox.window.fetch = (url, options) => {
+		calls.push({ url: String(url), options });
+		return Promise.resolve({
+			ok: true,
+			json: () => Promise.resolve({ ok: true, from: '2.1.1', to: '9.9.9' })
+		});
+	};
 	api.setUpdateState({ hasUpdate: true, latest: '9.9.9', busy: false, note: null, reason: null });
 	api.startPluginUpdate();
 	assert.strictEqual(api.snapshotUpdate().busy, true, '点下去先进忙碌态（按钮要禁用）');
 	await settle();
-	assert.strictEqual(installs.length, 1, '调了一次安装');
-	assert.strictEqual(installs[0].spec, 'dsh-desktop-statusbar@9.9.9', '装的是自检发现的那个版本');
-	assert.ok(typeof installs[0].options.requestId === 'string' && installs[0].options.requestId.length > 0, '带上 requestId');
+	assert.strictEqual(calls.length, 1, '发出了一次请求');
+	assert.strictEqual(calls[0].url, '/dsh-desktop-statusbar/api/self-update', '打的是本插件自己的更新路由');
+	assert.strictEqual(calls[0].options.method, 'POST', '用 POST 发起更新');
+	assert.strictEqual(JSON.parse(calls[0].options.body).version, '9.9.9', '把要装的版本传给自己的 host');
 	assert.strictEqual(api.snapshotUpdate().note, 'done', '成功后给完成提示');
 	assert.strictEqual(api.snapshotUpdate().busy, false, '忙碌态解除');
 
-	/* ④ 安装失败：把原因带出来，不能静默 */
-	api.setCtx({ remote: { pluginManager: {
-		installBundle: () => Promise.resolve({ ok: false, reason: 'network' })
-	} } });
+	/* ④ 更新失败：把 host 给的原因带出来，不能静默 */
+	sandbox.window.fetch = () => Promise.resolve({
+		ok: true,
+		json: () => Promise.resolve({ ok: false, reason: 'release-age' })
+	});
 	api.setUpdateState({ hasUpdate: true, latest: '9.9.9', busy: false, note: null, reason: null });
 	api.startPluginUpdate();
 	await settle();
 	assert.strictEqual(api.snapshotUpdate().note, 'failed', '失败要有提示');
-	assert.strictEqual(api.snapshotUpdate().reason, 'network', '失败原因要带出来');
+	assert.strictEqual(api.snapshotUpdate().reason, 'release-age', '失败原因要带出来');
 
-	/* ⑤ 取不到插件管理器：按失败处理，不抛错、不卡住（官方桌面端一定带管理器，这只是兜底） */
-	api.setCtx({});
+	/* ⑤ 服务端没回可用的 JSON：仍然要收敛成失败，不能卡在忙碌态、更不能抛错 */
+	sandbox.window.fetch = () => Promise.resolve({ ok: false, json: () => Promise.resolve(null) });
 	api.setUpdateState({ hasUpdate: true, latest: '9.9.9', busy: false, note: null, reason: null });
 	api.startPluginUpdate();
-	assert.strictEqual(api.snapshotUpdate().note, 'failed', '取不到安装器也算失败');
-	assert.strictEqual(api.snapshotUpdate().busy, false, '不该卡在忙碌态');
+	await settle();
+	assert.strictEqual(api.snapshotUpdate().note, 'failed', '响应不可用时算失败');
+	assert.strictEqual(api.snapshotUpdate().busy, false, '不卡在忙碌态');
+
+	/* ⑥ 网络异常（fetch 直接 reject）：同样是失败，且**不能把异常抛出去** */
+	sandbox.window.fetch = () => Promise.reject(new Error('network down'));
+	api.setUpdateState({ hasUpdate: true, latest: '9.9.9', busy: false, note: null, reason: null });
+	let threw = null;
+	try {
+		api.startPluginUpdate();
+	} catch (error) {
+		threw = error;
+	}
+	assert.strictEqual(threw, null, '点击不得同步抛错（这正是原来的 bug 形态）');
+	await settle();
+	assert.strictEqual(api.snapshotUpdate().note, 'failed', '网络异常算失败');
+	assert.strictEqual(api.snapshotUpdate().reason, 'network', '标出网络原因');
+	assert.strictEqual(api.snapshotUpdate().busy, false, '不卡在忙碌态');
+
+	/* ⑦ 没有版本可装时直接返回，不发请求也不进忙碌态 */
+	const noTarget = [];
+	sandbox.window.fetch = (url) => { noTarget.push(String(url)); return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) }); };
+	api.setUpdateState({ hasUpdate: true, latest: null, busy: false, note: null, reason: null });
+	api.startPluginUpdate();
+	assert.strictEqual(noTarget.length, 0, '没有目标版本时不发请求');
+	assert.strictEqual(api.snapshotUpdate().busy, false, '也不该进忙碌态');
+
+	/* ⑧ 已经在更新中：重复点击不重复发请求 */
+	const once = [];
+	sandbox.window.fetch = (url) => { once.push(String(url)); return new Promise(() => {}); };
+	api.setUpdateState({ hasUpdate: true, latest: '9.9.9', busy: false, note: null, reason: null });
+	api.startPluginUpdate();
+	api.startPluginUpdate();
+	assert.strictEqual(once.length, 1, '更新中重复点击只发一次请求');
+
+	/* 关键回归：**可执行代码**里不得再出现远程插件管理接口。
+	   注释里提到它是为了解释「为什么不用」，所以先把注释剥掉再断言。 */
+	const source = fs.readFileSync(PLUGIN, 'utf8');
+	const codeOnly = source
+		.replace(/\/\*[\s\S]*?\*\//g, '')
+		.replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+	assert.strictEqual(/installBundle/.test(codeOnly), false, '可执行代码里不得再调用 installBundle（那要求注入 remote）');
+	assert.strictEqual(/\.remote\b/.test(codeOnly), false, '可执行代码里不得再读 ctx.remote（未声明注入会抛错）');
+	assert.strictEqual(/pluginManager/.test(codeOnly), false, '可执行代码里不得再碰 pluginManager');
 })().then(() => {
-	console.log('导航图标：匹配替换 / 不越界 / 幂等 / 异常安全 / 胶囊按自检结果显隐 / 更新按钮接线 全部通过');
+	console.log('导航图标：匹配替换 / 不越界 / 幂等 / 异常安全 / 胶囊按自检结果显隐 全部通过');
+	console.log('更新按钮：打自有路由 / 不依赖 ctx.remote / 失败与异常都收敛成提示 全部通过');
 }).catch((error) => {
 	console.error('导航图标：失败 ——', error && error.message ? error.message : error);
 	process.exitCode = 1;

@@ -3,8 +3,10 @@ node_modules/
 .DS_Store
 Thumbs.db
 
-# 只推送插件程序本身：构建脚本与草稿是本地开发用的，不进仓库
-tools/
+# tools/ 随仓库保存：npm test / npm run sync 都要用它，不入库的话克隆下来直接跑不起来。
+# 它不会进 npm 包 —— package.json 的 files 字段只列 lib/docs/locale 等，与这里无关。
+#
+# work/ 是一次性排查草稿（replay-verify / scan-tool-names），不入库。
 work/
 CHANGELOG.md
 

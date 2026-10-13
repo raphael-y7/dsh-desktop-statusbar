@@ -6,8 +6,10 @@ const fs = require('fs');
 const path = require('path');
 
 const LIB = path.join(__dirname, '..', 'lib');
-const client = fs.readFileSync(LIB + '\\client.js', 'utf8');
-const host = fs.readFileSync(LIB + '\\index.js', 'utf8');
+/* 用 path.join 拼，不要手写 '\\' —— 那样在 Linux/macOS 上会读不到文件，
+   检查器会静默退出 1（"读不到" 被当成失败），排查起来很费时间。 */
+const client = fs.readFileSync(path.join(LIB, 'client.js'), 'utf8');
+const host = fs.readFileSync(path.join(LIB, 'index.js'), 'utf8');
 
 let bad = 0;
 const report = (ok, message) => {
