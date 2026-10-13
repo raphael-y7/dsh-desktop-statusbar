@@ -51,9 +51,14 @@ assert.ok(!/body: JSON\.stringify\(\{ models: models \}\)\s*\}\)\.catch\(\(\) =>
 	'不能再用「只 catch、不看 response」的那种写法静默吞掉失败');
 console.log('      上限 ' + limitExpr + '（= ' + limitValue + ' 字节），且上报失败会告警');
 
-console.log('\n===== ③ 失败原因要能查到 =====');
-assert.ok(/update\.reason/.test(clientCode), 'update.reason 必须有读取点（否则所有失败都只说「更新失败」）');
-console.log('      失败原因挂在按钮的 title 上');
+console.log('\n===== ③ 更新失败仍只说「更新失败」（按用户要求，不额外暴露原因）=====');
+/* 用户明确不要悬停可见原因，所以按钮上不该有 title 透露 reason。
+   这条断言防的是「以后又有人好心把内部原因挂到界面上」。 */
+assert.ok(!/title: update\.note === "failed"/.test(clientCode),
+	'更新失败按钮不应挂 title 暴露内部原因（用户明确不要）');
+const failedLabel = clientCode.slice(clientCode.indexOf('update.note === "done"'), clientCode.indexOf('update.note === "done"') + 400);
+assert.ok(/t\("updateFailed"\)/.test(failedLabel), '失败态仍显示 updateFailed 文案');
+console.log('      失败态就是「更新失败」四个字，不暴露内部 reason');
 
 console.log('\n===== ④ release-age：所有写法都只能产出一个同名键 =====');
 /* 直接跑真实函数，比字符串断言可靠 */
@@ -77,25 +82,33 @@ const kept = mergeExcludeIntoYaml('minimumReleaseAgeExclude: ["other@0.4.4"]\n',
 assert.ok(kept.text.includes('other@0.4.4'), 'flow 写法里的原有条目必须保留');
 console.log('      flow 写法里的原有条目保留');
 
-console.log('\n===== ⑤ 日期键按北京时间（与 host 同口径）=====');
+console.log('\n===== ⑤ 日期归属按装机者时区（峰谷计价仍按北京时间）=====');
 assert.ok(/function dateKeyOf\(ms\)/.test(clientCode), '仍有 dateKeyOf');
 const dateKeyBody = clientCode.slice(clientCode.indexOf('function dateKeyOf(ms)'));
 const dateKeyFn = dateKeyBody.slice(0, dateKeyBody.indexOf('\n\t\t}'));
-assert.ok(/getUTCFullYear/.test(dateKeyFn) && /getUTCMonth/.test(dateKeyFn) && /getUTCDate/.test(dateKeyFn),
-	'dateKeyOf 必须用 getUTC* + 8 小时偏移，不能用本机时区的 getFullYear/getMonth/getDate');
-assert.ok(!/d\.getFullYear\(\)/.test(dateKeyFn), '不能再用本机时区取年月日');
-assert.ok(/\+ 8 \* 3600 \* 1000/.test(dateKeyFn), '按 +8h 偏移（host 的 localDateKey 同一口径）');
-/* 行为验证：同一时刻在两种时区下应得到同一个键 */
-const fixed = Date.UTC(2026, 9, 14, 12, 0, 0); /* 北京 20:00 */
-const mk = (ms) => {
-	const d = new Date(ms + 8 * 3600 * 1000);
+/* 日期归属：用本机时区（getFullYear/getMonth/getDate），不加 8 小时偏移 */
+assert.ok(/d\.getFullYear\(\)/.test(dateKeyFn) && /d\.getMonth\(\)/.test(dateKeyFn) && /d\.getDate\(\)/.test(dateKeyFn),
+	'dateKeyOf 按装机者时区取年月日');
+assert.ok(!/\+ 8 \* 3600 \* 1000/.test(dateKeyFn),
+	'日期归属不得再固定加 8 小时：UTC+8 装机看不出差别，其它时区会整体错一天');
+/* host 侧同口径 */
+const hostDates = hostCode.slice(hostCode.indexOf('function localDateKey'), hostCode.indexOf('function localDateKey') + 400);
+assert.ok(/date\.getFullYear\(\)/.test(hostDates), 'host 的 localDateKey 也按本机时区');
+assert.ok(!/ms \+ 8 \* 3600/.test(hostDates), 'host 的 localDateKey 不得再固定加 8 小时');
+/* 峰谷计价必须**保留**北京时间 —— 那是 DeepSeek 的官方计费规则，与装机位置无关 */
+const peakFn = hostCode.slice(hostCode.indexOf('function isPeakTime'), hostCode.indexOf('function isPeakTime') + 500);
+assert.ok(/ms \+ 8 \* 3600 \* 1000/.test(peakFn),
+	'isPeakTime（峰谷计价）必须继续按北京时间：那是官方计费规则，不能跟着装机时区走');
+/* 行为验证：跨零点时刻在不同时区应归到各自的本地日期 */
+const AT = Date.UTC(2026, 9, 13, 16, 30, 0); /* 北京 10-14 00:30 / 纽约 10-13 12:30 */
+const localKeyAt = (ms, offsetHours) => {
+	const d = new Date(ms + offsetHours * 3600 * 1000);
 	const pad = (n) => (n < 10 ? '0' + n : String(n));
 	return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate());
 };
-assert.strictEqual(mk(fixed), '2026-10-14', '北京时间 2026-10-14 20:00 的键应为 2026-10-14');
-/* 北京时间刚过零点的时刻，在 UTC 下还是前一天 —— 这正是要修的场景 */
-assert.strictEqual(mk(Date.UTC(2026, 9, 13, 16, 30, 0)), '2026-10-14', '北京 10-14 00:30（UTC 仍是 10-13）也要算 10-14');
-console.log('      取年月日用 getUTC* + 8h 偏移，跨零点用例通过');
+assert.strictEqual(localKeyAt(AT, 8), '2026-10-14', 'UTC+8 装机 → 10-14');
+assert.strictEqual(localKeyAt(AT, -4), '2026-10-13', 'UTC-4 装机 → 10-13（本地还是 13 号）');
+console.log('      装机时区 +8 / -4 各归到自己的日历日期；峰谷计价仍按北京时间');
 
 console.log('\n===== ⑥ 导航胶囊：写 textContent 前先比值 =====');
 const syncAt = clientCode.indexOf('function syncNavPill');
