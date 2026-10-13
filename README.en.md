@@ -123,8 +123,8 @@ npm test          # runs every verify*.js under tests/, then checks project vs i
 npm run sync      # copies lib/ into the installed plugin dir (run after editing, then restart DSH)
 ```
 
-Scripts under `tools/` are local-only and are **not published in the npm package**
-(the `files` field excludes them):
+Development scripts under `tools/` ship with the package (the `files` field includes them),
+so both a git clone and an npm install get them:
 
 | Script | Purpose |
 |---|---|
@@ -132,7 +132,11 @@ Scripts under `tools/` are local-only and are **not published in the npm package
 | `tools/sync-to-plugin.cjs` | project `lib/` → installed plugin dir |
 | `tools/sync-from-plugin.cjs` | installed plugin dir → project `lib/` |
 | `tools/plugin-dir.cjs` | locates the plugin dir (shared by the scripts above) |
-| `tools/shot.cjs` | regenerates the README screenshots |
+| `tools/shot.cjs` | regenerates the README screenshots (needs Chrome or Edge on the machine) |
+
+They are only used while developing; the plugin never loads them at runtime.
+`npm test` needs the repository's `tests/` directory, so an npm-installed copy can only run
+`sync-*` and `shot`.
 
 The plugin directory is located automatically: environment variable `DSH_STATUS_BAR_PLUGIN_DIR` →
 known layouts under `~/.dsh` (`local-plugins/`, each `profiles/*/node_modules/`) → derived from the

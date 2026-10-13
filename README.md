@@ -116,7 +116,7 @@ npm test          # 跑 tests/ 下全部 verify*.js，并检查项目与插件�
 npm run sync      # 把 lib/ 的源码同步到已安装的插件目录（改完代码跑它，然后重启 DSH）
 ```
 
-`tools/` 下的脚本只在本仓库本地使用，**不随 npm 包发布**（`files` 字段不含它）：
+`tools/` 下的开发脚本随包一起发布（`files` 里有它），克隆仓库或装 npm 包都能拿到：
 
 | 脚本 | 作用 |
 |---|---|
@@ -124,7 +124,10 @@ npm run sync      # 把 lib/ 的源码同步到已安装的插件目录（改完
 | `tools/sync-to-plugin.cjs` | 项目 `lib/` → 已安装插件目录 |
 | `tools/sync-from-plugin.cjs` | 已安装插件目录 → 项目 `lib/` |
 | `tools/plugin-dir.cjs` | 自动定位插件目录（供上面几个脚本共用） |
-| `tools/shot.cjs` | 生成 README 截图 |
+| `tools/shot.cjs` | 生成 README 截图（需要本机有 Chrome 或 Edge） |
+
+它们只在开发时用，插件运行时不会加载。`npm test` 需要仓库里的 `tests/` 目录，
+所以从 npm 装的包只能跑 `sync-*` / `shot` 这几个。
 
 插件目录的位置自动探测，顺序是：环境变量 `DSH_STATUS_BAR_PLUGIN_DIR` → `~/.dsh` 下的已知安装布局
 （`local-plugins/`、各 `profiles/*/node_modules/`）→ 由 `tools/` 位置推导。换机器、换用户名都不用改代码。

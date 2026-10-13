@@ -38,6 +38,7 @@
   },
   "files": [
     "lib",
+    "tools",
     "docs",
     "locale",
     "cordis.patch.yml",
