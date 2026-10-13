@@ -226,13 +226,18 @@ function settingsShot(locale) {
 /** 只要价格区：前两块隐藏、展开第一张卡，并把币种下拉摊开（展示毛玻璃） */
 function pricingShot(locale) {
   /* SettingsSection 里 useState 的顺序（组件加了 hook 就要回来重数一遍）：
-     0 drag / 1 newModel / 2 hostModel / 3 editing / 4 draft / 5 holidayBusy / 6 holidayNote / 7 currencyOpen。
+     0 devOn / 1 drag / 2 newModel / 3 hostModel / 4 editing / 5 draft /
+     6 holidayBusy / 7 holidayNote / 8 currencyOpen。
      2026-10-05 之前按下标写的是旧顺序（把 editing 当第 5 个、holidayNote 当第 6 个），
-     结果第一张卡展不开、还把草稿对象塞进了 holidayNote，卡片里冒出一句「抓取失败（undefined）」。 */
+     结果第一张卡展不开、还把草稿对象塞进了 holidayNote，卡片里冒出一句「抓取失败（undefined）」。
+     2026-10-13 又踩了一次同类的坑：新增 devOn（开发模式胶囊）插在最前面，
+     后面整体后移一位，于是 presets[3] 从 editing 变成 hostModel、
+     presets[4] 从 draft 变成 editing、presets[7] 从 currencyOpen 变成 holidayNote。
+     教训：**下标是脆的**，加 hook 必须回来重数，并用 `node tools/shot.cjs` 实际生成一次确认。 */
   const presets = [];
-  presets[3] = 'deepseek-flash';
+  presets[4] = 'deepseek-flash';
   /* 浮层里的数字也要跟着币种走：预设草稿按语言挑人民币或美元那套 */
-  presets[4] = locale === 'en'
+  presets[5] = locale === 'en'
     ? {
       tiered: true,
       peak: { input: '0.3', cacheRead: '0.006', cacheWrite: '0', output: '1.2' },
@@ -243,7 +248,7 @@ function pricingShot(locale) {
       peak: { input: '2', cacheRead: '0.04', cacheWrite: '0', output: '8' },
       offPeak: { input: '1', cacheRead: '0.02', cacheWrite: '0', output: '4' }
     };
-  presets[7] = false;   /* 币种下拉收起：展开会压住右边那列输入框 */
+  presets[8] = false;   /* 币种下拉收起：展开会压住右边那列输入框 */
   const loaded = loadPlugin(locale, locale === 'en' ? SETTINGS_USD : SETTINGS_CONFIG, presets);
   const t = translator(loaded.shot, locale);
   const tree = loaded.shot.SettingsSection({
