@@ -223,7 +223,7 @@ function settingsShot(locale) {
   return page('<div class="shot-wrap">' + toHtml(tree) + '</div>', '', loaded.shot.CSS);
 }
 
-/** 只要价格区：前两块隐藏、展开第一张卡，并把币种下拉摊开（展示毛玻璃） */
+/** 只要价格区：前两块隐藏、展开第一张卡，并把币种下拉收起（展开会压住右边那列输入框） */
 function pricingShot(locale) {
   /* SettingsSection 里 useState 的顺序（组件加了 hook 就要回来重数一遍）：
      0 devOn / 1 drag / 2 newModel / 3 hostModel / 4 editing / 5 draft /

@@ -206,6 +206,42 @@ const { tmpdir } = require('os');
 		assert.ok(bare.text.includes('dsh-desktop-statusbar@') === false, '不得把裸包名收窄成带版本的写法');
 		console.log('裸包名：原样保留，不被收窄成单个版本');
 
+		/* ------------------------------------------------- BOM / 跨行 flow / 引号标量（实测缺陷）
+		   这四个是独立复审报出来的、上面那些用例**抓不到**的写法。
+		   统计同名键必须用**非锚定**匹配：BOM 开头的文件里 `^minimumReleaseAgeExclude:`
+		   匹配不到首行那个键，用它计数会少数一个 —— 也就是说，
+		   旧断言对 BOM 这类输入是「天生抓不到」，绿了也不代表没写出重复键。 */
+		const countKeys = (text) => (text.match(/minimumReleaseAgeExclude:/g) || []).length;
+		const HARD_CASES = [
+			['BOM + 块风格', '\uFEFFminimumReleaseAgeExclude:\n  - other@0.4.4\n'],
+			['BOM + flow 同行', '\uFEFFminimumReleaseAgeExclude: ["other@0.4.4"]\n'],
+			['BOM + 末行无换行', '\uFEFFminimumReleaseAgeExclude: []'],
+			['flow 带行尾注释', 'minimumReleaseAgeExclude: ["other@0.4.4"] # 说明\n'],
+			['跨行 flow 数组', 'minimumReleaseAgeExclude: [\n  "other@0.4.4"\n]\n'],
+			['带单引号的裸标量', "minimumReleaseAgeExclude: 'dsh-desktop-statusbar@2.1.1'\n"],
+			['带双引号的裸标量', 'minimumReleaseAgeExclude: "dsh-desktop-statusbar@2.1.1"\n'],
+		];
+		for (const [label, source] of HARD_CASES) {
+			const merged = mergeExcludeIntoYaml(source, 'dsh-desktop-statusbar', '2.1.2');
+			assert.strictEqual(countKeys(merged.text), 1,
+				label + '：同名键只能有一个，实际 ' + countKeys(merged.text) + ' 个\n' + merged.text);
+			/* 目标版本要被覆盖到：允许 `名字@1.1 || 1.2` 的合并形态 */
+			const covered = merged.text.split('\n').some((line) => {
+				const selector = line.replace(/^\s*-\s*/, '').replace(/^['"]|['"]$/g, '').trim();
+				if (selector.startsWith('dsh-desktop-statusbar@') !== true) return false;
+				return selector.slice('dsh-desktop-statusbar@'.length).split('||').map((v) => v.trim()).includes('2.1.2');
+			});
+			assert.strictEqual(covered, true, label + '：没有覆盖到目标版本 2.1.2\n' + merged.text);
+			/* 幂等：再跑一次不该有改动（引号写法早先不幂等） */
+			const again = mergeExcludeIntoYaml(merged.text, 'dsh-desktop-statusbar', '2.1.2');
+			assert.strictEqual(again.changed, false, label + '：第二次调用不该再改动（不幂等）\n' + merged.text);
+			/* 原有条目不能丢 */
+			if (source.includes('other@0.4.4')) {
+				assert.strictEqual(merged.text.includes('other@0.4.4'), true, label + '：原有条目丢了\n' + merged.text);
+			}
+		}
+		console.log('BOM / 跨行 flow / 引号标量：都只写一个键、覆盖目标、幂等、不丢原条目');
+
 		/* findProfileDir 能从一个嵌套位置向上找到 profile */
 		const { mkdirSync } = require('fs');
 		mkdirSync(join(dir, 'node_modules', 'dsh-desktop-statusbar'), { recursive: true });

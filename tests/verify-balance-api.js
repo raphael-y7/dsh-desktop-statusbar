@@ -217,21 +217,30 @@ async function main() {
 	assert.deepStrictEqual(m.pluginRoutesIn('not-a-map'), [], '非 Map ⇒ 空数组');
 	assert.deepStrictEqual(m.pluginRoutesIn({ forEach: undefined }), [], '没有 forEach ⇒ 空数组');
 
-	/* 具名抽取器：**绝不自由猜字段**。这条是"宁可不显示也不显示错数"的唯一防线。 */
-	assert.strictEqual(m.balanceFromLocalDoc({ credits: { total: 1072 } }).total, '1,072', 'workbuddy 形状：credits.total 是余额');
-	assert.strictEqual(m.balanceFromLocalDoc({ data: { limits: [{ type: 'TOKENS_LIMIT', percentage: 37.5 }] } }).total, '37.50%', '配额形状：limits 里的 percentage');
-	assert.strictEqual(m.balanceFromLocalDoc({ data: { limits: [{ type: 'TOKENS_LIMIT', percentage: 37.5 }] } }).isPercent, true, '配额形状标记 isPercent');
+	/* 具名抽取器：**绝不自由猜字段**。这条是"宁可不显示也不显示错数"的唯一防线。
+	   生产路径是 index.js 的 queryLocalAdapter → adapter.parse(data)（本机路由响应直接喂进去），
+	   所以这里打的就是生产 `parse`，不再打测试专用的旁路函数。 */
+	assert.strictEqual(wb.parse({ credits: { total: 1072 } }).total, '1,072', 'workbuddy 形状：credits.total 是余额');
+	assert.strictEqual(wb.parse({ credits: { total: 1072 } }).isCredits, true, 'workbuddy 形状：积分口径标记');
+	assert.strictEqual(byId('zhipu-quota').parse({ data: { limits: [{ type: 'TOKENS_LIMIT', percentage: 37.5 }] } }).total, '37.50%', '配额形状：limits 里的 percentage');
+	assert.strictEqual(byId('zhipu-quota').parse({ data: { limits: [{ type: 'TOKENS_LIMIT', percentage: 37.5 }] } }).isPercent, true, '配额形状标记 isPercent');
 	/* qoder 那种结构：`userQuota.total` 是**配额容量**、`remaining` 才是余额 —— 必须认不出，
-	   而不是"找到 total 就当余额"（那会显示一个看起来合理的错数）。 */
-	assert.strictEqual(m.balanceFromLocalDoc({ usage: { userQuota: { total: 1000, used: 200, remaining: 800, percentage: 20 } }, atMs: 1 }), null,
+	   而不是"找到 total 就当余额"（那会显示一个看起来合理的错数）。
+	   实测同一份 qoder 文档喂给 workbuddy 与 zhipu-quota 两条生产解析器，都必须给 null。 */
+	const qoderDoc = { usage: { userQuota: { total: 1000, used: 200, remaining: 800, percentage: 20 } }, atMs: 1 };
+	assert.strictEqual(wb.parse(qoderDoc), null,
 		'qoder 形状：userQuota.total 是容量不是余额 ⇒ 必须认不出（不猜字段）');
-	assert.strictEqual(m.balanceFromLocalDoc({ status: 'signed-out' }), null, '未登录文档 ⇒ null');
-	assert.strictEqual(m.balanceFromLocalDoc({ credits: {} }), null, 'credits 里没有 total ⇒ null');
-	assert.strictEqual(m.balanceFromLocalDoc({ credits: { total: 'abc' } }), null, 'total 不是数字 ⇒ null');
-	assert.strictEqual(m.balanceFromLocalDoc(null), null, 'null ⇒ null');
-	assert.strictEqual(m.balanceFromLocalDoc(undefined), null, 'undefined ⇒ null');
-	assert.strictEqual(m.balanceFromLocalDoc([]), null, '数组 ⇒ null');
-	console.log('connect 通用发现：只读动词白名单（写操作/SSE 全排除）+ 具名抽取器（qoder 形状认不出、不猜数）');
+	assert.strictEqual(byId('zhipu-quota').parse(qoderDoc), null,
+		'qoder 形状喂给配额解析器同样必须认不出（没有 limits 就不是配额）');
+	assert.strictEqual(wb.parse({ status: 'signed-out' }), null, '未登录文档 ⇒ null');
+	assert.strictEqual(wb.parse({ credits: {} }), null, 'credits 里没有 total ⇒ null');
+	assert.strictEqual(wb.parse({ credits: { total: 'abc' } }), null, 'total 不是数字 ⇒ null');
+	assert.strictEqual(wb.parse(null), null, 'null ⇒ null');
+	assert.strictEqual(wb.parse(undefined), null, 'undefined ⇒ null');
+	/* 数组：生产 parse 走 `data.credits`，数组上取不到 credits ⇒ null（不因 typeof 判断差异而误报） */
+	assert.strictEqual(wb.parse([]), null, '数组 ⇒ null');
+	assert.strictEqual(byId('zhipu-quota').parse([]), null, '数组喂给配额解析器 ⇒ null');
+	console.log('connect 通用发现：只读动词白名单（写操作/SSE 全排除）+ 生产 parse 打真代码（qoder 形状认不出、不猜数）');
 
 	console.log('');
 	console.log('BALANCE API CHECKS PASSED');
