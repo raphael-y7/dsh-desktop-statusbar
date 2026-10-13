@@ -144,6 +144,29 @@ const { tmpdir } = require('os');
 		assert.strictEqual(missing.reason, 'unreadable', '给出 unreadable');
 		console.log('落盘：写入 / 幂等 / 拒绝非法版本 / 缺文件不抛错 全部正确');
 
+		/* ---------------------------------------------------------------- 不产生重复键
+		   这个键不只有「独占一行 + 下面挂列表」一种写法：pnpm 生态里 flow 风格
+		   （`minimumReleaseAgeExclude: ["a@1.0.0"]`）、行尾注释、空数组同样常见。
+		   早先只认块风格，遇到这些写法会误判成「没有这个键」而**追加出第二个同名键**，
+		   YAML 直接 `duplicated mapping key`、pnpm 拒绝启动 —— 受害的是整个 profile。
+		   实测（宿主自带 pnpm）确认过：修复前这些输入会被 pnpm 拒；修复后能解析。 */
+		const INLINE_CASES = [
+			['flow 风格：键与数组同行', 'packages:\n  - .\nminimumReleaseAgeExclude: ["other@0.4.4"]\n'],
+			['行尾注释', 'packages:\n  - .\nminimumReleaseAgeExclude:  # 豁免表\n  - other@0.4.4\n'],
+			['空数组同行', 'packages:\n  - .\nminimumReleaseAgeExclude: []\n'],
+			['块风格（基线）', 'packages:\n  - .\nminimumReleaseAgeExclude:\n  - other@0.4.4\n'],
+		];
+		for (const [label, source] of INLINE_CASES) {
+			const merged = mergeExcludeIntoYaml(source, 'dsh-desktop-statusbar', '2.1.2');
+			const keyCount = (merged.text.match(/^minimumReleaseAgeExclude:/gm) || []).length;
+			assert.strictEqual(keyCount, 1, label + '：同名键只能有一个（重复会让 pnpm 拒绝解析），实际 ' + keyCount + ' 个');
+			assert.ok(merged.text.includes('dsh-desktop-statusbar@2.1.2'), label + '：写入了我们的版本');
+		}
+		/* 原有条目不能被丢掉 */
+		const kept = mergeExcludeIntoYaml('minimumReleaseAgeExclude: ["other@0.4.4"]\n', 'dsh-desktop-statusbar', '2.1.2');
+		assert.ok(kept.text.includes('other@0.4.4'), 'flow 写法里的原有条目必须保留：' + kept.text);
+		console.log('不产生重复键：flow / 行尾注释 / 空数组 / 块风格 都只写一个键，且原有条目保留');
+
 		/* findProfileDir 能从一个嵌套位置向上找到 profile */
 		const { mkdirSync } = require('fs');
 		mkdirSync(join(dir, 'node_modules', 'dsh-desktop-statusbar'), { recursive: true });
