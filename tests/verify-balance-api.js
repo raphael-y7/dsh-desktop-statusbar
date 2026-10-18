@@ -185,6 +185,70 @@ async function main() {
 	assert.strictEqual(wb.parse(null), null, 'null 输入给 null');
 	console.log('WorkBuddy：本机路由映射 + 积分口径（不带货币符号、不列构成）');
 
+	/* ------------------------------ WorkBuddy 积分套餐投影（rewards） */
+	/* 新插件 /usage 的 credits.packages 就是官方客户端「积分套餐」那一栏的数据；
+	   实测样本见 _diag/workbuddy-rewards-feasibility.md §2（cn 账号 13 个包、global 2 个包）。
+	   这里取前 3 个包：1 个月度（带 cycleRefreshMs）+ 2 个一次性（带 expiresAtMs）。 */
+	const wbPackages = wb.parse({
+		status: 'signed-in',
+		region: 'cn',
+		credits: {
+			total: 2547.57000064,
+			packages: [
+				{ packageName: 'CodeBuddy个人体验版', remain: 0, size: 500, monthly: true, cycleRefreshMs: 1793462400000 },
+				{ packageName: 'CodeBuddy个人版拉新权益包', remain: 947.57000064, size: 1500, monthly: false, expiresAtMs: 1794056975000 },
+				{ packageName: 'CodeBuddy个人版国内运营裂变包', remain: 100, size: 100, monthly: false, expiresAtMs: 1794056980000 }
+			]
+		}
+	});
+	assert.strictEqual(wbPackages.total, '2,547.57', '顶层 total 仍是千分位字符串（口径不变）');
+	assert.strictEqual(Array.isArray(wbPackages.rewards), true, '有 packages 就投影出 rewards 数组');
+	assert.deepStrictEqual(wbPackages.rewards[0], {
+		name: 'CodeBuddy个人体验版', used: 500, total: 500, expireAt: null, refreshAt: '2026-11-01', monthly: true
+	}, '月度包：refreshAt 是下期刷新日（不是到期），expireAt null');
+	assert.deepStrictEqual(wbPackages.rewards[2], {
+		name: 'CodeBuddy个人版国内运营裂变包', used: 0, total: 100, expireAt: '2026-11-07', refreshAt: null, monthly: false
+	}, '一次性包：expireAt 是到期日，refreshAt null；没用过 ⇒ used 0');
+	assert.strictEqual(wbPackages.rewards[1].used, 552.42999936,
+		'已用 = 总量 - 剩余（与官方 CycleCapacity 口径一致，不提前四舍五入丢精度）');
+	assert.strictEqual(wbPackages.rewards[1].expireAt, '2026-11-07', '毫秒时间戳按北京时间折成 YYYY-MM-DD');
+	assert.strictEqual(wbPackages.rewards[1].refreshAt, null, '一次性包没有刷新日');
+	assert.strictEqual(typeof wbPackages.rewards[0].used, 'number', 'used/total 给数字，格式化交给客户端');
+	assert.strictEqual(typeof wbPackages.rewards[0].total, 'number', 'total 给数字（不是千分位字符串）');
+	assert.strictEqual(/^\d{4}-\d{2}-\d{2}$/.test(wbPackages.rewards[0].refreshAt), true, '日期统一 YYYY-MM-DD');
+	/* 上游没有 packages/不是数组（老插件 /status）⇒ 不给 rewards，客户端保持纯总数显示 */
+	assert.strictEqual(wb.parse({ status: 'signed-in', credits: { total: 177 } }).rewards, undefined,
+		'老插件：只有 credits.total ⇒ 不带 rewards（保持现状）');
+	assert.strictEqual(wb.parse({ status: 'signed-in', credits: { total: 177, accounts: [{ packageName: 'Bonus Pack', remain: 30, size: 30 }] } }).rewards, undefined,
+		'老形状的 accounts 不是套餐，不猜字段');
+	assert.strictEqual(wb.parse({ credits: { total: 1, packages: 'not-an-array' } }).rewards, undefined,
+		'packages 不是数组 ⇒ 不给 rewards');
+	assert.deepStrictEqual(wb.parse({ credits: { total: 1, packages: [] } }).rewards, [],
+		'packages 是空数组 ⇒ rewards 空数组（客户端据此不显示气泡）');
+
+	/* 字段缺失/坏数据：逐个跳过坏包，或者降级字段，绝不让整条气泡抛错 */
+	const wbDegraded = wb.parse({
+		credits: {
+			total: 10,
+			packages: [
+				{ packageName: '正常包', remain: 5, size: 10, monthly: false, expiresAtMs: 1794056975000 },
+				null,
+				{ packageName: '缺 size', remain: 5, monthly: false },
+				{ remain: 1, size: 2, monthly: false },
+				{ packageName: 'remain 非数', remain: 'abc', size: 10, monthly: false },
+				{ packageName: '日期坏', remain: 0, size: 10, monthly: false, expiresAtMs: 'oops' },
+				{ packageName: '剩余超总量', remain: 999, size: 10, monthly: false },
+				{ packageName: '月度缺刷新', remain: 3, size: 9, monthly: true }
+			]
+		}
+	});
+	assert.deepStrictEqual(wbDegraded.rewards, [
+		{ name: '正常包', used: 5, total: 10, expireAt: '2026-11-07', refreshAt: null, monthly: false },
+		{ name: '日期坏', used: 10, total: 10, expireAt: null, refreshAt: null, monthly: false },
+		{ name: '剩余超总量', used: 0, total: 10, expireAt: null, refreshAt: null, monthly: false },
+		{ name: '月度缺刷新', used: 6, total: 9, expireAt: null, refreshAt: null, monthly: true }
+	], '坏包跳过、坏字段降级为 null，不抛错；剩余超总量时 used 夹到 0（不显示负数）');
+
 	/* ------------------------------------- connect 类插件的通用发现（白名单 + 具名抽取器） */
 	/* 路由筛选：只认 /plugins/<id>/<只读动词>，写操作与 SSE 一律不进候选 */
 	const fakeTable = new Map([

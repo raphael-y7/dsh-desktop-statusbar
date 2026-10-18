@@ -156,7 +156,7 @@ globalThis.setInterval = () => 0;
 	console.log('无 message 的事件:', JSON.stringify({ routed: routed.calls[0].model, selected: selected.calls[0].model, skipped: orphan.calls.length }));
 
 	/* 12. 轮次项气泡的数：step/start 折本轮步数、tool/call 折总次数与各工具名次数、
-	       compaction/start 折压缩次数与压缩落点（气泡里那三行点开就是这些明细） */
+	       compaction/end：成功后计数并落档（带 error 的失败不计）（气泡里那三行点开就是这些明细） */
 	const progressProj = registered.filter((p) => p.key === 'desktopStatusbarProgress')[0];
 	assert.ok(progressProj !== undefined, 'progress projection registered');
 	let progress = progressProj.init();
@@ -174,13 +174,13 @@ globalThis.setInterval = () => 0;
 	assert.strictEqual(progress.turnSteps, 3, '本轮步数取轮内最大步号');
 	assert.strictEqual(progress.toolCalls, 3, '工具调用次数累加（含 skill 工具）');
 	assert.deepStrictEqual(progress.toolCounts, { read: 1, bash: 1, skill: 1 }, '每个工具名各自的次数都记下来');
-	assert.deepStrictEqual(progress.skills, ['ponytail'], '技能注入记下技能名，别的工具不算');
+	assert.deepStrictEqual(progress.skills, [{ name: 'ponytail', manual: false }], 'skill 工具注入记下技能名并标 manual:false，别的工具不算');
 	/* 参数坏掉的那次：不记名字，但仍算一次工具调用；顺序按注入先后 */
 	progress = progressProj.apply(progress, { type: 'tool/call', time: Date.now(), data: { turn: 1, step: 3, name: 'skill', arguments: '{坏掉的' } });
 	progress = progressProj.apply(progress, { type: 'tool/call', time: Date.now(), data: { turn: 1, step: 3, name: 'skill', arguments: '{"name":"my-dow-theory"}' } });
 	progress = progressProj.apply(progress, { type: 'tool/call', time: Date.now(), data: { turn: 1, step: 3, name: 'read' } });
 	progressProj.stateSchema.parse(progress);
-	assert.deepStrictEqual(progress.skills, ['ponytail', 'my-dow-theory'], '参数坏掉的不进列表，名字按注入顺序排');
+	assert.deepStrictEqual(progress.skills, [{ name: 'ponytail', manual: false }, { name: 'my-dow-theory', manual: false }], '参数坏掉的不进列表，名字按注入顺序排');
 	assert.strictEqual(progress.toolCalls, 6, '参数坏掉的 skill 调用照样算工具调用');
 	assert.deepStrictEqual(progress.toolCounts, { read: 2, bash: 1, skill: 3 }, '同名工具累加，不新开一项');
 	/* 没带 name 的调用（真实日志里没有，但别让它落成一项 "undefined"） */
@@ -194,37 +194,47 @@ globalThis.setInterval = () => 0;
 	let slash = progressProj.init();
 	slash = progressProj.apply(slash, { type: 'user/message', time: Date.now(), data: { source: { kind: 'skill-invocation', name: 'i-have-adhd', form: 'instructions' } } });
 	progressProj.stateSchema.parse(slash);
-	assert.deepStrictEqual(slash.skills, ['i-have-adhd'], '斜杠命令注入的技能进 skills');
+	assert.deepStrictEqual(slash.skills, [{ name: 'i-have-adhd', manual: true }], '斜杠命令注入的技能进 skills，标 manual:true');
 	/* 夹具特意带一个顶层 name：真实 skill-catalog 目前没有它，但排除规则必须钉在 kind 上 ——
 	   否则哪天宿主给 catalog 补个 name，"只靠 name 缺失"的实现就会把 60+ 个技能名全收进 skills */
 	slash = progressProj.apply(slash, { type: 'user/message', time: Date.now(), data: { source: { kind: 'skill-catalog', name: 'catalog-marker', entries: [{ name: 'ponytail' }, { name: 'my-dow-theory' }] } } });
 	progressProj.stateSchema.parse(slash);
-	assert.deepStrictEqual(slash.skills, ['i-have-adhd'], 'skill-catalog 不进 skills（每会话都注入，算进去会虚增）');
+	assert.deepStrictEqual(slash.skills, [{ name: 'i-have-adhd', manual: true }], 'skill-catalog 不进 skills（每会话都注入，算进去会虚增）');
 	assert.strictEqual(slash.globalInstruction, null, 'skill-catalog 也不冒充全局提示词');
 	/* 两种来源混在一起：顺序按注入先后，不看来源 */
 	slash = progressProj.apply(slash, { type: 'tool/call', time: Date.now(), data: { turn: 1, step: 1, name: 'skill', arguments: '{"name":"ponytail"}' } });
 	slash = progressProj.apply(slash, { type: 'user/message', time: Date.now(), data: { source: { kind: 'skill-invocation', name: 'my-dow-theory' } } });
 	progressProj.stateSchema.parse(slash);
-	assert.deepStrictEqual(slash.skills, ['i-have-adhd', 'ponytail', 'my-dow-theory'], '工具调用与斜杠命令两种来源按注入先后合并');
+	assert.deepStrictEqual(slash.skills, [{ name: 'i-have-adhd', manual: true }, { name: 'ponytail', manual: false }, { name: 'my-dow-theory', manual: true }], '工具调用与斜杠命令两种来源按注入先后合并，manual 各按来源标');
 	/* 取不到名字时不落一项，也不能因此崩掉 */
 	slash = progressProj.apply(slash, { type: 'user/message', time: Date.now(), data: { source: { kind: 'skill-invocation', form: 'instructions' } } });
 	slash = progressProj.apply(slash, { type: 'user/message', time: Date.now(), data: undefined });
 	slash = progressProj.apply(slash, { type: 'user/message', time: Date.now() });
 	progressProj.stateSchema.parse(slash);
-	assert.deepStrictEqual(slash.skills, ['i-have-adhd', 'ponytail', 'my-dow-theory'], 'source 缺 name / 整个 data 都没有时只跳过这一条');
+	assert.deepStrictEqual(slash.skills, [{ name: 'i-have-adhd', manual: true }, { name: 'ponytail', manual: false }, { name: 'my-dow-theory', manual: true }], 'source 缺 name / 整个 data 都没有时只跳过这一条');
 	/* 全局提示词那条路没被新分支挤掉：agent-instructions 照旧只进 globalInstruction */
 	slash = progressProj.apply(slash, { type: 'user/message', time: Date.now(), data: { source: { kind: 'agent-instructions', form: 'instructions', changes: [{ action: 'set', scope: 'user-global\u0000AGENTS.md', path: '~/.dsh/AGENTS.md', digest: 'x' }] } } });
 	progressProj.stateSchema.parse(slash);
 	assert.strictEqual(slash.globalInstruction, 'AGENTS.md', 'agent-instructions 仍走全局提示词那条路');
-	assert.deepStrictEqual(slash.skills, ['i-have-adhd', 'ponytail', 'my-dow-theory'], '全局提示词不算技能注入');
+	assert.deepStrictEqual(slash.skills, [{ name: 'i-have-adhd', manual: true }, { name: 'ponytail', manual: false }, { name: 'my-dow-theory', manual: true }], '全局提示词不算技能注入');
 
-	/* 压缩落在第 49 轮的轮首之前最后一步：轮号取自压缩事件，步号取压缩前最后一条同轮 step/start */
+	/* 压缩落点：宿主在 compaction/end 判定结果——成功（不带 error，且必有 compaction/summary）才计数。
+	   轮号取 end 的 turn，步号取压缩前最后一条同轮 step/start（压缩事务中间不会插 step/start） */
 	progress = progressProj.apply(progress, { type: 'compaction/start', time: Date.now(), data: { compactionId: 'x', turn: 1 } });
+	progress = progressProj.apply(progress, { type: 'compaction/end', time: Date.now(), data: { compactionId: 'x', turn: 1 } });
 	progressProj.stateSchema.parse(progress);
-	assert.strictEqual(progress.compactCount, 1, '压缩次数累加');
-	assert.strictEqual(progress.compactTurn, 1, '压缩轮号来自压缩事件');
+	assert.strictEqual(progress.compactCount, 1, '成功的压缩才累加次数');
+	assert.strictEqual(progress.compactTurn, 1, '压缩轮号来自 end 事件');
 	assert.strictEqual(progress.compactStep, 3, '压缩节点取压缩前最后一步');
-	assert.deepStrictEqual(progress.compacts, [{ turn: 1, step: 3 }], '每一次压缩的落点都留档（气泡里逐条列）');
+	assert.deepStrictEqual(progress.compacts, [{ turn: 1, step: 3, afterTurn: null, manual: false }], '成功压缩的落点留档（气泡里逐条列），自动压缩 manual:false');
+
+	/* 失败压缩（模型报错时只发 compaction/end + error，没有 summary）：不计次数、不落档 */
+	progress = progressProj.apply(progress, { type: 'compaction/start', time: Date.now(), data: { compactionId: 'bad', turn: 1 } });
+	progress = progressProj.apply(progress, { type: 'compaction/end', time: Date.now(), data: { compactionId: 'bad', turn: 1, error: '400: prompt is too long' } });
+	progressProj.stateSchema.parse(progress);
+	assert.strictEqual(progress.compactCount, 1, '失败的压缩不计次数');
+	assert.deepStrictEqual(progress.compacts, [{ turn: 1, step: 3, afterTurn: null, manual: false }], '失败的压缩不落档');
+	assert.strictEqual(progress.compactTurn, 1, '失败压缩不改最近一次成功压缩的落点');
 
 	/* 换轮：本轮步数归零重数，累计的计数不动 */
 	progress = progressProj.apply(progress, { type: 'step/start', time: Date.now(), data: { turn: 2, step: 1 } });
@@ -232,18 +242,30 @@ globalThis.setInterval = () => 0;
 	assert.strictEqual(progress.turnSteps, 1, '换轮后本轮步数重数');
 	assert.strictEqual(progress.toolCalls, 7, '换轮不影响累计工具调用次数');
 	assert.strictEqual(progress.compactStep, 3, '换轮不影响压缩节点');
-	/* 第二次压缩：留档追加，不改前一条 */
+	/* 第二次成功压缩：留档追加，不改前一条 */
 	progress = progressProj.apply(progress, { type: 'compaction/start', time: Date.now(), data: { compactionId: 'z', turn: 2 } });
+	progress = progressProj.apply(progress, { type: 'compaction/end', time: Date.now(), data: { compactionId: 'z', turn: 2 } });
 	progressProj.stateSchema.parse(progress);
-	assert.deepStrictEqual(progress.compacts, [{ turn: 1, step: 3 }, { turn: 2, step: 1 }], '压缩落点按发生顺序追加');
+	assert.deepStrictEqual(progress.compacts, [{ turn: 1, step: 3, afterTurn: null, manual: false }, { turn: 2, step: 1, afterTurn: null, manual: false }], '压缩落点按发生顺序追加');
+
+	/* 用户手动 /compact：轮间压缩（start/summary/end 都带 sourceCommandId，turn=null） */
+	let manual = progressProj.init();
+	manual = progressProj.apply(manual, { type: 'compaction/start', time: Date.now(), data: { compactionId: 'm', turn: null, sourceCommandId: 'cmd-1' } });
+	manual = progressProj.apply(manual, { type: 'compaction/end', time: Date.now(), data: { compactionId: 'm', turn: null, sourceCommandId: 'cmd-1' } });
+	progressProj.stateSchema.parse(manual);
+	assert.strictEqual(manual.compactCount, 1, '成功的手动压缩也计数');
+	assert.strictEqual(manual.compactTurn, null, '轮间压缩没有轮号');
+	assert.strictEqual(manual.compactStep, null, '轮间压缩没有同轮步号可对，给 null');
+	assert.deepStrictEqual(manual.compacts, [{ turn: null, step: null, afterTurn: null, manual: true }], '用户手动 /compact 记 manual:true；state.turn=0 时 afterTurn 给 null');
 
 	/* 压缩落在轮首、压缩前没有同轮的步：步号给 null，客户端只显示轮号 */
 	let cold = progressProj.init();
 	cold = progressProj.apply(cold, { type: 'compaction/start', time: Date.now(), data: { compactionId: 'y', turn: 7 } });
+	cold = progressProj.apply(cold, { type: 'compaction/end', time: Date.now(), data: { compactionId: 'y', turn: 7 } });
 	progressProj.stateSchema.parse(cold);
 	assert.strictEqual(cold.compactTurn, 7, '压缩轮号照给');
 	assert.strictEqual(cold.compactStep, null, '取不到轮内步号时给 null');
-	assert.deepStrictEqual(cold.compacts, [{ turn: 7, step: null }], '轮首压缩也留档，步号 null');
+	assert.deepStrictEqual(cold.compacts, [{ turn: 7, step: null, afterTurn: null, manual: false }], '轮首压缩也留档，步号 null');
 	console.log('进度投影:', JSON.stringify({ turnSteps: progress.turnSteps, toolCalls: progress.toolCalls, toolNames: Object.keys(progress.toolCounts).length, skills: progress.skills, compactCount: progress.compactCount, compacts: progress.compacts }));
 
 	console.log('\nHOST PROJECTION CHECKS PASSED');

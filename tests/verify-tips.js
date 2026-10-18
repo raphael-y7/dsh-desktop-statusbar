@@ -15,7 +15,7 @@ const assert = require('assert');
 const PLUGIN = path.join(__dirname, '..', 'lib', 'client.js');
 let code = fs.readFileSync(PLUGIN, 'utf8');
 code = code.replace('\t\texports.apply = apply;',
-	'\t\texports.__t = { segmentView, segmentText, chineseNumber, SEGMENTS, DEFAULT_SEGMENTS, isSegmentOn, snapshot, toolLabel, toolList, TOOL_LABELS_ZH };\n\t\texports.apply = apply;');
+	'\t\texports.__t = { segmentView, segmentText, chineseNumber, SEGMENTS, DEFAULT_SEGMENTS, isSegmentOn, snapshot, toolList, TOOL_BAR_COLORS };\n\t\texports.apply = apply;');
 
 const fakeWindow = {
 	localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -87,6 +87,7 @@ const TEMPLATES = {
 	tipCompactItem: '第{index}次压缩',
 	tipCompactWhere: '第{turn}轮{step}步',
 	tipCompactTurnOnly: '第{turn}轮',
+	tipCompactAfter: '第{turn}轮后',
 	unitCountSteps: ' 步',
 	unitCountCalls: ' 次',
 	unitSpeed: 't/s'
@@ -102,6 +103,10 @@ const values = (rows) => Array.from(rows, (row) => row.value);
 /* 气泡里的行对象是在 vm 里造的（跨 realm 原型不同，deepStrictEqual 会判不等），
    比结构时先摊成外层对象 */
 const pairs = (rows) => Array.from(rows, (row) => ({ label: row.label, value: row.value }));
+/* 名字可能是节点数组（手动调用的上标星号），拍成一行文本：星号节点在替身里只记作 "*" */
+const plainLabel = (label) => (Array.isArray(label)
+	? label.map((one) => (typeof one === 'string' ? one : '*')).join('')
+	: label);
 
 const src = {
 	stats: { turns: 2, steps: 10, llmMs: 125000, toolMs: 45000, ttftMs: 2000, ttftSteps: 2, decodeMs: 1000, decodeTokens: 500 },
@@ -148,11 +153,22 @@ const src = {
 	progress: {
 		turn: 9, turnSteps: 7, toolCalls: 1338,
 		toolCounts: { read: 900, pwsh: 400, edit: 38 },
-		skills: ['ponytail', 'my-dow-theory'],
-		/* 全局提示词（~/.dsh/AGENTS.md）：排进技能注入第一位，并计入那一行 */
+		/* 契约：每注入一次记一条 `{ name, manual }`，同名注入由客户端聚合次数。
+		   ponytail 注入两次（其中一次是用户手动调用）→ 次数 2 + 上标星号。 */
+		skills: [
+			{ name: 'ponytail', manual: false },
+			{ name: 'my-dow-theory', manual: false },
+			{ name: 'ponytail', manual: true }
+		],
+		/* 全局提示词（~/.dsh/AGENTS.md）：也算一次注入并计入那一行，和技能一起参与排序 */
 		globalInstruction: 'AGENTS.md',
 		compactCount: 2, compactTurn: 49, compactStep: 1,
-		compacts: [{ turn: 12, step: 3 }, { turn: 49, step: 1 }]
+		/* 只给成功的压缩（宿主已滤掉失败）；第二条是用户手动压缩：轮间压缩没有 turn，
+		   用 afterTurn 记「发生在第几轮之后」→ 行尾上标星号 + 「第20轮后」 */
+		compacts: [
+			{ turn: 12, step: 3, manual: false, afterTurn: null },
+			{ turn: null, step: null, manual: true, afterTurn: 20 }
+		]
 	}
 };
 
@@ -185,62 +201,64 @@ const countsTip = api.segmentView('counts', src, t).tip;
 assert.strictEqual(countsTip.title, '会话数据', '气泡标题用 tipCountsTitle（字段名仍是「轮次＆步数」）');
 assert.strictEqual(countsTip.head, undefined, '标题右侧不跟数值');
 assert.deepStrictEqual(labels(countsTip.rows), ['上下文压缩', '技能注入', '工具调用'], '轮次气泡三行：上下文压缩 → 技能注入 → 工具调用');
-assert.deepStrictEqual(values(countsTip.rows), ['2', '3', '1,338'], '三行都只给数字、不带单位；技能注入把全局提示词也算进去（2 技能 + AGENTS.md）');
+assert.deepStrictEqual(values(countsTip.rows), ['2', '4', '1,338'], '三行都只给数字、不带单位；技能注入按每次注入计数（3 条技能注入 + AGENTS.md）');
 assert.deepStrictEqual(Array.from(countsTip.rows, (row) => row.sub.title), ['上下文压缩', '技能注入', '工具调用'], '三行各自带一个下钻子视图，标题就是这一行的名字');
 assert.strictEqual(countsTip.rows[1].list, undefined, '技能注入那行不再带 list（悬停二次气泡已去掉）');
 console.log('轮次气泡:', countsTip.rows.map((r) => r.label + ' ' + r.value).join(' / '));
 
-/* 子视图内容：技能注入只列名字、工具调用先按显示名长短（短的在前）再按次数降序、压缩次数逐条列落点 */
-assert.deepStrictEqual(labels(countsTip.rows[1].sub.rows), ['AGENTS.md', 'ponytail', 'my-dow-theory'], '技能注入子视图：全局提示词排第一，技能按注入顺序去重');
-assert.strictEqual(countsTip.rows[1].sub.rows[0].value, undefined, '技能注入的行不带数值（次数在上一层那行给）');
-/* 中文界面显示中文名；排序主键是显示名长度：命令行(3) < 读取文件(4) = 修改文件(4)，
-   同为 4 字再按次数降序 ⇒ read 900 次在 edit 38 次前面（手算，不借实现的排序函数） */
+/* 子视图内容：AGENTS.md 固定第一；技能按名字长短 → 次数降序 → 字典序、同名合并（次数只用于排序、不显示）；
+   工具调用先按显示名长短（短的在前）再按次数降序；压缩次数逐条列落点 */
+assert.deepStrictEqual(Array.from(countsTip.rows[1].sub.rows, (row) => plainLabel(row.label)),
+	['AGENTS.md', 'ponytail*', 'my-dow-theory'],
+	'技能注入子视图：AGENTS.md 是全局提示词、固定第一不参与排序；ponytail 注入两次（其中一次手动）→ 合并 + 上标星号');
+/* 用户明确要求：技能注入只列名字，不显示统计次数（次数只在排序里用到） */
+assert.deepStrictEqual(Array.from(countsTip.rows[1].sub.rows, (row) => row.value), [undefined, undefined, undefined],
+	'技能注入的行不带数值（不显示次数）；AGENTS.md 也不显示次数');
+/* 工具名直接显示原生英文名（不再翻译）；排序主键是名字长度：read/edit/pwsh 都是 4，
+   同长度按次数降序 ⇒ read 900 > pwsh 400 > edit 38（手算，不借实现的排序函数） */
 assert.deepStrictEqual(pairs(countsTip.rows[2].sub.rows), [
-	{ label: '命令行', value: '400 次' },
-	{ label: '读取文件', value: '900 次' },
-	{ label: '修改文件', value: '38 次' }
-], '工具调用子视图：中文名，按显示名长度升序、同长度按次数降序，带单位');
+	{ label: 'read', value: '900 次' },
+	{ label: 'pwsh', value: '400 次' },
+	{ label: 'edit', value: '38 次' }
+], '工具调用子视图：原生英文名，按名字长度升序、同长度按次数降序，带单位');
 /* 只有工具调用这个子视图把名字↔次数的间隙收到 1ch，别的子视图与根视图都保持 5ch */
 assert.strictEqual(countsTip.rows[2].sub.tight, true, '工具调用子视图标了 tight');
 assert.strictEqual(countsTip.rows[1].sub.tight, undefined, '技能注入子视图不收紧间隙');
 assert.strictEqual(countsTip.rows[0].sub.tight, undefined, '上下文压缩子视图不收紧间隙');
-assert.deepStrictEqual(pairs(countsTip.rows[0].sub.rows), [
+assert.deepStrictEqual(Array.from(countsTip.rows[0].sub.rows, (row) => ({ label: plainLabel(row.label), value: row.value })), [
 	{ label: '第一次压缩', value: '第12轮3步' },
-	{ label: '第二次压缩', value: '第49轮1步' }
-], '上下文压缩子视图：中文序数 + 第X轮Y步，按发生顺序');
-console.log('子视图:', countsTip.rows.map((r) => pairs(r.sub.rows).map((x) => x.label + ' ' + x.value).join(' / ')).join(' || '));
+	/* 星号在行尾（「第二次压缩*」）：上标挂在最后，不把「第二次」拆开；
+	   手动压缩没有 turn，落点用 afterTurn 显示「第20轮后」而不是横杠 */
+	{ label: '第二次压缩*', value: '第20轮后' }
+], '上下文压缩子视图：中文序数 + 第X轮Y步，按发生顺序；手动压缩的行尾加上标星号');
+console.log('子视图:', countsTip.rows.map((r) => pairs(r.sub.rows).map((x) => plainLabel(x.label) + ' ' + x.value).join(' / ')).join(' || '));
 
-/* ------------------------------------ 工具调用：中文名 + 长度优先 / 同长度按次数降序 */
+/* ----------------------------- 工具调用：原生英文名 + 长度优先 / 同长度按次数降序 */
 const toolListOf = (counts, tt) => Array.from(api.toolList(counts, tt).rows, (one) => ({ label: one.label, value: one.value }));
-/* 中文名对照表：契约里逐条列出的那 34 条（pwsh 与 bash 是同义词，用同一个中文名） */
-assert.deepStrictEqual(Object.assign({}, api.TOOL_LABELS_ZH), {
-	pwsh: '命令行', bash: '命令行', read: '读取文件', write: '写入文件', edit: '修改文件',
-	glob: '查找文件', grep: '搜索内容', todo_write: '待办清单', skill: '技能', subagent: '子智能体',
-	subagent_fork: '子智能体（继承）', ask_user_question: '询问用户', create_goal: '新建目标',
-	update_goal: '更新目标', get_goal: '查看目标', present: '展示文件', web_search: '联网搜索',
-	web_fetch: '抓取网页', job_list: '后台任务列表', job_output: '后台任务输出', job_kill: '取消后台任务',
-	spawn_teammate: '新增队友', send_message: '发送消息', wait_agent: '等待队友', interrupt_agent: '中断队友',
-	list_agents: '队友列表', team_task_create: '新建任务', team_task_list: '任务列表',
-	team_task_get: '查看任务', team_task_update: '更新任务', exit_plan_mode: '退出计划模式',
-	load_workspace_dependencies: '加载工作区依赖', find_dsh_plugin: '查找插件', workflow: '工作流'
-}, '中文名对照表要逐条对上');
-assert.strictEqual(api.toolLabel('read', t), '读取文件', '(a) 中文界面查表给中文名');
-assert.strictEqual(api.toolLabel('bash', t), '命令行', 'bash 与 pwsh 用同一个中文名');
-assert.strictEqual(api.toolLabel('mcp__demo__search', t), 'mcp__demo__search', '(c) 未映射的工具回退原名');
-/* (b) 长度优先 + 同长度按次数降序：技能(2) < 命令行(3) < 读取文件(4) = 写入文件(4)；
-   50 次并没有把「读取文件」顶到最前 —— 长度才是主键，同为 4 字时才看次数降序 */
+/* 按**原始工具名**合并计数：同名才合并（数据层面不同工具名天然不同）；
+   bash / pwsh / ops_bash 是不同工具，各占一行 —— 不再有「命令行」这种中文名合并 */
+assert.deepStrictEqual(toolListOf({ pwsh: 5, bash: 3, read: 4 }, t), [
+	{ label: 'pwsh', value: '5 次' },
+	{ label: 'read', value: '4 次' },
+	{ label: 'bash', value: '3 次' }
+], 'bash / pwsh 各自一行（原生名，不再按中文名合并）');
+/* 长度优先 + 同长度按次数降序：read(4) 50 次在 pwsh(4) 1 次前；skill(5) 9 次在 write(5) 2 次前 */
 assert.deepStrictEqual(toolListOf({ pwsh: 1, read: 50, write: 2, skill: 9 }, t), [
-	{ label: '技能', value: '9 次' },
-	{ label: '命令行', value: '1 次' },
-	{ label: '读取文件', value: '50 次' },
-	{ label: '写入文件', value: '2 次' }
+	{ label: 'read', value: '50 次' },
+	{ label: 'pwsh', value: '1 次' },
+	{ label: 'skill', value: '9 次' },
+	{ label: 'write', value: '2 次' }
 ], '长度升序 → 同长度次数降序');
-/* (c) 未映射的工具照原样显示，原名照样参与长度排序 */
+/* 插件 / MCP 工具原样显示，原名照样参与长度排序 */
 assert.deepStrictEqual(toolListOf({ read: 1, mcp__demo__search: 5 }, t), [
-	{ label: '读取文件', value: '1 次' },
+	{ label: 'read', value: '1 次' },
 	{ label: 'mcp__demo__search', value: '5 次' }
 ], '插件 / MCP 工具原样显示');
-/* (d) 英文界面用原名：detectLocale 认的是 t("segCounts") 是不是中文那份 */
+/* 不再有「未翻译整行块」：所有行都走同一个列网格，行上不带 full 标记 */
+assert.strictEqual(
+	Array.from(api.toolList({ read: 1, mcp__demo__search: 5, bash: 2 }, t).rows).every((one) => one.full !== true),
+	true, '所有工具行统一分列，不再有 full 标记');
+/* 英文界面（与中文界面）都是同一份原始名，排序规则一致 */
 const EN_TIPS = {
 	segCounts: 'Turns & Steps',
 	tipCountsTitle: 'Session data', tipCountsSkills: 'Skills injected',
@@ -253,16 +271,17 @@ const tEn = (key, params) => {
 	if (params) out = out.replace(/\{(\w+)\}/g, (m, n) => (n in params ? String(params[n]) : m));
 	return out;
 };
-assert.strictEqual(api.toolLabel('read', tEn), 'read', '(d) 英文界面直接用原名');
 assert.deepStrictEqual(toolListOf({ read: 1, skill: 5 }, tEn), [
 	{ label: 'read', value: '1 calls' },
 	{ label: 'skill', value: '5 calls' }
 ], '英文界面：read(4 字符) 在 skill(5 字符) 前面');
-/* 同一份数据换中文界面：顺序反过来（技能 2 字 < 读取文件 4 字）—— 证明排序键就是显示名 */
-assert.deepStrictEqual(toolListOf({ read: 1, skill: 5 }, t), [
-	{ label: '技能', value: '5 次' },
-	{ label: '读取文件', value: '1 次' }
-], '中文界面同一份数据顺序相反');
+assert.deepStrictEqual(toolListOf({ pwsh: 5, bash: 3, ops_bash: 2 }, tEn), [
+	{ label: 'pwsh', value: '5 calls' },
+	{ label: 'bash', value: '3 calls' },
+	{ label: 'ops_bash', value: '2 calls' }
+], '英文界面按原名分：pwsh / bash / ops_bash 各自一行');
+/* 中英两套界面同一份数据：名字相同、顺序相同（不再有翻译导致的中英差异） */
+assert.deepStrictEqual(toolListOf({ read: 1, skill: 5 }, t), toolListOf({ read: 1, skill: 5 }, t), '同一份数据同序');
 /* 端到端：面板里那一行确实走同一套规则 */
 const subToolRows = (counts) => {
 	const progress = Object.assign({}, src.progress, { toolCounts: counts });
@@ -272,6 +291,60 @@ const subToolRows = (counts) => {
 };
 assert.deepStrictEqual(subToolRows({ read: 1, skill: 5 }), toolListOf({ read: 1, skill: 5 }, t),
 	'面板子视图与 toolList 同源同序');
+
+/* 标题下彩条：颜色按显示顺序取 32 色（浅→中→深→浓），宽度 = 该工具次数 ÷ 总次数 */
+const segOf = (counts, tt) => Array.from(api.toolList(counts, tt).segments);
+const threeSegs = segOf({ aaa: 50, bbb: 30, ccc: 20 }, t);
+assert.deepStrictEqual(threeSegs.map((one) => Math.round(one.width)), [50, 30, 20],
+	'三个工具 50 / 30 / 20 次 → 段宽 50% / 30% / 20%');
+assert.deepStrictEqual(threeSegs.map((one) => one.color), ['#FFBFD1', '#FFC5AB', '#F4D06A'],
+	'前三工具依次用浅色 01 / 02 / 03');
+/* 悬停浮层用 name + percentText（两位小数占比），不再生成浏览器原生 title */
+assert.deepStrictEqual(threeSegs.map((one) => one.name), ['aaa', 'bbb', 'ccc'], '每段带工具名（浮层左侧）');
+assert.deepStrictEqual(threeSegs.map((one) => one.percentText), ['50.00%', '30.00%', '20.00%'],
+	'每段带两位小数占比（浮层右侧）');
+assert.ok(threeSegs.every((one) => one.title === undefined), '不再生成原生 title 字符串');
+assert.strictEqual(threeSegs.reduce((sum, one) => sum + one.width, 0), 100, '段宽总和 100%');
+/* 8 个工具用满浅色一行；第 9 个开始用第二行（中）第 1 色 */
+const nineCounts = {};
+for (let i = 0; i < 9; i += 1) nineCounts['a' + String(i + 1)] = 9 - i;
+const nineSegs = segOf(nineCounts, t);
+assert.deepStrictEqual(nineSegs.slice(0, 8).map((one) => one.color), [
+	'#FFBFD1', '#FFC5AB', '#F4D06A', '#B0E693', '#72ECD6', '#93E0FF', '#C3D2FF', '#EBC1FF'
+], '前 8 个工具用浅色那 8 个');
+assert.strictEqual(nineSegs[8].color, '#FFA29E', '第 9 个工具用中行第 1 色');
+/* 33 个工具：第 33 个循环回第 1 色 */
+const manyCounts = {};
+for (let i = 0; i < 33; i += 1) manyCounts['b' + String(i + 1).padStart(2, '0')] = 33 - i;
+const manySegs = segOf(manyCounts, t);
+assert.strictEqual(manySegs.length, 33, '33 个工具 33 段');
+assert.strictEqual(manySegs[31].color, '#D67774', '第 32 个用最后一色（浓行末尾）');
+assert.strictEqual(manySegs[32].color, '#FFBFD1', '第 33 个循环回浅色 01');
+/* 色表**整张**都要钉住，不能只抽点验首尾：
+   原先只断言前 3 / 前 8 / 第 9 / 第 32 / 第 33 循环 —— 第 10–19、21–31 色位没有任何断言，
+   实测把第 20/21 色对调、或把第 16 色改成与第 15 色重复，测试仍全绿（审查 C 的 S1 / S2 变异）。
+
+   ⚠ 期望值必须是**写死的字面量表**，不能拿 `api.TOOL_BAR_COLORS` 当期望 ——
+   那样是拿实现断言实现，色表自己改了期望也跟着变，恒等成立（第一版就这么写的，
+   实测 S1 对调 20/21 色仍然全绿）。所以这里把 32 色原文抄一份。 */
+const EXPECTED_COLORS = [
+	'#FFBFD1', '#FFC5AB', '#F4D06A', '#B0E693', '#72ECD6', '#93E0FF', '#C3D2FF', '#EBC1FF',
+	'#FFA29E', '#F5AE60', '#C0C762', '#77D6A1', '#57D4DE', '#87C5FF', '#C0B3FC', '#EDA3D8',
+	'#EB9067', '#CAA63E', '#88BC6B', '#42C2AD', '#54B9DD', '#91A7EC', '#C496D9', '#E68BA8',
+	'#CA8634', '#989E36', '#4DAD79', '#1BAAB4', '#609CD4', '#998BD1', '#C27BAF', '#D67774'
+];
+const colorTable = Array.prototype.slice.call(api.TOOL_BAR_COLORS);
+assert.strictEqual(colorTable.length, 32, '色表必须正好 32 色，实际 ' + colorTable.length);
+assert.deepStrictEqual(colorTable, EXPECTED_COLORS, '色表 32 色逐个钉死（任何色位改动 / 对调都必须报出来）');
+assert.strictEqual(new Set(colorTable).size, 32, '32 个颜色不得重复（第 16 色曾有重复变异存活）');
+const thirtyTwoCounts = {};
+for (let i = 0; i < 32; i += 1) thirtyTwoCounts['c' + String(i + 1).padStart(2, '0')] = 32 - i;
+const thirtyTwoSegs = segOf(thirtyTwoCounts, t);
+assert.deepStrictEqual(thirtyTwoSegs.map((one) => one.color), EXPECTED_COLORS,
+	'32 个工具按显示顺序依次取到那 32 色（取色循环也必须一位不差）');
+/* 空列表 / 0 次：不画彩条（保持原有空列表逻辑） */
+assert.strictEqual(api.toolList({}, t).segments, undefined, '没有工具调用时没有彩条');
+assert.strictEqual(api.toolList({ read: 0 }, t).segments, undefined, '次数为 0 时没有彩条');
 console.log('工具调用：中文名 / 长度优先 / 同长度次数降序 / 未映射回退原名 / 英文用原名');
 
 /* 没压缩过 / host 还没上报这个投影：对应行给横杠，气泡照样打得开 */
@@ -289,14 +362,20 @@ const onlyPrompt = countsWith({ turn: 3, turnSteps: 4, toolCalls: 0, skills: [],
 assert.strictEqual(onlyPrompt[1].value, '1', '只有全局提示词时技能注入那行给 1');
 assert.deepStrictEqual(labels(onlyPrompt[1].sub.rows), ['AGENTS.md'], '只有全局提示词时子视图只列它');
 /* 没有全局提示词时：不计入、也不出现在子视图里 */
-const noPrompt = countsWith({ turn: 3, turnSteps: 4, toolCalls: 10, skills: ['ponytail'], globalInstruction: null, toolCounts: {}, compactCount: 0, compactTurn: null, compactStep: null, compacts: [] });
+const noPrompt = countsWith({ turn: 3, turnSteps: 4, toolCalls: 10, skills: [{ name: 'ponytail', manual: false }], globalInstruction: null, toolCounts: {}, compactCount: 0, compactTurn: null, compactStep: null, compacts: [] });
 assert.strictEqual(noPrompt[1].value, '1', '没有全局提示词时技能注入只数技能');
-assert.deepStrictEqual(labels(noPrompt[1].sub.rows), ['ponytail'], '没有全局提示词时子视图不出现 AGENTS.md');
+assert.deepStrictEqual(Array.from(noPrompt[1].sub.rows, (row) => plainLabel(row.label)), ['ponytail'], '没有全局提示词时子视图不出现 AGENTS.md');
 /* 技能有两种来源（skill 工具调用 + 斜杠命令 /i-have-adhd 这类）：host 那边已经并进同一个 skills 数组，
-   这里只按名字去重；重复注入同一技能只留一行，但计数仍按注入次数（与工具调用口径一致） */
-const mixedSkills = countsWith({ turn: 1, turnSteps: 1, toolCalls: 3, skills: ['i-have-adhd', 'ponytail', 'i-have-adhd'], globalInstruction: null, toolCounts: {}, compactCount: 0, compactTurn: null, compactStep: null, compacts: [] });
+   这里按名字合并；重复注入同一技能只留一行，计数按注入次数（与工具调用口径一致） */
+const mixedSkills = countsWith({ turn: 1, turnSteps: 1, toolCalls: 3, skills: [
+	{ name: 'i-have-adhd', manual: false },
+	{ name: 'ponytail', manual: true },
+	{ name: 'i-have-adhd', manual: false }
+], globalInstruction: null, toolCounts: {}, compactCount: 0, compactTurn: null, compactStep: null, compacts: [] });
 assert.strictEqual(mixedSkills[1].value, '3', '斜杠命令注入的技能与工具调用注入的技能并进同一行计数');
-assert.deepStrictEqual(labels(mixedSkills[1].sub.rows), ['i-have-adhd', 'ponytail'], '两种来源合并后按注入顺序去重，重复注入只留一行');
+assert.deepStrictEqual(Array.from(mixedSkills[1].sub.rows, (row) => plainLabel(row.label)), ['ponytail*', 'i-have-adhd'],
+	'同名合并；名字短的在前面；手动调用的 ponytail 带星号');
+assert.deepStrictEqual(Array.from(mixedSkills[1].sub.rows, (row) => row.value), [undefined, undefined], '合并后仍只显示名字，不显示次数');
 /* 压缩落点拿不到步号（压缩落在轮首）时只给轮号，整条也不至于给横杠 */
 assert.deepStrictEqual(
 	pairs(countsWith({ turn: 1, turnSteps: 0, toolCalls: 3, skills: [], toolCounts: {}, compactCount: 1, compactTurn: 7, compactStep: null, compacts: [{ turn: 7, step: null }] })[0].sub.rows),

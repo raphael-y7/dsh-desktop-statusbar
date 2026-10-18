@@ -8,7 +8,8 @@
  *      `noteSubagentTruncated` 应当从 client.js 里彻底消失。
  *   ② host 路由 `?sessionId=…&since=<毫秒>`：只统计 `event.time >= since` 的事件。
  *      **task-18 起**：不传 `since` **不再等于整会话** —— host 会读父会话日志里最后一条 `turn/start`
- *      （没有就退回最后一条 `user/message`）代推本轮起点；连父会话日志都没有就本轮为空。
+ *      代推本轮起点；`user/message` 只认 `source.kind === 'user'` 的真实用户消息（同轮注入的
+ *      通知类消息不算，否则会把本轮起点推后、抹掉队友已花的钱）；连父会话日志都没有就本轮为空。
  *      响应里多一个 `sinceSource: 'client' | 'host' | 'none'` 说明窗口从哪来；
  *      **要整会话必须显式传 `since=0`**（客户端就是这么发的）。
  *      非法 `since`（非数 / 空 / 负数 / 未来时刻，含 2286 年与 40 位数字）一律**当没传**（交给 host 代推）。
@@ -593,8 +594,15 @@ const zeroTokens = () => ({ input: 0, cacheRead: 0, cacheWrite: 0, output: 0 });
 	/* ② 「总计用量」与三行 = 本会话 + 队友（手算：命中 2M / 未命中 4M / 输出 6M） */
 	const merged = api.mergeTokenParts(api.sessionTokenParts(withSub.usage), api.subagentOf(SUB_OK, 'session'));
 	assert.deepStrictEqual(deep(merged), { cached: 2 * M, missInput: 4 * M, output: 6 * M }, '合并后的三段手算对上');
+	/* 面板：合并数字不变，条上子代理块在左、主会话块在右；子·命中用 75% 浅灰 */
+	const subSession = api.subagentOf(SUB_OK, 'session');
 	assert.deepStrictEqual(deep(tip.panel),
-		deep(api.tokenPanelView(2 * M, 4 * M, 6 * M, t)), '面板用的正是合并后的三段');
+		deep(api.tokenPanelView(2 * M, 4 * M, 6 * M, t, subSession)), '面板用的正是合并后的三段（子代理在条上单独成块）');
+	assert.strictEqual(tip.panel.segments.length, 6, '总计条拆成 6 小段：子代理块在左、主会话块在右');
+	assert.deepStrictEqual(deep(tip.panel.segments.map((one) => one.sub === true)),
+		[true, true, true, false, false, false], '前 3 段是子代理块（子·命中 / 子·未命中 / 子·输出），后 3 段是主会话块');
+	assert.deepStrictEqual(deep(tip.panel.segments.map((one) => one.light === true)),
+		[true, false, false, false, false, false], '只有「子·命中」用 75% 浅灰，其余用正常主色');
 	assert.strictEqual(tip.panel.totalText, '12,000,000', '总计用量 = 2M+4M+6M = 12,000,000');
 	assert.deepStrictEqual(deep(tip.panel.rows.map((one) => one.value)), ['2,000,000', '4,000,000', '6,000,000'], '三行明细是合计数');
 	const noSubTip = api.segmentView('cost', noSub, t).tip;
@@ -673,7 +681,8 @@ const zeroTokens = () => ({ input: 0, cacheRead: 0, cacheWrite: 0, output: 0 });
 
 	/* ⑤ 节流 1 秒（用户要"实时"），且不新增定时器 */
 	assert.strictEqual(api.SUBAGENT_REFRESH_MS, 1000, '节流 60s → 1s（用户要实时）');
-	assert.strictEqual(api.SUBAGENT_TIMEOUT_MS, 8000, '超时上限不变');
+	assert.strictEqual(api.SUBAGENT_TIMEOUT_MS, 20000,
+		'超时放宽到 20s（146 个活跃子会话时 host 聚合会慢，8s 会被误判失败而沿用旧小值）');
 	/* 底栏只该有两个定时器：每秒时钟（跑起来 1s / 空闲 10s）与 60s 余额轮询。
 	   队友刷新复用那个每秒时钟、超时走 AbortSignal.timeout，所以这里数出来的总数不能涨。 */
 	assert.strictEqual(api.BALANCE_POLL_MS, 60000, '余额轮询仍是 60s');

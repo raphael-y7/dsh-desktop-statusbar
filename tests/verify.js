@@ -15,7 +15,13 @@ let code = fs.readFileSync(PLUGIN, 'utf8');
 const marker = '\t\texports.apply = apply;';
 assert.ok(code.includes(marker), 'exports.apply marker not found');
 code = code.replace(marker,
-  '\t\texports.__test = { segmentView, segmentText, detectLocale, formatDuration, formatSeconds, formatThroughput, SEGMENTS, DEFAULT_SEGMENTS, STORAGE_KEY, DEFAULT_PRICES, snapshot, StatusBar, SettingsSection, dropIndexAt, moveItem };\n' + marker);
+  /* `setConfig` 要导出：「总计」那批用例得走**真实改价路径**（设置页改价 = setConfig({models})），
+     手工改 config 是另一条路。`applyTotalFloor` 不再导出 —— 它是「总计」的实现细节，
+     测试只该看渲染出来的文字，不该看它的内部账本（否则又会退化成绕过真实路径的纯函数测试）。
+     `rowsPanel` 要导出：它是**唯一**给「标题下色条」定 `dsb-bar` / `dsb-bar-hoverable` 的地方，
+     而令牌面板（tokens）走的是另一条渲染路径（meterBar 里类名硬编码），
+     想真切到那个三元表达式，只能直接把 rowsPanel 调起来渲染。 */
+  '\t\texports.__test = { segmentView, segmentText, detectLocale, formatDuration, formatSeconds, formatThroughput, SEGMENTS, DEFAULT_SEGMENTS, STORAGE_KEY, DEFAULT_PRICES, snapshot, setConfig, StatusBar, SettingsSection, dropIndexAt, moveItem, creditsPanel, BALANCE_COLORS, creditsLabel, formatCredits, plainBoundsOf, clampPlainLeft, plainFitScale, creditDisplayName, TOOL_BAR_COLORS, rowsPanel };\n' + marker);
 
 const store = new Map();
 /* 预置一份"乱序 + 只勾四段 + 非默认币种"的旧配置：出厂默认要从这种状态拉回来 */
@@ -100,6 +106,30 @@ const stubRing = { getBoundingClientRect: () => stubRect(stubRingLeft, 20) };
 /* 底栏最右那一项（末尾字段）：右对齐/宽度上限都按它的右边界算 */
 let stubBarRight = 985;
 const stubLastSeg = { getBoundingClientRect: () => stubRect(stubBarRight - 170, 170) };
+/* 悬停纯文字提示的**自然宽度**（未缩放）。测试按需改大来触发 plainFitScale < 1。 */
+let stubHoverPlainWidth = 60;
+/* 悬停提示定位 effect 要量的三个盒子（宽度够用即可，只关心相对关系）：
+   标题行 head（算垂直居中）、标题文字 headline（算水平左界）、色条 bar（算水平右界）。 */
+let stubHeadWidth = 300;
+let stubHeadlineWidth = 60;
+let stubBarWidth = 273;
+/* 工具调用列数自适应的假几何：列网格 nowrap，放不下的表现是**内容宽 > 容器宽**。
+   stubWrapOn 时容器只放得下 stubWrapCap 列（stubColWidth 是每列的假宽度）——
+   列数按当前渲染树里的 .dsb-meter-col 数量算，行数每加一档列数就少一档，溢出自然消失。 */
+let stubWrapOn = false;
+let stubWrapCap = 3;
+/* 每列的假宽度：只要"总宽 = 列数 × 它"这个关系成立，取值不影响判定（用 170 与真实列宽同量级） */
+const stubColWidth = 170;
+/** 树里某个类名出现了几次（给气泡的假 querySelectorAll 用） */
+function countClass(node, cls) {
+	if (node === null || node === undefined) return 0;
+	if (Array.isArray(node)) return node.reduce((sum, one) => sum + countClass(one, cls), 0);
+	if (typeof node !== 'object') return 0;
+	const className = node.props === undefined || node.props.className === undefined ? '' : String(node.props.className);
+	let count = className.split(' ').indexOf(cls) !== -1 ? 1 : 0;
+	(node.children || []).forEach((one) => { count += countClass(one, cls); });
+	return count;
+}
 const reactStub = {
 	createElement(type, props, ...children) {
 		const node = {
@@ -118,21 +148,75 @@ const reactStub = {
 				return { top: top, height: 40, bottom: top + 40, left: 0, width: 300 };
 			};
 		}
-		/* 气泡面板：宽度由 CSS 的 max-content 决定，替身里由 stubTipWidth 给 */
-		if (cls.indexOf('dsb-tip') !== -1) node.getBoundingClientRect = () => stubRect(0, stubTipWidth);
+		/* 气泡面板：宽度由 CSS 的 max-content 决定，替身里由 stubTipWidth 给；
+		   同时给一个假的列网格几何，让 toolColumnsOverflow 能按当前渲染树判"横向放不下" */
+		if (cls.indexOf('dsb-tip') !== -1) {
+			node.getBoundingClientRect = () => stubRect(0, stubTipWidth);
+			node.querySelector = (selector) => {
+				if (selector === '.dsb-meter-tight') return countClass(node, 'dsb-meter-tight') > 0 ? {} : null;
+				/* 悬停纯文字提示的定位 effect 要量标题行与色条：
+				   分别给一个盒子，才能算出 top（标题行居中）与水平区间（标题右 → 色条右）。 */
+				if (selector === '.dsb-meter-head') return { getBoundingClientRect: () => stubRect(0, stubHeadWidth) };
+				if (selector === '.dsb-meter-headline') return { getBoundingClientRect: () => stubRect(0, stubHeadlineWidth) };
+				if (selector === '.dsb-bar') return { getBoundingClientRect: () => stubRect(0, stubBarWidth) };
+				return null;
+			};
+			/* 工具调用子视图只有一个列网格。列网格是 flex-wrap:nowrap（绝不折行），
+			   所以"放不下"的表现是**内容比容器宽**（scrollWidth > clientWidth），不是列被折到下一排。
+			   替身按渲染树里的列数造这个几何：每列按 stubColWidth 算总宽，
+			   容器只放得下 stubWrapCap 列 —— 列数多于容量就判溢出，行数加上去列数变少就放得下。 */
+			node.querySelectorAll = (selector) => {
+				if (selector !== '.dsb-meter-cols') return [];
+				const total = countClass(node, 'dsb-meter-col');
+				if (total < 2) return [];
+				return [{
+					scrollWidth: total * stubColWidth,
+					clientWidth: stubWrapOn === true ? stubWrapCap * stubColWidth : total * stubColWidth
+				}];
+			};
+		}
 		/* 状态栏根节点：定位要按它里面的圆圈灰底量左边界，按最右那一项量右边界 */
 		if (cls.indexOf('dsb-root') !== -1) {
 			node.querySelector = (selector) => (selector === '.dsb-ring-btn' ? stubRing : null);
 			node.querySelectorAll = (selector) => (selector === '.dsb-seg' ? [stubLastSeg] : []);
 		}
+		/* 悬停纯文字提示（.dsb-hover-plain）：必须给 `style`，否则 onHoverMove 一进来就
+		   `if (node.style === undefined) return`，段内移动那条路径**一行都测不到**
+		   （这正是 M14「把 hoverPlainWidthRef 改成用缩放后宽度」变异仍然全绿的原因）。
+		   同时要**忠实模拟 transform 的影响**：
+		     · getBoundingClientRect() 返回的是**视觉**尺寸 → 要按 style.transform 里的 scale 打折；
+		     · offsetWidth 是**布局**宽度 → 不受 transform 影响，永远是 naturalWidth。
+		   这样实现若误用 getBoundingClientRect().width 存 ref，测试就能抓到污染。 */
+		if (cls.indexOf('dsb-hover-plain') !== -1) {
+			node.style = {};
+			node.naturalWidth = stubHoverPlainWidth;
+			node.naturalHeight = 15;
+			const scaleOf = () => {
+				const raw = typeof node.style.transform === 'string' ? node.style.transform : '';
+				const m = /scale\(\s*([\d.]+)\s*\)/.exec(raw);
+				return m === null ? 1 : Number(m[1]);
+			};
+			node.getBoundingClientRect = () => {
+				const s = scaleOf();
+				return {
+					left: 0, top: 700,
+					width: node.naturalWidth * s,
+					height: node.naturalHeight * s,
+					right: node.naturalWidth * s, bottom: 700 + node.naturalHeight * s
+				};
+			};
+			/* offsetWidth 是整数、且**不含** transform —— 真实浏览器语义 */
+			Object.defineProperty(node, 'offsetWidth', {
+				configurable: true,
+				get: () => Math.round(node.naturalWidth)
+			});
+		}
 		if (typeof node.props.ref === 'function') node.props.ref(node);
-		/* 对象 ref 在替身里也要真的挂上节点（只认气泡/根节点这几个，别的 ref 装着别的东西） */
+		/* 对象 ref 在替身里也要真的挂上节点（只认气泡/根节点这几个，别的 ref 装着别的东西）。
+		   每次都更新到最新树：量测（宽度 / 折行）必须量这一遍渲染的结果，首次挂上后就不再更新会量到旧树。 */
 		const box = node.props.ref;
 		const mountable = cls.indexOf('dsb-tip') !== -1 || cls.indexOf('dsb-root') !== -1;
-		if (mountable === true && box !== null && typeof box === 'object'
-			&& (box.current === null || box.current === undefined)) {
-			box.current = node;
-		}
+		if (mountable === true && box !== null && typeof box === 'object') box.current = node;
 		return node;
 	},
 	useState: (init) => {
@@ -145,6 +229,20 @@ const reactStub = {
 		if (runEffects !== true || typeof fn !== 'function' || at < 0) return;
 		/* 依赖数组照 React 的规矩判：不写依赖数组 = 每次渲染都跑；
 		   写了就逐项比，全等才跳过 —— 定位那条 effect 少了依赖数组才量得到新宽度 */
+		const prev = activeHooks.deps[at];
+		const same = Array.isArray(deps) === true && Array.isArray(prev) === true
+			&& deps.length === prev.length && deps.every((one, index) => one === prev[index]);
+		activeHooks.deps[at] = Array.isArray(deps) ? deps.slice() : undefined;
+		if (same === true) return;
+		fn();
+	},
+	/* 真 React 一定有 useLayoutEffect（插件用它做绘制前定位）。替身必须提供，
+	   否则 useTipLayout 会退回 useEffect，而那条路径在替身里还要额外满足 runEffects 时序 ——
+	   更要紧的是：不提供的话「定位 effect」这段在测试里根本不会走，B3/M14 的变异就抓不到。 */
+	useLayoutEffect: (fn, deps) => {
+		const at = activeHooks === null ? -1 : activeHooks.index;
+		hookSlot(undefined);
+		if (runEffects !== true || typeof fn !== 'function' || at < 0) return;
 		const prev = activeHooks.deps[at];
 		const same = Array.isArray(deps) === true && Array.isArray(prev) === true
 			&& deps.length === prev.length && deps.every((one, index) => one === prev[index]);
@@ -188,11 +286,17 @@ const zh = {
 	f_speed: '综合速度 {throughput}t/s', f_sessionTime: '总用时 {duration}',
 	f_cost: '总计 {symbol}{cost}', f_lastCost: '本轮 {symbol}{cost}',
 	f_balance: '余额 {symbol}{amount}', f_balanceLoading: '余额 查询中', f_balanceFailed: '余额 失败({reason})',
+	/* 积分口径的套餐气泡（WorkBuddy）：标题 / 月度备注 / 刷新与到期备注 / 已用数值 */
+	tipCreditsTitle: '积分套餐', tipCreditsMonthly: '（每月刷新）', tipCreditsRefresh: ' · {date} 刷新',
+	tipCreditsExpire: ' · {date} 到期', tipCreditsRefreshLatest: ' · {date} 刷新(最近)',
+	tipCreditsExpireLatest: ' · {date} 到期(最近)', tipCreditsUsed: '已用 {used} / {total}',
 	unitCountTurns: ' 轮', unitCountSteps: ' 步',
 	unitCountCalls: ' 次',
 	tipCountsTitle: '会话数据', tipCountsSkills: '技能注入', tipCountsToolCalls: '工具调用',
 	tipCountsCompactAt: '上下文压缩',
 	tipCompactItem: '第{index}次压缩', tipCompactWhere: '第{turn}轮{step}步', tipCompactTurnOnly: '第{turn}轮',
+	tipCompactAfter: '第{turn}轮后',
+	tipManual: '手动触发',
 	unitCost: '', unitSeconds: ' s', unitSpeed: ' t/s', unitMinutes: ' m',
 	modelUnknown: '未识别',
 	segContextHint: '当前会话的运行状态与上下文占用。',
@@ -339,18 +443,315 @@ console.log('余额失败：', failBar.join(' | '));
 assert.ok(failBar.includes('余额 ¥-'), 'balance failure shows label + dash, got: ' + failBar.join(' | '));
 
 /* ---------------------------------------------------- WorkBuddy 积分口径 */
-/* 实测 2026-10-07：WorkBuddy 会话的余额是积分，不是钱。
-   积分不能带货币符号（否则显示成「余额 ¥177」），而且整个气泡都不该出现。 */
+/* 实测 2026-10-07：WorkBuddy 会话的余额是积分，不是钱（不能显示成「余额 ¥177」）。
+   2026-10：宿主额外给 rewards（积分套餐）时，点开是「积分套餐」面板：每个套餐一行 + 一条已用进度条；
+   没有 rewards（旧插件 / 查询中 / 失败）时保持原状 —— 不给 tip、点不开，不弹空气泡。 */
 const wbSrc = { ...emptySrc, sessionModel: { provider: 'workbuddy-ai', model: 'deepseek-v4.1-flash-sg' } };
 const wbBar = render({ ...wbSrc, balance: { ok: true, total: '177', currency: '', isCredits: true } }, allSegs);
 console.log('WorkBuddy 积分：', wbBar.join(' | '));
 assert.ok(wbBar.includes('余额 177'), '积分总数照常显示，got: ' + wbBar.join(' | '));
 assert.ok(!wbBar.includes('¥177'), '积分不带货币符号（不能显示成 ¥177），got: ' + wbBar.join(' | '));
-/* 积分没有构成可展开 ⇒ 不给 tip。渲染处按 tip !== null 决定 className 与 onClick，
+/* 没有 rewards（旧插件 / 宿主没给）：仍然不给 tip。渲染处按 tip !== null 决定 className 与 onClick，
    没有 tip 就不是可点击项、点不出气泡、悬停也不弹。 */
 const wbView = api.segmentView('balance', { ...wbSrc, balance: { ok: true, total: '177', currency: '', isCredits: true } }, t);
-assert.strictEqual(wbView.tip, undefined, '积分不给气泡（没有可展开的内容，弹空气泡会误以为能点）');
-/* 失败态 / 查询中：也要按积分口径显示，别又冒出一个 ¥，同样不给气泡 */
+assert.strictEqual(wbView.tip, undefined, '没有 rewards 时不给气泡（没有可展开的内容，弹空气泡会误以为能点）');
+/* 非空 rewards：给「积分套餐」气泡（credits 面板）；值 = 已用/总数，顺序按上游。
+   夹具用宿主真实数据（used/total 是原始 number，可能带浮点尾数，客户端要格式化到两位小数去尾零）。 */
+const REWARDS = [
+	{ name: 'CodeBuddy个人体验版', used: 500, total: 500, expireAt: null, refreshAt: '2026-11-01', monthly: true },
+	{ name: '拉新权益包', used: 552.42999936, total: 1500, expireAt: '2026-11-07', refreshAt: null, monthly: false },
+	{ name: 'Bonus Pack', used: 12.389999979999999, total: 250, expireAt: '2026-10-26', monthly: false },
+	{ name: 'Free Plan Subscription', used: 0, total: 100, refreshAt: '2026-11-01', monthly: true }
+];
+const wbRewardView = api.segmentView('balance', {
+	...wbSrc,
+	balance: { ok: true, total: '177', currency: '', isCredits: true, rewards: REWARDS }
+}, t);
+assert.strictEqual(wbRewardView.tip.kind, 'credits', '积分套餐用 credits 面板（每个套餐一行 + 一条进度条）');
+assert.strictEqual(wbRewardView.tip.title, '积分套餐', '气泡标题走 tipCreditsTitle（中性词）');
+assert.strictEqual(wbRewardView.tip.panel.totalText, '177', '面板右侧显示总积分');
+assert.deepStrictEqual(Array.from(wbRewardView.tip.panel.rewards, (one) => ({ label: one.label, valueText: one.valueText })), [
+	{ label: '个人体验版 · 11-01 刷新', valueText: '已用 500 / 500' },
+	{ label: '拉新权益包 · 11-07 到期', valueText: '已用 552.43 / 1500' },
+	{ label: 'Bonus Pack · 10-26 到期', valueText: '已用 12.39 / 250' },
+	{ label: 'Free Plan Subscription · 11-01 刷新', valueText: '已用 0 / 100' }
+], '月度包显「· MM-DD 刷新」、一次性包显「· MM-DD 到期」；值两位小数去尾零；顺序按上游；包名保持上游原名（不翻译）');
+/* 进度条比例 = used / total，夹在 0-100；0/100 的套餐不画进度段 */
+const percentOf = (at) => wbRewardView.tip.panel.rewards[at].percent;
+assert.ok(Math.abs(percentOf(0) - 100) < 1e-9, '已用满 → 100%');
+assert.ok(Math.abs(percentOf(1) - (552.42999936 / 1500) * 100) < 1e-6, '拉新权益包按 used/total 算比例');
+assert.ok(Math.abs(percentOf(2) - (12.389999979999999 / 250) * 100) < 1e-6, 'Bonus Pack 按 used/total 算比例');
+assert.strictEqual(percentOf(3), 0, '已用 0 → 0%（不画进度段）');
+/* 渲染层：标题下先一条横杠（复用 .dsb-meter-divider），每个套餐一个块 = 一行 + 一条进度 */
+const creditsTree = api.creditsPanel(wbRewardView.tip.panel, wbRewardView.tip.title, null, { current: null });
+assert.strictEqual(collectByClass(creditsTree, 'dsb-meter-divider').length, 1, '积分套餐气泡标题下有一条横杠');
+const creditsChildren = creditsTree.children || [];
+assert.strictEqual(String(creditsChildren[0].props.className), 'dsb-meter-head', '第一块是标题行');
+assert.strictEqual(String(creditsChildren[1].props.className), 'dsb-meter-divider', '标题行后紧跟横杠');
+assert.ok(String(creditsChildren[2].props.className).indexOf('dsb-credits-list') !== -1, '横杠后才是套餐列表');
+assert.strictEqual(collectByClass(creditsTree, 'dsb-credits-list').length, 1, '列表容器挂 dsb-credits-list（带滚动上限）');
+assert.strictEqual(collectByClass(creditsTree, 'dsb-credit').length, 4, '每个套餐一个块');
+const creditRowNodes = collectByClass(creditsTree, 'dsb-meter-row');
+assert.strictEqual(creditRowNodes.length, 4, '每个套餐一行（包名/备注 + 已用/总量）');
+assert.deepStrictEqual(Array.from(creditRowNodes, (row) => textOf(collectByClass(row, 'dsb-meter-name')[0])),
+	['个人体验版 · 11-01 刷新', '拉新权益包 · 11-07 到期', 'Bonus Pack · 10-26 到期', 'Free Plan Subscription · 11-01 刷新'],
+	'行首是包名 + 备注；包名保持上游原名（不翻译）');
+assert.deepStrictEqual(Array.from(creditRowNodes, (row) => textOf(collectByClass(row, 'dsb-meter-value')[0])),
+	['已用 500 / 500', '已用 552.43 / 1500', '已用 12.39 / 250', '已用 0 / 100'], '行尾是已用 / 总量');
+/* 进度方向：已用从**左边**起 —— 前段灰（已用宽）、后段透明（剩余宽）；
+   100% 只画整条灰；0% 仍渲染空轨道（有 .dsb-bar、没有填充段） */
+assert.strictEqual(collectByClass(creditsTree, 'dsb-bar').length, 4, '每个套餐都有进度条（0% 也画空轨道）');
+const creditSegs = collectByClass(creditsTree, 'dsb-bar-seg');
+const usedPct = (value, total) => (value / total) * 100;
+const pct1000 = (n) => Math.round(n * 1000) / 1000;
+const expectSegs = [
+	{ width: 100, color: api.BALANCE_COLORS.topUp },
+	{ width: usedPct(552.42999936, 1500), color: api.BALANCE_COLORS.topUp },
+	{ width: 100 - usedPct(552.42999936, 1500), color: 'transparent' },
+	{ width: usedPct(12.389999979999999, 250), color: api.BALANCE_COLORS.topUp },
+	{ width: 100 - usedPct(12.389999979999999, 250), color: 'transparent' }
+];
+assert.strictEqual(creditSegs.length, expectSegs.length, '100% 段 1 段 + 两个部分套餐各 2 段（灰已用 + 透明剩余）；0% 无段');
+assert.deepStrictEqual(Array.from(creditSegs, (one) => one.props.style.backgroundColor),
+	expectSegs.map((one) => one.color), '已用段用余额灰（BALANCE_COLORS.topUp），剩余段透明');
+assert.deepStrictEqual(Array.from(creditSegs, (one) => pct1000(parseFloat(one.props.style.width))),
+	expectSegs.map((one) => pct1000(one.width)), '前段宽 = used%、后段宽 = 100 - used%（已用从左起）');
+/* 0% 的套餐：有轨道、无填充段 */
+const zeroCredit = collectByClass(creditsTree, 'dsb-credit')[3];
+assert.strictEqual(collectByClass(zeroCredit, 'dsb-bar').length, 1, '0% 套餐有进度条轨道');
+assert.strictEqual(collectByClass(zeroCredit, 'dsb-bar-seg').length, 0, '0% 套餐没有填充段（只有空轨道）');
+/* 14 条套餐：列表容器仍是同一个滚动类（CSS 有半屏高度上限），条数照常 */
+const manyRewards = [];
+for (let i = 0; i < 14; i += 1) manyRewards.push({ name: '套餐' + (i + 1), used: i, total: 100, monthly: false });
+const wbMany = api.segmentView('balance', {
+	...wbSrc,
+	balance: { ok: true, total: '177', currency: '', isCredits: true, rewards: manyRewards }
+}, t);
+const manyTree = api.creditsPanel(wbMany.tip.panel, wbMany.tip.title, null, { current: null });
+assert.strictEqual(collectByClass(manyTree, 'dsb-credit').length, 14, '14 条套餐都渲染');
+assert.strictEqual(collectByClass(manyTree, 'dsb-credits-list').length, 1, '14 条时仍用带滚动的列表容器（不撑破屏幕）');
+
+/* 构造夹具（1 月度 + 1 拉新 + 11 裂变 + 1 Bonus，用于稳定断言；真机 live 是 12 裂变、无 Bonus）：
+   公共前缀剥离 + 相邻同名聚合 */
+const realRewards = [
+	{ name: 'CodeBuddy个人体验版', used: 500, total: 500, expireAt: null, refreshAt: '2026-11-01', monthly: true },
+	{ name: 'CodeBuddy个人版拉新权益包', used: 552.43, total: 1500, expireAt: '2026-11-07', monthly: false }
+];
+for (let i = 0; i < 11; i += 1) {
+	realRewards.push({
+		name: 'CodeBuddy个人版国内运营裂变包',
+		used: 0,
+		total: 100,
+		/* 故意把第一条的到期日放晚：合并后应显示**最近**的 11-07，而不是 12-01 或区间 */
+		expireAt: i === 0 ? '2026-12-01' : '2026-11-07',
+		monthly: false
+	});
+}
+realRewards.push({ name: 'Bonus Pack', used: 12.39, total: 250, expireAt: '2026-10-26', monthly: false });
+const wbReal = api.segmentView('balance', {
+	...wbSrc,
+	balance: { ok: true, total: '177', currency: '', isCredits: true, rewards: realRewards }
+}, t);
+const realRows = Array.from(wbReal.tip.panel.rewards);
+assert.deepStrictEqual(realRows.map((one) => one.label), [
+	'个人体验版 · 11-01 刷新',
+	'拉新权益包 · 11-07 到期',
+	'运营裂变包×11 · 11-07 到期(最近)',
+	'Bonus Pack · 10-26 到期'
+], '14 条真实数据 → 剥前缀后 4 行；聚合行带 ×11 且日期标「(最近)」，非聚合行保持原样；Bonus Pack 保持原名');
+assert.deepStrictEqual(realRows.map((one) => one.count), [1, 1, 11, 1], '聚合分组记录原始套餐数量');
+assert.ok(realRows[0].label.indexOf('×') === -1 && realRows[0].label.indexOf('(最近)') === -1, '非聚合行不带 ×N / (最近)');
+assert.ok(realRows[3].label.indexOf('×') === -1 && realRows[3].label.indexOf('(最近)') === -1, '非聚合行不带 ×N / (最近)');
+assert.deepStrictEqual(realRows.map((one) => one.valueText), [
+	'已用 500 / 500', '已用 552.43 / 1500', '已用 0 / 1100', '已用 12.39 / 250'
+], '相邻同名裂变包 used/total 相加（0/1100）');
+assert.strictEqual(realRows[2].percent, 0, '裂变包合计已用 0 → percent 0（画空轨道）');
+assert.deepStrictEqual(realRows.map((one) => one.name), ['个人体验版', '拉新权益包', '运营裂变包', 'Bonus Pack'],
+	'前缀按顺序剥、只剥开头：CodeBuddy → 个人版 → 国内；没有前缀的包名原样保留');
+/* 单条不聚合；不相邻同名不合并（顺序按首次出现位置） */
+const creditRowsOf = (rewards) => Array.from(api.segmentView('balance', {
+	...wbSrc,
+	balance: { ok: true, total: '177', currency: '', isCredits: true, rewards: rewards }
+}, t).tip.panel.rewards);
+assert.strictEqual(creditRowsOf([{ name: '单独包', used: 1, total: 2, monthly: false }]).length, 1, '单条不聚合');
+assert.deepStrictEqual(creditRowsOf([
+	{ name: '同名包', used: 1, total: 10, monthly: false },
+	{ name: '其它包', used: 2, total: 10, monthly: false },
+	{ name: '同名包', used: 3, total: 10, monthly: false }
+]).map((one) => one.name), ['同名包', '其它包', '同名包'], '不相邻的同名包不合并');
+/* 前缀剥离边界：无前缀原样、纯前缀剥空保留原名、可连续剥、大小写不敏感；
+   关键：**不查任何映射表** —— 新包名来了也原样显示，不会因为表里没有而漏翻 */
+assert.deepStrictEqual(creditRowsOf([{ name: 'Bonus Pack', used: 0, total: 1, monthly: false }]).map((one) => one.name),
+	['Bonus Pack'], '国际站英文包名保持原名（不翻译成中文）');
+assert.deepStrictEqual(creditRowsOf([{ name: 'Launch Bonus', used: 0, total: 1, monthly: false }]).map((one) => one.name),
+	['Launch Bonus'], '上游新增的包名（映射表里从来没有过）原样显示，不依赖任何映射表');
+assert.deepStrictEqual(creditRowsOf([{ name: 'CodeBuddy', used: 0, total: 1, monthly: false }]).map((one) => one.name),
+	['CodeBuddy'], '纯前缀剥完为空 → 保留原名');
+assert.deepStrictEqual(creditRowsOf([{ name: 'CodeBuddy个人版国内运营包', used: 0, total: 1, monthly: false }]).map((one) => one.name),
+	['运营包'], '多层前缀可连续剥（CodeBuddy → 个人版 → 国内）');
+assert.deepStrictEqual(creditRowsOf([{ name: 'codebuddy个人版体验包', used: 0, total: 1, monthly: false }]).map((one) => one.name),
+	['体验包'], 'CodeBuddy 前缀大小写不敏感');
+/* 月度包聚合：刷新日期同样取最近一个，并标「(最近)」 */
+assert.deepStrictEqual(creditRowsOf([
+	{ name: '月度包', used: 1, total: 10, monthly: true, refreshAt: '2026-12-01' },
+	{ name: '月度包', used: 2, total: 10, monthly: true, refreshAt: '2026-11-01' }
+]).map((one) => ({ label: one.label, valueText: one.valueText })), [
+	{ label: '月度包×2 · 11-01 刷新(最近)', valueText: '已用 3 / 20' }
+], '月度聚合：刷新日期取最近、带 (最近)、数值合计');
+/* 聚合行下钻：×N 行可点 → 子视图用同样的套餐块（一行 + 进度条）竖排列出原始包，点标题返回 */
+const realTree = api.creditsPanel(wbReal.tip.panel, wbReal.tip.title, null, { current: null }, { id: null, open: () => {}, back: () => {} });
+assert.strictEqual(collectByClass(realTree, 'dsb-credit').length, 4, '根视图 4 个套餐块');
+const clickRows = collectByClass(realTree, 'dsb-meter-row-plain');
+assert.strictEqual(clickRows.length, 1, '只有聚合行（×11）可点');
+assert.ok(textOf(clickRows[0]).indexOf('运营裂变包×11') !== -1, '可点的是聚合行');
+/* 聚合行用独立修饰类：只有 cursor:pointer，不带 .dsb-meter-row-click（那个有悬停灰底） */
+assert.strictEqual(String(clickRows[0].props.className).indexOf('dsb-meter-row-click'), -1,
+	'聚合行不挂 .dsb-meter-row-click（不要悬停灰底）');
+assert.strictEqual(collectByClass(realTree, 'dsb-meter-row-click').length, 0, '积分面板里没有任何带灰底胶囊的行');
+let openedCredit = null;
+const captureTree = api.creditsPanel(wbReal.tip.panel, wbReal.tip.title, null, { current: null }, {
+	id: null,
+	open: (index) => { openedCredit = index; },
+	back: () => {}
+});
+collectByClass(captureTree, 'dsb-meter-row-plain')[0].props.onClick({ stopPropagation() {} });
+assert.strictEqual(openedCredit, 2, '点聚合行打开第 2 组的明细');
+let backCalls = 0;
+const openTree = api.creditsPanel(wbReal.tip.panel, wbReal.tip.title, null, { current: null }, {
+	id: 2,
+	open: () => {},
+	back: () => { backCalls += 1; }
+});
+/* 子视图与主面板同一套套餐块：每个原始包一块 = 一行 + 一条进度，竖排单列 */
+assert.strictEqual(collectByClass(openTree, 'dsb-credit').length, 11, '子视图每个原始包一个套餐块');
+assert.strictEqual(collectByClass(openTree, 'dsb-bar').length, 11, '每个块都有自己的进度条（0% 也画空轨道）');
+assert.strictEqual(collectByClass(openTree, 'dsb-meter-cols').length, 0, '子视图竖排单列，不分列');
+assert.strictEqual(collectByClass(openTree, 'dsb-credits-list').length, 1, '子视图复用带滚动上限的列表容器');
+assert.strictEqual(textOf(collectByClass(openTree, 'dsb-meter-headline')[0]), '运营裂变包×11',
+	'子视图标题 = 聚合行名字 + 数量（×N）');
+/* 下钻标题右侧 = 该组剩余积分（total - used，动态），不是全局总积分 */
+assert.strictEqual(collectByClass(openTree, 'dsb-meter-figures').length, 1, '子视图标题右侧显示该组剩余积分');
+assert.strictEqual(textOf(collectByClass(openTree, 'dsb-meter-figures')[0]), '1100',
+	'11 个包各 100、已用 0 → 该组剩余 1100');
+assert.strictEqual(wbReal.tip.panel.rewards[2].remaining, 1100, '分组数据带 remaining = total - used');
+assert.strictEqual(wbReal.tip.panel.rewards[2].remainingText, '1100', '分组数据带 remainingText');
+/* 主面板 head 的全局总积分保持不变 */
+assert.strictEqual(textOf(collectByClass(creditsTree, 'dsb-meter-figures')[0]), '177', '主面板右侧仍是全局总积分 177');
+assert.strictEqual(collectByClass(openTree, 'dsb-meter-back').length, 1, '标题变成返回入口');
+const subRows = collectByClass(openTree, 'dsb-meter-row');
+assert.strictEqual(subRows.length, 11, '11 个原始包各一行');
+assert.strictEqual(collectByClass(subRows[0], 'dsb-meter-row-plain').length, 0, '明细行本身不可再点');
+assert.strictEqual(textOf(collectByClass(subRows[0], 'dsb-meter-name')[0]), '运营裂变包 · 12-01 到期', '明细行显示该包自己的日期');
+assert.strictEqual(textOf(collectByClass(subRows[1], 'dsb-meter-name')[0]), '运营裂变包 · 11-07 到期', '不同到期日的包各显各的');
+assert.deepStrictEqual(Array.from(subRows, (row) => textOf(collectByClass(row, 'dsb-meter-value')[0])),
+	new Array(11).fill('已用 0 / 100'), '明细值是该包真实值，不合计');
+/* 0% 的明细块：有轨道、无填充段 */
+const subZero = collectByClass(openTree, 'dsb-credit')[0];
+assert.strictEqual(collectByClass(subZero, 'dsb-bar').length, 1, '明细块有进度条轨道');
+assert.strictEqual(collectByClass(subZero, 'dsb-bar-seg').length, 0, '0% 明细块没有填充段');
+/* 分组保留原始成员明细：raw 名、自己的日期备注、真实 used/total */
+const mergedItems = wbReal.tip.panel.rewards[2].items;
+assert.strictEqual(mergedItems.length, 11, '聚合组保留 11 个原始成员');
+assert.strictEqual(mergedItems[0].name, 'CodeBuddy个人版国内运营裂变包', '明细里保留原始包名');
+assert.deepStrictEqual(Array.from(mergedItems, (one) => one.used), new Array(11).fill(0), '明细 used 是各自真实值');
+collectByClass(openTree, 'dsb-meter-back')[0].props.onClick({ stopPropagation() {} });
+assert.strictEqual(backCalls, 1, '点标题返回套餐列表');
+/* 剩余积分随用量动态计算：两组同名包 total 100+500、used 1+2=3 → 该组剩余 597 */
+const usedWrap = api.segmentView('balance', {
+	...wbSrc,
+	balance: {
+		ok: true, total: '177', currency: '', isCredits: true,
+		rewards: [
+			{ name: '剩余包', used: 1, total: 100, monthly: false },
+			{ name: '剩余包', used: 2, total: 500, monthly: false }
+		]
+	}
+}, t);
+const usedGroup = usedWrap.tip.panel.rewards[0];
+assert.strictEqual(usedGroup.count, 2, '两组合并成一组');
+assert.strictEqual(usedGroup.used, 3, '已用合计 3');
+assert.strictEqual(usedGroup.total, 600, '总容量合计 600');
+assert.strictEqual(usedGroup.remaining, 597, '剩余 = 600 - 3');
+assert.strictEqual(usedGroup.remainingText, '597', '剩余文本用 formatCredits');
+assert.strictEqual(usedGroup.valueText, '已用 3 / 600', '行上仍是已用 / 总量');
+const usedOpen = api.creditsPanel(usedWrap.tip.panel, usedWrap.tip.title, null, { current: null }, {
+	id: 0, open: () => {}, back: () => {}
+});
+assert.strictEqual(textOf(collectByClass(usedOpen, 'dsb-meter-figures')[0]), '597',
+	'下钻标题右侧 = 该组剩余 597（不显示总容量 600、也不是全局 177）');
+assert.deepStrictEqual(Array.from(collectByClass(usedOpen, 'dsb-meter-value'), (one) => textOf(one)),
+	['已用 1 / 100', '已用 2 / 500'], '明细仍是各自真实值');
+/* 月度包缺 refreshAt：退回「（每月刷新）」；非月度包没有 expireAt 就不加备注 */
+const wbMonthly = api.segmentView('balance', {
+	...wbSrc,
+	balance: {
+		ok: true, total: '177', currency: '', isCredits: true,
+		rewards: [
+			{ name: '无刷新日的月度包', used: 1, total: 2, monthly: true, refreshAt: null },
+			{ name: '没有到期日的一次性包', used: 3, total: 4, monthly: false, expireAt: null }
+		]
+	}
+}, t);
+assert.deepStrictEqual(Array.from(wbMonthly.tip.panel.rewards, (one) => one.label),
+	['无刷新日的月度包（每月刷新）', '没有到期日的一次性包'], '月度缺 refreshAt 退回文字备注；一次性没到期日不加备注');
+/* 字段缺失的包跳过；used/total 缺失按 0 处理，不显示半行怪数据 */
+const wbPartial = api.segmentView('balance', {
+	...wbSrc,
+	balance: {
+		ok: true, total: '177', currency: '', isCredits: true,
+		rewards: [null, { name: '' }, { name: '只写名字的包' }, { name: '缺数字的包', used: 5 }]
+	}
+}, t);
+assert.deepStrictEqual(Array.from(wbPartial.tip.panel.rewards, (one) => one.label), ['只写名字的包', '缺数字的包'], '无名字的包跳过，其余保留');
+assert.deepStrictEqual(Array.from(wbPartial.tip.panel.rewards, (one) => one.valueText), ['已用 0 / 0', '已用 5 / 0'], '缺 used/total 按 0 显示');
+assert.deepStrictEqual(Array.from(wbPartial.tip.panel.rewards, (one) => one.percent), [0, 0], 'total 为 0 时进度比例 0');
+/* rewards 空数组：等同于没有 → 不给 tip（不弹空气泡） */
+assert.strictEqual(api.segmentView('balance', {
+	...wbSrc,
+	balance: { ok: true, total: '177', currency: '', isCredits: true, rewards: [] }
+}, t).tip, undefined, 'rewards 为空数组时不给气泡');
+/* 英文文案：标题 / 月度刷新 / 到期 / 已用 都走英文词表 */
+const enBalance = {
+	segBalance: 'Balance', f_balance: 'Balance {symbol}{amount}',
+	f_balanceDash: 'Balance {symbol}-',
+	tipCreditsTitle: 'Points packages', tipCreditsMonthly: ' (monthly)', tipCreditsRefresh: ' · refreshes {date}',
+	tipCreditsExpire: ' · expires {date}', tipCreditsRefreshLatest: ' · refreshes {date} (nearest)',
+	tipCreditsExpireLatest: ' · expires {date} (nearest)', tipCreditsUsed: 'Used {used} / {total}'
+};
+const tEnBalance = (key, params) => {
+	let out = enBalance[key] !== undefined ? enBalance[key] : key;
+	if (params) out = out.replace(/\{(\w+)\}/g, (m, n) => (n in params ? String(params[n]) : m));
+	return out;
+};
+const wbEn = api.segmentView('balance', {
+	...wbSrc,
+	balance: { ok: true, total: '177', currency: '', isCredits: true, rewards: REWARDS }
+}, tEnBalance);
+assert.strictEqual(wbEn.text, 'Balance 177', '英文界面积分总数不带货币符号');
+assert.strictEqual(wbEn.tip.title, 'Points packages', '英文标题');
+assert.deepStrictEqual(Array.from(wbEn.tip.panel.rewards, (one) => one.label), [
+	/* 包名**不跟随界面语言**：上游给什么就显示什么（国内站是中文、国际站是英文），
+	   只剥掉 CodeBuddy/个人版/国内 这些渠道前缀。所以英文界面里出现中文包名是预期行为。 */
+	'个人体验版 · refreshes 11-01',
+	'拉新权益包 · expires 11-07',
+	'Bonus Pack · expires 10-26',
+	'Free Plan Subscription · refreshes 11-01'
+], '英文月度「· refreshes MM-DD」/ 一次性「· expires MM-DD」；包名保持上游原名（不翻译）');
+assert.deepStrictEqual(Array.from(wbEn.tip.panel.rewards, (one) => one.valueText), [
+	'Used 500 / 500', 'Used 552.43 / 1500', 'Used 12.39 / 250', 'Used 0 / 100'
+], '英文「Used X / Y」，数字同样两位小数去尾零');
+/* 英文聚合行：×11 + (nearest) */
+const wbEnReal = api.segmentView('balance', {
+	...wbSrc,
+	balance: { ok: true, total: '177', currency: '', isCredits: true, rewards: realRewards }
+}, tEnBalance);
+assert.deepStrictEqual(Array.from(wbEnReal.tip.panel.rewards, (one) => one.label), [
+	'个人体验版 · refreshes 11-01',
+	'拉新权益包 · expires 11-07',
+	'运营裂变包×11 · expires 11-07 (nearest)',
+	'Bonus Pack · expires 10-26'
+], '英文聚合行带 ×11 且日期标 (nearest)；非聚合行不带；包名同样保持上游原名');
+/* 失败态 / 查询中：也要按积分口径显示，别又冒出一个 ¥；没有 rewards 同样不给气泡 */
 const wbMid = render({ ...wbSrc, balance: null }, allSegs);
 assert.ok(wbMid.includes('余额 -') && !wbMid.includes('¥'), 'WorkBuddy 查询中也按积分口径（无 ¥），got: ' + wbMid.join(' | '));
 assert.strictEqual(api.segmentView('balance', { ...wbSrc, balance: null }, t).tip, undefined, '查询中也不给气泡');
@@ -362,6 +763,62 @@ assert.ok(fullBar.includes('余额 ¥12.34'), 'DeepSeek 等货币口径仍带 ¥
 const dsView = api.segmentView('balance', { ...deepSeekSrc, balance: { ok: true, total: '12.34', currency: 'CNY' } }, t);
 assert.ok(dsView.tip !== undefined, 'DeepSeek 货币口径仍要有气泡');
 assert.ok(dsView.tip.rows.length > 0, '货币口径的气泡仍有构成行');
+
+/* 积分包名**不做任何翻译**：上游给什么就显示什么，只剥渠道前缀。
+   理由（用户拍板）：映射表必然过期 —— 国际站以后出 `Launch Bonus` 这种新包，
+   表里没覆盖到就漏翻，反而比不翻更糟。保持原名 + 剥前缀最不会错。
+   实测 region=cn 返回：CodeBuddy个人体验版 / CodeBuddy个人版拉新权益包 / CodeBuddy个人版国内运营裂变包。 */
+const enRowsOf = (rewards) => Array.from(api.segmentView('balance', {
+	...wbSrc,
+	balance: { ok: true, total: '177', currency: '', isCredits: true, rewards: rewards }
+}, tEnBalance).tip.panel.rewards);
+assert.deepStrictEqual(enRowsOf([
+	{ name: 'CodeBuddy个人体验版', used: 1, total: 10, monthly: false },
+	{ name: 'CodeBuddy个人版拉新权益包', used: 2, total: 10, monthly: false },
+	{ name: 'CodeBuddy个人版国内运营裂变包', used: 3, total: 10, monthly: false }
+]).map((one) => one.name), ['个人体验版', '拉新权益包', '运营裂变包'],
+	'英文界面：国内站中文包名剥前缀后**保持中文原名**（不翻成英文）');
+assert.deepStrictEqual(enRowsOf([
+	{ name: 'CodeBuddy个人版国内运营裂变包', used: 1, total: 10, monthly: false },
+	{ name: 'CodeBuddy个人版国内运营裂变包', used: 1, total: 10, monthly: false }
+]).map((one) => ({ name: one.name, count: one.count })), [{ name: '运营裂变包', count: 2 }],
+	'英文界面：相邻同名包按**剥前缀后**的名字聚合（×N 由 creditsLabel 拼，不在这里）');
+assert.deepStrictEqual(enRowsOf([{ name: 'Bonus Pack', used: 0, total: 1, monthly: false }]).map((one) => one.name),
+	['Bonus Pack'], '英文界面：国际站英文包名保持原名');
+assert.deepStrictEqual(enRowsOf([{ name: 'Launch Bonus', used: 0, total: 1, monthly: false }]).map((one) => one.name),
+	['Launch Bonus'], '英文界面：上游新增包名原样显示（不靠映射表兜底）');
+assert.deepStrictEqual(enRowsOf([{ name: '我的CodeBuddy包', used: 0, total: 1, monthly: false }]).map((one) => one.name),
+	['我的CodeBuddy包'], '前缀出现在中间不剥（只剥开头）');
+assert.deepStrictEqual(creditRowsOf([{ name: 'Bonus Pack', used: 0, total: 1, monthly: false }]).map((one) => one.name),
+	['Bonus Pack'], '中文界面：国际站英文包名同样保持原名（不翻成中文）');
+console.log('积分包名不翻译：两个界面都保持上游原名，只剥渠道前缀');
+
+/* 包名只做字符串切片、**不再查任何映射表** —— 所以 constructor / toString / __proto__
+   这类原型键也不会被当对象渲染（白屏风险随映射表一起消失了）。
+   这里仍钉住「返回值必须是字符串」，防止将来有人把查表逻辑加回来却忘了 hasOwnProperty。 */
+const PROTOTYPE_KEYS = ['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__'];
+PROTOTYPE_KEYS.forEach((key) => {
+	const zhName = api.creditDisplayName(key);
+	assert.strictEqual(typeof zhName, 'string',
+		'包名「' + key + '」必须返回字符串（不查表，纯字符串处理），实际 ' + typeof zhName);
+	assert.strictEqual(zhName, key, '原型键名没有前缀可剥，原样返回，实际 ' + zhName);
+	const enName = api.creditDisplayName(key);
+	assert.strictEqual(typeof enName, 'string', '包名「' + key + '」必须返回字符串（与界面语言无关）');
+	assert.strictEqual(enName, key, '原型键名原样返回，实际 ' + enName);
+});
+/* 大小写不同的原型键同样安全（剥前缀时才做大小写不敏感比较，其余原样返回） */
+assert.strictEqual(typeof api.creditDisplayName('CONSTRUCTOR'), 'string',
+	'大写原型键「CONSTRUCTOR」也返回字符串');
+assert.strictEqual(typeof api.creditDisplayName('TOSTRING'), 'string',
+	'大写原型键「TOSTRING」也返回字符串');
+/* 正常包名不被原型键防护误伤：任意名字都原样返回（不翻译） */
+assert.strictEqual(api.creditDisplayName('Bonus Pack'), 'Bonus Pack', '正常英文包名原样返回');
+assert.strictEqual(api.creditDisplayName('bonus pack'), 'bonus pack', '大小写原样保留（不查表就没有归一化）');
+assert.strictEqual(api.creditDisplayName('BONUS PACK'), 'BONUS PACK', '全大写写法原样返回');
+assert.strictEqual(api.creditDisplayName('奖励包'), '奖励包', '中文包名原样返回（不再反向翻成 Bonus Pack）');
+assert.strictEqual(api.creditDisplayName('免费版订阅'), '免费版订阅',
+	'中文包名原样返回（不再翻成 Free Plan Subscription）');
+console.log('积分包名：原型键 / 任意包名都返回字符串，不查映射表');
 
 /* ------------------------------------------------------- 组件与设置页渲染 */
 function textOf(node) {
@@ -1076,11 +1533,21 @@ console.log('底部：去 GitHub + 恢复默认（后者在后）；更新节假
 const progressView = {
 	turn: 3, turnSteps: 2, toolCalls: 12,
 	toolCounts: { read: 7, edit: 3, pwsh: 2 },
-	skills: ['ponytail', 'my-dow-theory', 'ponytail'],
-	/* 全局提示词（~/.dsh/AGENTS.md 这类）：排进技能注入子视图第一位，并计入那一行的数 */
+	/* 契约：每注入一次记一条 `{ name, manual }`；ponytail 注入两次、其中一次是用户手动调用 */
+	skills: [
+		{ name: 'ponytail', manual: false },
+		{ name: 'my-dow-theory', manual: false },
+		{ name: 'ponytail', manual: true }
+	],
+	/* 全局提示词（~/.dsh/AGENTS.md 这类）：也算一次注入，并计入那一行的数 */
 	globalInstruction: 'AGENTS.md',
 	compactCount: 2, compactTurn: 32, compactStep: 2,
-	compacts: [{ turn: 12, step: 3 }, { turn: 32, step: 2 }]
+	/* 只给成功的压缩；第二条是用户手动压缩：轮间压缩没有 turn，by afterTurn 记「第20轮后」，
+	   行尾带上标星号 */
+	compacts: [
+		{ turn: 12, step: 3, manual: false, afterTurn: null },
+		{ turn: null, step: null, manual: true, afterTurn: 20 }
+	]
 };
 const withProgress = (progress) => Object.assign({}, props, {
 	useProjection: (key) => {
@@ -1133,8 +1600,17 @@ assert.strictEqual(panelTitle(tree), '技能注入', '子视图标题变成技�
 assert.ok(collectByClass(tree, 'dsb-meter-back').length > 0, '子视图标题可点返回');
 assert.ok(textOf(collectByClass(tree, 'dsb-meter-back')[0]).indexOf('‹') === -1, '返回入口不带箭头');
 assert.strictEqual(collectByClass(tree, 'dsb-hovercard').length, 0, '不再出现二次气泡');
-assert.deepStrictEqual(listRows(tree).map((one) => one.name), ['AGENTS.md', 'ponytail', 'my-dow-theory'], '全局提示词排第一，技能按注入顺序去重，实际 ' + JSON.stringify(listRows(tree)));
-assert.deepStrictEqual(listRows(tree).map((one) => one.value), ['', '', ''], '技能注入只列名字、不带次数');
+assert.deepStrictEqual(listRows(tree).map((one) => one.name), ['AGENTS.md', 'ponytail*', 'my-dow-theory'],
+	'全局提示词 AGENTS.md 固定第一、不参与技能排序；其余按名字长短（ponytail 8 < my-dow-theory 13）；手动调用的 ponytail 带上标星号，实际 ' + JSON.stringify(listRows(tree)));
+assert.deepStrictEqual(listRows(tree).map((one) => one.value), ['', '', ''],
+	'技能注入只列名字、不显示次数（次数只在排序里用到；AGENTS.md 同样不显示）');
+/* 星号是上标节点：给读屏一个「手动触发」名称（role=img + aria-label），视觉仍只有 * */
+const skillStars = collectByClass(tree, 'dsb-sup');
+assert.strictEqual(skillStars.length, 1, '只有手动调用过的那一行带星号');
+assert.strictEqual(skillStars[0].props['aria-label'], '手动触发', '星号读屏名称是「手动触发」');
+assert.strictEqual(skillStars[0].props.role, 'img', '星号带 img 角色，aria-label 才生效');
+assert.strictEqual(skillStars[0].props['aria-hidden'], undefined, '星号不再对读屏隐藏');
+assert.strictEqual(textOf(skillStars[0]), '*', '星号节点内容是 *');
 assert.strictEqual(collectByClass(tree, 'dsb-meter-cols').length, 0, '三个技能不分列');
 assert.strictEqual(collectByClass(tree, 'dsb-meter-tight').length, 0, '技能注入子视图不收紧间隙');
 console.log('技能注入子视图:', listRows(tree).map((one) => one.name).join(' / '));
@@ -1145,20 +1621,40 @@ tree = renderCounts();
 assert.strictEqual(panelTitle(tree), '会话数据', '点标题回到会话数据');
 assert.deepStrictEqual(listRows(tree).map((one) => one.name), ['上下文压缩', '技能注入', '工具调用'], '根视图仍是那三行');
 
-/* 工具调用子视图：中文名 + 按显示名长度升序、同长度按次数降序，带次数与单位 */
+/* 工具调用子视图：原生英文名 + 按名字长度升序、同长度按次数降序，带次数与单位 */
 rowAt(tree, '工具调用').props.onClick(clickEvent());
 tree = renderCounts();
 assert.strictEqual(panelTitle(tree), '工具调用', '工具调用子视图标题');
-/* toolCounts = { read: 7, edit: 3, pwsh: 2 }：pwsh→命令行(3 字)最短；
-   read→读取文件(4 字) 与 edit→修改文件(4 字) 同长，再按次数降序 read 7 > edit 3。
-   （手算后写死，不借实现的排序函数） */
+/* toolCounts = { read: 7, edit: 3, pwsh: 2 }：三个名字都是 4 个字符，
+   同长度按次数降序 ⇒ read 7 > edit 3 > pwsh 2（手算后写死，不借实现的排序函数） */
 assert.deepStrictEqual(listRows(tree), [
-	{ name: '命令行', value: '2 次' },
-	{ name: '读取文件', value: '7 次' },
-	{ name: '修改文件', value: '3 次' }
-], '工具名用中文名，按显示名长度升序、同长度按次数降序，实际 ' + JSON.stringify(listRows(tree)));
+	{ name: 'read', value: '7 次' },
+	{ name: 'edit', value: '3 次' },
+	{ name: 'pwsh', value: '2 次' }
+], '工具名直接用原生英文名，按名字长度升序、同长度按次数降序，实际 ' + JSON.stringify(listRows(tree)));
 assert.strictEqual(collectByClass(tree, 'dsb-meter-tight').length, 1, '工具调用子视图挂 dsb-meter-tight（间隙收到 1ch）');
+assert.strictEqual(collectByClass(tree, 'dsb-meter-full').length, 0, '不再有英文整行块');
+/* 标题下的横杠换成彩色分段条：第一段用浅色 01、宽度 = 次数 ÷ 总次数；每段带悬浮提示 */
+assert.strictEqual(collectByClass(tree, 'dsb-meter-divider').length, 0, '工具调用子视图不再用普通分隔线');
+const toolBar = collectByClass(tree, 'dsb-bar')[0];
+assert.ok(toolBar !== undefined, '工具调用子视图标题下有分段条');
+const toolSegs = collectByClass(toolBar, 'dsb-bar-seg');
+assert.strictEqual(toolSegs.length, 3, '3 个工具 = 3 段');
+assert.strictEqual(toolSegs[0].props.style.backgroundColor, '#FFBFD1', '第 1 段用浅色 01');
+assert.strictEqual(toolSegs[1].props.style.backgroundColor, '#FFC5AB', '第 2 段用浅色 02');
+assert.strictEqual(toolSegs[2].props.style.backgroundColor, '#F4D06A', '第 3 段用浅色 03');
+const widthOf = (one) => Math.round(parseFloat(one.props.style.width) * 1000) / 1000;
+assert.deepStrictEqual(Array.from(toolSegs, widthOf), [Math.round((7 / 12) * 100 * 1000) / 1000, 25, Math.round((2 / 12) * 100 * 1000) / 1000],
+	'段宽 = 该工具次数 ÷ 总次数（read 7 / edit 3 / pwsh 2）');
+assert.strictEqual(toolSegs[0].props.title, undefined, '彩条段不再用浏览器原生 title（改插件浮层）');
+assert.strictEqual(typeof toolSegs[0].props.onMouseEnter, 'function', '彩条段挂插件自己的悬停回调');
 console.log('工具调用子视图:', listRows(tree).map((one) => one.name + ' ' + one.value).join(' / '));
+/* 其它子视图仍是普通分隔线 */
+collectByClass(tree, 'dsb-meter-back')[0].props.onClick(clickEvent());
+rowAt(renderCounts(), '技能注入').props.onClick(clickEvent());
+tree = renderCounts();
+assert.strictEqual(collectByClass(tree, 'dsb-meter-divider').length, 1, '技能注入子视图仍是普通分隔线');
+assert.strictEqual(collectByClass(tree, 'dsb-bar').length, 0, '技能注入子视图没有分段条');
 
 /* 压缩次数子视图：逐条列出每次压缩落在第几轮第几步（中文序数） */
 collectByClass(tree, 'dsb-meter-back')[0].props.onClick(clickEvent());
@@ -1169,14 +1665,19 @@ assert.strictEqual(panelTitle(tree), '上下文压缩', '上下文压缩子视�
 assert.strictEqual(collectByClass(tree, 'dsb-meter-tight').length, 0, '上下文压缩子视图不收紧间隙');
 assert.deepStrictEqual(listRows(tree), [
 	{ name: '第一次压缩', value: '第12轮3步' },
-	{ name: '第二次压缩', value: '第32轮2步' }
+	/* 手动压缩：星号在行尾（「第二次压缩*」），上标挂在最后、不拆开「第二次」；
+	   轮间压缩没有 turn，落点用 afterTurn 显示「第20轮后」而不是横杠 */
+	{ name: '第二次压缩*', value: '第20轮后' }
 ], '压缩明细按发生顺序逐条列，实际 ' + JSON.stringify(listRows(tree)));
+assert.strictEqual(collectByClass(tree, 'dsb-sup').length, 1, '手动压缩那条带一个上标星号');
 console.log('上下文压缩子视图:', listRows(tree).map((one) => one.name + ' ' + one.value).join(' / '));
 
-/* 分列：每一竖列最多三行，超过就多开一竖列 */
+/* 分列：每一竖列最多三行，超过就多开一竖列（默认档；工具调用那档折行时由 DOM 量测换成四行） */
 const manyTools = (n) => {
+	const names = ['pwsh', 'read', 'write', 'edit', 'glob', 'grep', 'todo_write', 'skill',
+		'subagent', 'present', 'web_search', 'web_fetch', 'workflow', 'job_list', 'job_output'];
 	const counts = {};
-	for (let i = 1; i <= n; i += 1) counts['tool' + i] = i;
+	for (let i = 0; i < n; i += 1) counts[names[i]] = i + 1;
 	return { turn: 1, turnSteps: 1, toolCalls: n, toolCounts: counts, skills: [], globalInstruction: null, compactCount: 0, compactTurn: null, compactStep: null, compacts: [] };
 };
 const openTools = (progress) => {
@@ -1196,6 +1697,39 @@ assert.strictEqual(columnsOf(fiveCols).length, 5, '13 行开五列');
 assert.ok(columnsOf(fiveCols).every((one) => collectByClass(one, 'dsb-meter-row').length <= 3), '每列不超过三行');
 assert.strictEqual(collectByClass(fiveCols, 'dsb-meter-row').length, 13, '五列合起来还是 13 行');
 console.log('分列：3 行一列 / 4 行两列 / 13 行五列，每列最多三行');
+
+/* 长短混合的工具名全部进同一个列网格（不再有「整行块」）：短名多、长名也照常分列 */
+const mixedTools = openTools({
+	turn: 1, turnSteps: 1, toolCalls: 12,
+	toolCounts: { pwsh: 4, read: 3, write: 2, edit: 1, mcp__demo__search: 6, custom_tool: 5 },
+	skills: [], globalInstruction: null, compactCount: 0, compactTurn: null, compactStep: null, compacts: []
+});
+assert.strictEqual(collectByClass(mixedTools, 'dsb-meter-full').length, 0, '没有英文整行块：全部统一列网格');
+assert.strictEqual(collectByClass(mixedTools, 'dsb-meter-split').length, 0, '没有分列 + 整行块的外层');
+assert.strictEqual(collectByClass(mixedTools, 'dsb-meter-cols').length, 1, '只有一个列网格');
+assert.strictEqual(collectByClass(mixedTools, 'dsb-meter-row').length, 6, '6 个工具都在网格里');
+assert.ok(String(collectByClass(mixedTools, 'dsb-tip')[0].props.className).indexOf('dsb-meter-wide') !== -1, '分列时气泡走宽档');
+const mixedOrder = collectByClass(mixedTools, 'dsb-meter-name').map(textOf);
+assert.deepStrictEqual(mixedOrder, ['pwsh', 'read', 'edit', 'write', 'custom_tool', 'mcp__demo__search'],
+	'按名字长度升序（4 字组内按次数降序：pwsh 4 > read 3 > edit 1）→ 长名排在后面，实际 ' + JSON.stringify(mixedOrder));
+console.log('工具调用混合长短名:', mixedOrder.join(' / '));
+
+/* 不再按中文名合并：bash / pwsh / ops_bash 是不同工具，各占一行 */
+const mergedTools = openTools({
+	turn: 1, turnSteps: 1, toolCalls: 10,
+	toolCounts: { pwsh: 2, bash: 5, ops_bash: 3, read: 1 },
+	skills: [], globalInstruction: null, compactCount: 0, compactTurn: null, compactStep: null, compacts: []
+});
+assert.deepStrictEqual(collectByClass(mergedTools, 'dsb-meter-row').map((one) => ({
+	name: textOf(collectByClass(one, 'dsb-meter-name')[0]),
+	value: textOf(collectByClass(one, 'dsb-meter-value')[0])
+})), [
+	{ name: 'bash', value: '5 次' },
+	{ name: 'pwsh', value: '2 次' },
+	{ name: 'read', value: '1 次' },
+	{ name: 'ops_bash', value: '3 次' }
+], '原生工具名各自一行（4 字组：bash 5 > pwsh 2 > read 1；ops_bash 更长排最后），不再合并成「命令行」');
+console.log('原生工具名不合并:', collectByClass(mergedTools, 'dsb-meter-name').map(textOf).join(' / '));
 
 /* 气泡水平位置：以触发项自身居中（替身里触发项是 200~280，中线 240），
    再夹在「圆圈灰底的左边」与视口右边之间。换子视图后宽度变了必须重算 ——
@@ -1248,12 +1782,475 @@ try {
 	assert.strictEqual(panelMaxWidth(), '864px', '超宽气泡按两侧可见边之间的跨度压宽度，实际 ' + panelMaxWidth());
 	assert.strictEqual(tipLeft(), 120.5, '超宽气泡可见左边缘压在灰圆左边，实际 ' + tipLeft());
 	console.log('气泡水平位置：根视图 160 / 换子视图后 190 / 越界贴灰圆 300.5（可见边 300）/ 末尾项可见右边 985 / 超宽上限 864px');
+
+	/* 工具调用自适应：一排放不下（横向溢出）时每列行数 3→4→5 逐档加，直到放得下；
+	   返回上一层再点进来要回到默认 3 行（重置），不能带着上一次的 5 行。
+	   替身里的假几何：stubWrapOn 时列网格容器只放得下 stubWrapCap 列，列数多过它就是"放不下"
+	   （nowrap 之后不会再折行，溢出是唯一表现 —— 见 toolColumnsOverflow）。 */
+	stubWrapOn = true;
+	stubWrapCap = 3;
+	barHooks.values.length = 0;
+	const wrappedProgress = manyTools(13);
+	collectByClass(renderCounts(wrappedProgress), 'dsb-seg-click').filter((one) => one.props.key === '__segcounts')[0]
+		.props.onClick(clickEvent());
+	renderCounts(wrappedProgress);
+	rowAt(renderCounts(wrappedProgress), '工具调用').props.onClick(clickEvent());
+	/* 每渲染一遍只升一档，多渲染几遍让它收敛：5 行时 13 个工具正好 3 列，不再超过每排 3 列 */
+	for (let i = 0; i < 6; i += 1) renderCounts(wrappedProgress);
+	const wrappedCols = columnsOf(renderCounts(wrappedProgress));
+	/* 替身里的 layout effect 量到的是上一帧的树（真实 React 在提交后量当前帧），因此会多升一档：
+	   最终是每列 6 行（6/6/1）、三个列正好一排放得下；「恰好停在第 5 行」由
+	   verify-list-layout 的纯函数收敛用例精确钉住（那里没有这一帧延迟）。 */
+	assert.strictEqual(wrappedCols.length, 3, '13 个工具 + 每排最多 3 列：逐档加到一排放得下，收成一排 3 列，实际 ' + wrappedCols.length);
+	assert.ok(wrappedCols.every((one) => collectByClass(one, 'dsb-meter-row').length <= 6), '一排放得下后不再继续加行（替身最多多升一档到 6 行）');
+	/* 重置：返回再进来，行数回默认 3 */
+	stubWrapOn = false;
+	collectByClass(renderCounts(wrappedProgress), 'dsb-meter-back')[0].props.onClick(clickEvent());
+	renderCounts(wrappedProgress);
+	rowAt(renderCounts(wrappedProgress), '工具调用').props.onClick(clickEvent());
+	const resetCols = columnsOf(renderCounts(wrappedProgress));
+	assert.strictEqual(resetCols.length, 5, '返回后行数重置回 3：13 个工具 → 5 列，实际 ' + resetCols.length);
+	assert.ok(resetCols.every((one) => collectByClass(one, 'dsb-meter-row').length <= 3), '每列回到不超过 3 行');
+	console.log('工具调用自适应：放不下时逐档加行直到放得下；返回后重置回 3 行');
 } finally {
 	runEffects = false;
 	stubTipWidth = 0;
 	stubRingLeft = 120;
+	stubWrapOn = false;
+	stubWrapCap = 3;
 	barHooks.values.length = 0;
 }
+
+/* 工具调用彩条的悬停提示：**没有气泡**，只显示一行文字（工具名 + 占比），跟鼠标。
+   用一套独立 hooks，避免悬停状态漏到其它用例。 */
+const hoverHooks = makeHooks();
+const paintHover = () => withHooks(hoverHooks, () => api.StatusBar(skillProps));
+collectByClass(paintHover(), 'dsb-seg-click').filter((one) => one.props.key === '__segcounts')[0].props.onClick(clickEvent());
+rowAt(paintHover(), '工具调用').props.onClick(clickEvent());
+const hovTree = paintHover();
+const hovSegs = collectByClass(hovTree, 'dsb-bar-seg');
+assert.ok(hovSegs.length === 3, '工具彩条有 3 段');
+assert.strictEqual(hovSegs[0].props.title, undefined, '不再有浏览器原生 title');
+assert.strictEqual(typeof hovSegs[0].props.onMouseMove, 'function', '色段挂 onMouseMove（提示跟着鼠标走）');
+const hoverColorClass = String(collectByClass(hovTree, 'dsb-bar')[0].props.className);
+assert.ok(hoverColorClass.indexOf('dsb-bar-hoverable') !== -1, '工具彩条挂 hoverable 类（悬停凸起动效）');
+/* 反面断言：悬停放大**只在工具调用这个下钻子视图**启用。
+   只测正面（indexOf 命中）挡不住"判据放宽"—— 把 `opened !== null && opened.tight === true`
+   改成 `opened !== null`（或 `tight !== false`）后，其它带色条的视图会冒出不该有的放大动效，
+   而正面断言照样绿（审查 C 的 M10 / M13 变异就是这么存活的）。
+
+   ⚠ 必须挑**真的走那个三元表达式**的视图。三类要分清：
+     · 令牌面板（cost / lastCost）走 `tokenPanel` → `meterBar`，类名是**硬编码**的 "dsb-bar"，
+       根本不经过那个三元 —— 拿它断言等于空转（第一版就写错了，实测 M10/M13 仍绿）；
+     · 技能注入 / 上下文压缩子视图根本不画色条（没有 segments）；
+     · **总用时（sessionTime）根视图**才是对的：它 `kind: "rows"` 且带 `segments`。
+   但它在 StatusBar 里要 host 的 `desktopStatusbarActiveTime` 投影（这里没那份夹具，
+   强喂会把这条断言变成空转），所以直接调 `rowsPanel` 渲染同一份 tip ——
+   它正是那个三元表达式所在的函数，`sub.id === null` ⇒ 必须拿到普通 "dsb-bar"。 */
+const timeTipForProbe = api.segmentView('sessionTime', {
+	stats: { ttftMs: 2000, decodeMs: 1000, toolMs: 45000 },
+	timeRange: { turns: 5400000, since: null, steps: 0, stepSince: null },
+	now: FIXED_NOW, subagent: null
+}, t).tip;
+assert.ok(Array.isArray(timeTipForProbe.segments) && timeTipForProbe.segments.length > 0,
+	'前置：总用时 tip 确实带 segments（否则这条反面断言是空转）');
+const rootBarPanel = api.rowsPanel(timeTipForProbe, null, { current: null }, {
+	id: null, open: () => {}, back: () => {}, rowsPerColumn: 3
+});
+const rootBars = collectByClass(rootBarPanel, 'dsb-bar');
+assert.strictEqual(rootBars.length, 1, '总用时根视图有 1 条分段条，实际 ' + rootBars.length);
+assert.strictEqual(String(rootBars[0].props.className), 'dsb-bar',
+	'根视图（总用时）色条的 className 必须严格等于 dsb-bar，实际「'
+	+ String(rootBars[0].props.className) + '」—— 悬停放大只允许出现在工具调用子视图');
+console.log('悬停放大只在工具调用子视图：根视图色条严格等于 dsb-bar');
+/* 工具彩条自己的类名也要**严格等于**两个词的组合：
+   光写 indexOf 的话，改成 "dsb-bar dsb-bar-hoverable-legacy" 这种（CSS 选择器不再命中、
+   动效彻底失效）也照样通过 —— 审查 C 的 P4 变异就是这么存活的。 */
+assert.strictEqual(String(collectByClass(hovTree, 'dsb-bar')[0].props.className), 'dsb-bar dsb-bar-hoverable',
+	'工具彩条的 className 严格等于「dsb-bar dsb-bar-hoverable」（不是只含这个名字）');
+const hovEvent = (x, y) => ({ stopPropagation() {}, clientX: x, clientY: y });
+hovSegs[0].props.onMouseEnter(hovEvent(200, 500));
+const hoverTree = paintHover();
+assert.strictEqual(collectByClass(hoverTree, 'dsb-hovercard').length, 0, '悬停不再弹气泡');
+const plain = collectByClass(hoverTree, 'dsb-hover-plain')[0];
+assert.ok(plain !== undefined, '悬停后出现纯文字提示');
+assert.strictEqual(textOf(plain), 'read 58.33%', '纯文字内容 = 工具名 + 占比（read 7/12，两位小数），实际 ' + textOf(plain));
+assert.strictEqual(plain.props.onClick, undefined, '文字提示不可点、不拦截鼠标');
+/* 在同一个色段里横向移动：提示不消失、内容不变（onHoverMove 直接改 DOM 坐标，不触发重渲染） */
+hovSegs[0].props.onMouseMove(hovEvent(260, 500));
+assert.strictEqual(collectByClass(paintHover(), 'dsb-hover-plain').length, 1, '段内移动时提示保持存在、不闪断');
+assert.strictEqual(textOf(collectByClass(paintHover(), 'dsb-hover-plain')[0]), 'read 58.33%',
+	'段内移动后提示内容不变');
+hovSegs[1].props.onMouseEnter(hovEvent(400, 500));
+assert.strictEqual(textOf(collectByClass(paintHover(), 'dsb-hover-plain')[0]), 'edit 25.00%',
+	'第二段 = edit 3/12 = 25.00%');
+console.log('工具彩条悬停提示：read 58.33% / edit 25.00%（无气泡、跟鼠标、段内移动不闪断）');
+
+/* ------------------------------------------------------------------ 悬停文字缩放（B3 / M14）
+   这一段专治「hoverPlainWidthRef 被缩放后的宽度污染」，分两层验证：
+
+   ① **数值层**（直接跑 plainFitScale）：把"自然宽"与"缩放后视觉宽"两种输入分别喂进去，
+      证明只有用自然宽才能得到稳定的比例；用视觉宽会算出更大的 scale，
+      下一次 transform 更小 → 再量更小 → 一路收敛到下限。这是 bug 的数学本质。
+
+   ② **结构层**（读实现源码）：`hoverPlainWidthRef` 的写入与读取都必须走
+      `offsetWidth`（布局宽度，不含 transform），**不能**是
+      `getBoundingClientRect().width`（含 transform，重跑 effect 时会拿到缩放后的值）。
+      这条是给"以后有人改回 gBCR"准备的护栏 —— 变异回 gBCR 时立刻红。 */
+const fitBoundsForScale = api.plainBoundsOf({ right: 60 }, { right: 400 }, 1280);   /* 可用 67..400 = 333 */
+assert.strictEqual(api.plainFitScale(600, fitBoundsForScale, 1280) < 1, true,
+	'自然宽 600 > 可用 333 → 必须缩放');
+const naturalScale = api.plainFitScale(600, fitBoundsForScale, 1280);
+/* 模拟"被污染"：600 × 0.5 = 300 的视觉宽，再拿去算一次比例 */
+const pollutedScale = api.plainFitScale(300, fitBoundsForScale, 1280);
+assert.strictEqual(pollutedScale, 1,
+	'若把**缩放后的视觉宽**（600×0.5=300）当成自然宽再算一次，比例会变成 1（= 文字弹回原大小）—— '
+	+ '这正是宽度来源搞错时的表现：缩放比例在两个值之间来回跳，或一路缩到 0.5 下限。实际 ' + pollutedScale);
+assert.notStrictEqual(naturalScale, pollutedScale,
+	'自然宽与视觉宽算出的比例必须不同（否则说明 plainFitScale 根本没用到宽度）');
+
+/* 结构层：实现里写/读 ref 的那两处都必须用 offsetWidth，不许出现 gBCR().width。
+   ⚠ 必须先**剥掉注释**再断言：注释里也会写 `offsetWidth` 三个字（解释为什么不能用 gBCR），
+   不剥的话把实现改回 gBCR 时那些字样仍在窗口里，断言照样绿（实测变异存活）。
+   `code` 是经过 marker 替换的那份源码（文件顶部就有）。 */
+const codeNoComments = code
+	.replace(/\/\*[\s\S]*?\*\//g, '')
+	.replace(/(^|[^:'"\\])\/\/[^\n]*/g, '$1');
+const widthWriteAt = codeNoComments.indexOf('hoverPlainWidthRef.current =');
+const hoverWidthWrite = codeNoComments.slice(Math.max(0, widthWriteAt - 600), widthWriteAt + 120);
+assert.ok(hoverWidthWrite.indexOf('offsetWidth') !== -1,
+	'写入 hoverPlainWidthRef 时必须用 offsetWidth（布局宽度，不含 transform）。'
+	+ '\n实际片段：' + hoverWidthWrite.slice(0, 200)
+	+ '\n理由：定位 effect 的依赖含 hoverMouse，鼠标一动就重跑；重跑时节点还带着上一帧的 '
+	+ 'transform: scale(x)，用 getBoundingClientRect().width 量到的是缩放后宽度 → ref 被写小 '
+	+ '→ 悬停文字一路缩到 0.5 下限（实测自然宽 600 被写成 300）。');
+const hoverReadAt = codeNoComments.indexOf('const natural = hoverPlainWidthRef.current > 0');
+assert.ok(hoverReadAt !== -1, '找得到 onHoverMove 里读 ref 的地方');
+const hoverRead = codeNoComments.slice(Math.max(0, hoverReadAt - 400), hoverReadAt + 220);
+assert.ok(hoverRead.indexOf('offsetWidth') !== -1,
+	'onHoverMove 的兜底宽度也必须用 offsetWidth（不能退回 gBCR 的视觉宽）\n实际片段：' + hoverRead.slice(0, 240));
+/* 反面断言：这两处都不许出现 getBoundingClientRect().width 作为宽度来源 */
+assert.strictEqual(/hoverPlainWidthRef\.current = [^;]*getBoundingClientRect/.test(codeNoComments), false,
+	'hoverPlainWidthRef 的写入不许来自 getBoundingClientRect（那是含 transform 的视觉宽）');
+console.log('悬停文字缩放：自然宽 / 视觉宽的比例差异已钉住；ref 的写读都走 offsetWidth（B3/M14）');
+/* 复位，别影响后面的用例 */
+stubHoverPlainWidth = 60;
+stubBarWidth = 273;
+stubHeadlineWidth = 60;
+
+/* 悬停文字的水平夹取：左 = 标题右边界 + 1ch；右 = **色条本身**的右边界（不是气泡右边界） */
+/* 注意：这些对象来自 vm 沙箱，原型与本进程不同，用跨 realm 安全的 JSON 比较 */
+const bounds = api.plainBoundsOf({ right: 120 }, { right: 400 }, 1280);
+assert.strictEqual(JSON.stringify(bounds), JSON.stringify({ min: 127, max: 400 }),
+	'范围 = 标题右边界 + 1ch（7px） ~ 色条右边界');
+const boundsViewport = api.plainBoundsOf({ right: 120 }, { right: 2000 }, 1280);
+assert.strictEqual(JSON.stringify(boundsViewport), JSON.stringify({ min: 127, max: 1272 }), '色条右边界超过视口时按视口夹');
+assert.strictEqual(JSON.stringify(api.plainBoundsOf(null, null, 1280)), JSON.stringify({ min: 8, max: 1272 }),
+	'两个边界都拿不到时退回「只夹视口」的范围');
+assert.strictEqual(api.clampPlainLeft(0, 60, bounds, 1280), 127, '离标题至少 1ch、不压标题');
+assert.strictEqual(api.clampPlainLeft(500, 60, bounds, 1280), 340, '文字右边界不越过色条右边界（400-60）');
+assert.strictEqual(api.clampPlainLeft(300, 60, null, 1280), 300, '没有范围时只夹视口');
+/* 退化分支：**没有视口宽度**（`viewportWidth <= 0`）。
+   上面三条都传了 1280，所以 `viewMax` 永远不是 null，两条退化分支一拍没走到：
+   · `clampPlainLeft` 的 `if (max === null) return Math.max(min, centered)`（原值返回）
+   · `plainBoundsOf` 的 `if (max < min) return null`（区间为负）
+   实测这两个分支写错时测试仍全绿（审查 C 的 P1 / P2）。 */
+assert.strictEqual(api.clampPlainLeft(500, 60, null, 0), 500,
+	'没有视口、没有范围：left 原样返回居中值（不能贴死在左边界）');
+assert.strictEqual(api.clampPlainLeft(3, 60, null, 0), 8,
+	'没有视口时仍要守住左边距 8px，实际 ' + api.clampPlainLeft(3, 60, null, 0));
+assert.strictEqual(api.plainBoundsOf(null, null, 0), null,
+	'没有标题、没有色条、没有视口：返回 null（不要编一个假范围出来）');
+assert.strictEqual(api.plainBoundsOf({ right: 400 }, { right: 300 }, 1280), null,
+	'标题右边界已越过色条右边界（区间为负）：返回 null，交给夹取兜底');
+console.log('悬停文字水平夹取：左=标题右边界+1ch / 右=色条右边界');
+
+/* 悬停文字缩放的**特例性**：用户拍板「缩小到能放下为止，此为特例，一般情况下不缩小」。
+   一般情况（放得下）必须 scale === 1，即一个像素都不缩 —— 这条比"能缩"更重要，
+   否则正常长度的工具名也会被无端缩小，看着像坏了。 */
+const fitBounds = { min: 127, max: 400 };   /* 可用宽度 273px */
+assert.strictEqual(api.plainFitScale(100, fitBounds, 1280), 1, '放得下（100 < 273）：不缩放');
+assert.strictEqual(api.plainFitScale(273, fitBounds, 1280), 1, '刚好放满：仍然不缩放');
+assert.ok(Math.abs(api.plainFitScale(546, fitBounds, 1280) - 0.5) < 1e-9, '放不下（546）：缩到 0.5 刚好放下');
+const partial = api.plainFitScale(400, fitBounds, 1280);
+assert.ok(partial < 1 && partial > 0.5, '略放不下时按比例缩（不一步缩到底），实际 ' + partial);
+/* 下限 0.5：11px 再小就看不清了，宁可溢出也不缩成不可读 */
+assert.strictEqual(api.plainFitScale(100000, fitBounds, 1280), 0.5, '缩放下限 0.5，不会缩成不可读');
+/* 退化输入：没有边界信息、宽度非法时一律不缩放（保持原来的行为，不引入新的抖动） */
+assert.strictEqual(api.plainFitScale(0, fitBounds, 1280), 1, '宽度为 0 时按不缩放处理');
+assert.strictEqual(api.plainFitScale(NaN, fitBounds, 1280), 1, '宽度是 NaN 时按不缩放处理');
+assert.strictEqual(api.plainFitScale(999, null, 0), 1, '没有 bounds 也没有视口信息：不缩放');
+/* 区间本身是负的（标题右边界已越过色条右边）：无横向空间可缩，退回不缩放 */
+assert.strictEqual(api.plainFitScale(999, { min: 400, max: 300 }, 1280), 1, '区间为负时不缩放（无处可放，交给夹取兜底）');
+console.log('悬停文字缩放：只在放不下时缩，一般情况一个像素都不缩');
+
+/* ===================================== 总计：增量式记账（走真实渲染路径）======
+   用户拍板的口径：**每条调用只算一次钱、算完固化，之后永不重算**；
+   没价的模型记「欠账」，补上价只补算那部分。
+
+   这一批**必须走真实渲染路径** —— 这是重点，别退回成"手工构造 hold 直接调纯函数"：
+   每拍都调 `api.segmentView('cost', src)`，`src.totalHold` 复用**同一个对象**（模拟 useRef 跨渲染），
+   断言取的是**渲染出来的文字**（用户看到的那个数）。
+
+   为什么不能手工传参数：那会绕过 client.js 里「组装 calls → 逐条结算 → overflow / 队友 / 欠账」
+   那段真实写入路径。实测代价（2026-10-18 审查 C）：旧实现里「切分基准漂移」写错后
+   总计会永久冻结在旧值，而当时 24 个测试全绿 —— 就是因为测试全在纯函数层面打转。 */
+
+/** 一拍：走真实渲染路径跑一次「总计」，返回渲染文字与其中金额。 */
+const TICK_OFF = FIXED_NOW;                        /* 北京时间周三 20:00（空闲） */
+const TICK_PEAK = Date.UTC(2026, 9, 15, 3, 0, 0);  /* 北京时间周四 11:00（高峰） */
+/**
+ * 干净的出厂人民币价格库（用例之间复位用）。
+ *
+ * 为什么不直接取 `api.snapshot().models`：那是**模块级 config**，前面「设置页改价」那一大段用例
+ * 已经往里加过 GLM-5.3-Flash、纯数字键 "1"、把 deepseek-flash 改成 USD 等等 —— 拿它当基准会把
+ * 别人的改动带进来。这里按 DEFAULT_PRICES 重建一份，只看官方 CNY 价。
+ *
+ * 必须用 Object.assign 逐个展开：DEFAULT_PRICES 来自 vm 沙箱 realm，
+ * 跨 realm 的对象直接嵌进来会让深层比较失败（原型不同）。
+ */
+const tickTier = (tier) => ({
+	input: tier.input, cacheRead: tier.cacheRead, cacheWrite: tier.cacheWrite, output: tier.output
+});
+const tickOfficial = (name) => {
+	const raw = api.DEFAULT_PRICES[name];
+	return { tiered: true, currency: 'CNY', peak: tickTier(raw.peak), offPeak: tickTier(raw.offPeak) };
+};
+const TICK_BASE_MODELS = Object.assign({},
+	{ 'deepseek-flash': tickOfficial('deepseek-flash') },
+	{ 'deepseek-v4-pro': tickOfficial('deepseek-v4-pro') });
+/** 空账本：形状与 StatusBar 里 useRef 初始化的那份一致。
+ *  `debts` 是 **Map**（不是普通对象）：模型名是上游给的任意字符串，
+ *  `__proto__` 这类键在普通对象上会变成设原型、静默丢失欠账。 */
+const tickHold = () => ({
+	sessionId: null, seen: new Map(), cost: 0, tokens: null,
+	priced: false, subCostSettled: 0, debts: new Map()
+});
+/** 一条调用：output 250,000 token = 0.25M。空闲 4 元/M ⇒ ¥1.00；高峰 8 元/M ⇒ ¥2.00。 */
+const tickCall = (at, model, units) => ({
+	at: at, model: model, input: 0, cacheRead: 0, cacheWrite: 0, output: 250000 * units
+});
+const tickCost = (hold, opts) => {
+	const o = opts === undefined ? {} : opts;
+	/* 改价走真实路径：设置页改价就是 setConfig({ models })，priceOf 读的就是这份 */
+	if (o.models !== undefined) api.setConfig({ models: o.models });
+	const book = api.snapshot().models;
+	const view = api.segmentView('cost', {
+		sessionUsage: { models: book, calls: o.calls === undefined ? [] : o.calls, overflow: o.overflow },
+		sessionModel: { provider: 'deepseek-official', model: 'deepseek-flash' },
+		usage: o.usage,
+		subagent: o.subagent === undefined ? null : o.subagent,
+		currency: 'CNY', defaultCurrency: 'CNY', models: book,
+		now: o.now === undefined ? TICK_OFF : o.now,
+		sessionId: o.sessionId === undefined ? 'tick-session-a' : o.sessionId,
+		totalHold: hold
+	}, t);
+	const text = api.segmentText('cost', view, t, 'CNY');
+	const hit = typeof text === 'string' ? /¥(-?[\d.]+)/.exec(text) : null;
+	return { text: text, money: hit === null ? null : Number(hit[1]) };
+};
+
+/* ---- 场景 1：正常增长（每条只算一次；重渲染、乱序、同毫秒、滚动窗口都不重不漏）---- */
+api.setConfig({ models: TICK_BASE_MODELS });
+const growHold = tickHold();
+const growCallA = tickCall(TICK_OFF, 'deepseek-flash', 1);
+const growCallB = tickCall(TICK_OFF + 1000, 'deepseek-flash', 2);
+const growCallC = tickCall(TICK_PEAK + 1000, 'deepseek-flash', 1);
+let growTick = tickCost(growHold, { calls: [growCallA] });
+assert.strictEqual(growTick.text, '总计 ¥1.00', '第 1 条空闲调用 = ¥1.00，实际 ' + growTick.text);
+growTick = tickCost(growHold, { calls: [growCallA, growCallB] });
+assert.strictEqual(growTick.text, '总计 ¥3.00', '新增 1 条 ¥2.00 → ¥3.00，实际 ' + growTick.text);
+growTick = tickCost(growHold, { calls: [growCallA, growCallB, growCallC] });
+assert.strictEqual(growTick.text, '总计 ¥5.00', '再新增 1 条高峰 ¥2.00 → ¥5.00，实际 ' + growTick.text);
+/* 同一份数据再渲染：一条都不许重复计费（用户看到的总计不能自己往上跳） */
+growTick = tickCost(growHold, { calls: [growCallA, growCallB, growCallC] });
+assert.strictEqual(growTick.text, '总计 ¥5.00', '同数据重渲染不得重复计费，实际 ' + growTick.text);
+/* calls **不保证按 at 升序**（真实日志里就有 [22:00, 10:00, 10:00]）：
+   乱序到达的调用必须全部计入 —— 任何"只往后推时间游标"的写法都会漏掉后到的早调用。 */
+const disorderHold = tickHold();
+const disorderLate = tickCall(TICK_OFF, 'deepseek-flash', 1);              /* 空闲 ¥1.00 */
+const disorderEarly = tickCall(TICK_OFF - 36000000, 'deepseek-flash', 1);  /* 10 小时前 = 周三 10:00 高峰 ¥2.00 */
+let disorderTick = tickCost(disorderHold, { calls: [disorderLate, disorderEarly] });
+assert.strictEqual(disorderTick.text, '总计 ¥3.00', '乱序到达的两条都要计入（¥1 + ¥2），实际 ' + disorderTick.text);
+/* 同一毫秒的并行调用（指纹完全相同）：靠"出现次数"去重，只记"见过/没见过"会漏掉第二条 */
+const sameMsHold = tickHold();
+const sameMsCall = tickCall(TICK_OFF, 'deepseek-flash', 1);
+let sameMsTick = tickCost(sameMsHold, { calls: [sameMsCall] });
+assert.strictEqual(sameMsTick.text, '总计 ¥1.00', '同毫秒第 1 条 ¥1.00，实际 ' + sameMsTick.text);
+sameMsTick = tickCost(sameMsHold, { calls: [sameMsCall, sameMsCall] });
+assert.strictEqual(sameMsTick.text, '总计 ¥2.00', '同一毫秒再来一条同参数调用也要计入，实际 ' + sameMsTick.text);
+/* calls 是滚动窗口：队首会被 host 的 MAX_CALLS 丢弃。用**下标**切分会整体错位、扣错钱。 */
+const windowHold = tickHold();
+const windowA = tickCall(TICK_OFF, 'deepseek-flash', 1);
+const windowB = tickCall(TICK_OFF + 1000, 'deepseek-flash', 1);
+const windowC = tickCall(TICK_OFF + 2000, 'deepseek-flash', 1);
+let windowTick = tickCost(windowHold, { calls: [windowA, windowB] });
+assert.strictEqual(windowTick.text, '总计 ¥2.00', '窗口内前两条 ¥2.00，实际 ' + windowTick.text);
+windowTick = tickCost(windowHold, { calls: [windowB, windowC] });
+assert.strictEqual(windowTick.text, '总计 ¥3.00', '队首被丢弃后只补算新增那条，实际 ' + windowTick.text);
+console.log('总计记账：¥1→¥3→¥5 / 重渲染不重复 / 乱序、同毫秒、滚动窗口都不重不漏');
+
+/* ---- 场景 2：改价（改价前已花的钱不动，改价后的新调用按新价）---- */
+api.setConfig({ models: TICK_BASE_MODELS });
+const priceHold = tickHold();
+const priceCallA = tickCall(TICK_OFF, 'deepseek-flash', 1);
+let priceTick = tickCost(priceHold, { calls: [priceCallA] });
+assert.strictEqual(priceTick.text, '总计 ¥1.00', '改价前按旧价算 ¥1.00，实际 ' + priceTick.text);
+/* 空闲输出价 4 → 1 元/M：同一条调用按新价只值 ¥0.25 */
+const TICK_CHEAP = {
+	'deepseek-flash': {
+		tiered: true, currency: 'CNY',
+		peak: { input: 0.5, cacheRead: 0.01, cacheWrite: 0, output: 2 },
+		offPeak: { input: 0.25, cacheRead: 0.005, cacheWrite: 0, output: 1 }
+	}
+};
+priceTick = tickCost(priceHold, { calls: [priceCallA], models: TICK_CHEAP });
+assert.strictEqual(priceTick.text, '总计 ¥1.00', '改价前已经花掉的钱不许变（不能被新价重算成 ¥0.25），实际 ' + priceTick.text);
+const priceCallB = tickCall(TICK_OFF + 1000, 'deepseek-flash', 1);
+priceTick = tickCost(priceHold, { calls: [priceCallA, priceCallB], models: TICK_CHEAP });
+assert.strictEqual(priceTick.text, '总计 ¥1.25', '改价后的新调用按新价 ¥0.25（1 + 0.25），实际 ' + priceTick.text);
+console.log('总计记账：改价后历史 ¥1.00 不动 / 新调用按新价 ¥0.25');
+
+/* ---- 场景 3：无价 → 补价（先记欠账给横杠，补价后补算，重渲染不重复补）---- */
+/* 剥掉注释再断言（注释里也提到 debts: {} 这种反例写法） */
+const codeNoCommentsForDebts = code
+	.replace(/\/\*[\s\S]*?\*\//g, '')
+	.replace(/(^|[^:'\"\\\\])\/\/[^\n]*/g, '');
+api.setConfig({ models: TICK_BASE_MODELS });
+const debtHold = tickHold();
+/* 账本里的欠账**必须是 Map**，不能是普通对象：模型名是上游给的任意字符串，
+   `__proto__` 这类键在普通对象上会变成设原型、静默丢失，`Object.keys` 遍历不到，
+   补价时永远结算不回来（总计永久少算）。`seen` 也是 Map —— 两者形状应当一致。
+   这条断言是给"以后有人把它改回 {}"准备的护栏（改回去立刻红）。 */
+assert.ok(debtHold.debts instanceof Map, '前置：账本的 debts 必须是 Map（不是普通对象）');
+/* 生产代码里的那两处初始化也必须是 Map —— 测试自己的 tickHold 对，
+   不代表 client.js 里那两份也对（变异只改生产代码时，上面那条断言抓不到）。
+   必须断言**两处都是** Map 且**不存在** `debts: {}`：只断言"至少有一处是 Map"
+   抓不到"只把其中一处改回去"的变异（实测存活过）。 */
+assert.strictEqual((codeNoCommentsForDebts.match(/debts: new Map\(\)/g) || []).length, 2,
+	'client.js 里两处 debts 初始化都必须是 new Map()（applyTotalFloor 新建账本 + totalHoldRef）');
+assert.strictEqual((codeNoCommentsForDebts.match(/debts: \{\}/g) || []).length, 0,
+	'client.js 里不许出现 debts: {}（普通对象会丢 __proto__ 这类键的欠账）');
+const debtCallA = tickCall(TICK_OFF, 'my-model', 1);
+const debtCallB = tickCall(TICK_OFF + 1000, 'my-model', 1);
+let debtTick = tickCost(debtHold, { calls: [debtCallA, debtCallB] });
+assert.strictEqual(debtTick.text, '总计 ¥-', '一条都算不出价时给横杠（不是 ¥0.00），实际 ' + debtTick.text);
+assert.ok(debtHold.debts.has('my-model'),
+	'无价模型必须记进欠账，实际 ' + JSON.stringify(Array.from(debtHold.debts.keys())));
+/* 补价：my-model 空闲输出 4 元/M ⇒ 每条 ¥1.00，两条 ¥2.00 */
+const TICK_WITH_MY = {
+	'deepseek-flash': TICK_BASE_MODELS['deepseek-flash'],
+	'my-model': {
+		tiered: true, currency: 'CNY',
+		peak: { input: 2, cacheRead: 0.04, cacheWrite: 0, output: 8 },
+		offPeak: { input: 1, cacheRead: 0.02, cacheWrite: 0, output: 4 }
+	}
+};
+debtTick = tickCost(debtHold, { calls: [debtCallA, debtCallB], models: TICK_WITH_MY });
+assert.strictEqual(debtTick.text, '总计 ¥2.00', '补价后欠账要补算出来（2 条 × ¥1.00），实际 ' + debtTick.text);
+assert.strictEqual(debtHold.debts.size, 0, '补算完欠账应清空');
+/* 再渲染一拍：不能重复补算 */
+debtTick = tickCost(debtHold, { calls: [debtCallA, debtCallB], models: TICK_WITH_MY });
+assert.strictEqual(debtTick.text, '总计 ¥2.00', '欠账补算不得重复（重渲染仍是 ¥2.00），实际 ' + debtTick.text);
+console.log('总计记账：无价给横杠并记欠账 / 补价后补算 ¥2.00 / 重渲染不重复补');
+
+/* ---- 场景 3b：模型名撞 JS 原型属性（`__proto__` / `constructor`）----
+   欠账账本若用普通对象，`debts['__proto__'] = slot` 是**设置原型**而不是加键，
+   `Object.keys` 遍历不到 → 补价时永远结算不回来，总计永久少算。
+   `constructor` / `toString` 更隐蔽：读到的是原型上的函数，代码把函数当字典用
+   "碰巧能跑"，但那是巧合不是设计。账本必须是 Map（或空原型对象）。 */
+api.setConfig({ models: TICK_BASE_MODELS });
+[/* __proto__ 单独放在下面测（它过不了 setConfig 的 Object.assign 这一步，见说明） */'constructor', 'toString', 'hasOwnProperty'].forEach((weirdName) => {
+	const weirdHold = tickHold();
+	const weirdCall = tickCall(TICK_OFF, weirdName, 1);
+	let weirdTick = tickCost(weirdHold, { calls: [weirdCall] });
+	assert.strictEqual(weirdTick.text, '总计 ¥-',
+		weirdName + '：无价时应给横杠，实际 ' + weirdTick.text);
+	assert.ok(weirdHold.debts.has(weirdName),
+		weirdName + '：欠账必须真的记进账本（普通对象上 __proto__ 会静默丢失），实际 '
+		+ JSON.stringify(Array.from(weirdHold.debts.keys())));
+	/* 补价：输出 4 元/M × 0.25M = ¥1.00 */
+	const weirdModels = Object.assign({}, TICK_BASE_MODELS, {
+		[weirdName]: {
+			tiered: true, currency: 'CNY',
+			peak: { input: 2, cacheRead: 0.04, cacheWrite: 0, output: 8 },
+			offPeak: { input: 1, cacheRead: 0.02, cacheWrite: 0, output: 4 }
+		}
+	});
+	weirdTick = tickCost(weirdHold, { calls: [weirdCall], models: weirdModels });
+	assert.strictEqual(weirdTick.text, '总计 ¥1.00',
+		weirdName + '：补价后必须补算出 ¥1.00（原型键上丢了欠账就会是横杠），实际 ' + weirdTick.text);
+	assert.strictEqual(weirdHold.debts.size, 0, weirdName + '：补算完欠账应清空');
+});
+console.log('总计记账：模型名 __proto__ / constructor / toString / hasOwnProperty 都能正常记欠账并补算');
+
+/* ---- 场景 4：队友（子智能体）只加增量、不重复加；换会话不残留 ---- */
+api.setConfig({ models: TICK_BASE_MODELS });
+const subHold = tickHold();
+const subCallA = tickCall(TICK_OFF, 'deepseek-flash', 1);
+const subTen = { ok: true, total: { cost: 10, tokens: { cacheRead: 0, input: 0, cacheWrite: 0, output: 0 } } };
+const subFifteen = { ok: true, total: { cost: 15, tokens: { cacheRead: 0, input: 0, cacheWrite: 0, output: 0 } } };
+let subTick = tickCost(subHold, { calls: [subCallA], subagent: { session: subTen, turn: null } });
+assert.strictEqual(subTick.text, '总计 ¥11.00', '本会话 ¥1.00 + 队友 ¥10.00，实际 ' + subTick.text);
+subTick = tickCost(subHold, { calls: [subCallA], subagent: { session: subTen, turn: null } });
+assert.strictEqual(subTick.text, '总计 ¥11.00', '重渲染时队友金额不得重复加（用户实测的闪烁就是它），实际 ' + subTick.text);
+subTick = tickCost(subHold, { calls: [subCallA], subagent: { session: subFifteen, turn: null } });
+assert.strictEqual(subTick.text, '总计 ¥16.00', '队友涨到 ¥15.00 时只补 ¥5.00 增量，实际 ' + subTick.text);
+/* 队友请求失败（整段拿不到）：显示不许回退 —— 用户实测 20 秒内 ¥2.66 → ¥92.37 就是这个 */
+subTick = tickCost(subHold, { calls: [subCallA], subagent: null });
+assert.strictEqual(subTick.text, '总计 ¥16.00', '队友请求失败时显示不得回退（防闪），实际 ' + subTick.text);
+/* 换会话：上个会话的调用与队友金额都不得带过来（旧实现在这里会把上会话队友永久算进来） */
+const switchCall = tickCall(TICK_OFF + 5000, 'deepseek-flash', 2);
+const switchTick = tickCost(subHold, { calls: [switchCall], subagent: null, sessionId: 'tick-session-b' });
+assert.strictEqual(switchTick.text, '总计 ¥2.00', '换会话后账本清空、只剩本会话 ¥2.00，实际 ' + switchTick.text);
+console.log('总计记账：队友只加增量 ¥11→¥16 / 失败不回退 / 换会话无残留');
+
+/* ---- 场景 5：overflow（被 host 截断的老调用）只在建账那一拍计入一次 ---- */
+api.setConfig({ models: TICK_BASE_MODELS });
+const overHold = tickHold();
+const overCallA = tickCall(TICK_OFF, 'deepseek-flash', 1);
+const overBucket = {
+	'deepseek-flash': {
+		peak: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
+		offPeak: { input: 0, cacheRead: 0, cacheWrite: 0, output: 250000 }
+	}
+};
+let overTick = tickCost(overHold, { calls: [overCallA], overflow: overBucket });
+assert.strictEqual(overTick.text, '总计 ¥2.00', 'calls ¥1.00 + overflow ¥1.00，实际 ' + overTick.text);
+overTick = tickCost(overHold, { calls: [overCallA], overflow: overBucket });
+assert.strictEqual(overTick.text, '总计 ¥2.00', 'overflow 不得每拍重复计入，实际 ' + overTick.text);
+console.log('总计记账：overflow 只在建账那拍计一次（¥2.00 不涨）');
+
+/* ---- 场景 6：已结算指纹集合有上限（长会话内存不能无限增长）---- */
+const manyCalls = [];
+for (let i = 0; i < 9000; i += 1) manyCalls.push(tickCall(TICK_OFF + i * 1000, 'deepseek-flash', 1));
+const manyHold = tickHold();
+const manyTick = tickCost(manyHold, { calls: manyCalls });
+assert.ok(manyHold.seen.size <= 8000, '已结算指纹集合必须有上限（SEEN_LIMIT=8000），实际 ' + manyHold.seen.size);
+assert.strictEqual(manyTick.money, 9000, '9000 条 × ¥1.00 = ¥9000，金额不受上限影响，实际 ' + manyTick.money);
+console.log('总计记账：9000 条调用后指纹集合仍 ≤ 8000，金额正确 ¥9000.00');
+
+/* ---- 场景 7：指纹上限的**跨拍**行为（上限真正的作用在下一拍）----
+   关键前提：**单拍喂入的调用数不可能超过 MAX_CALLS(4000)** —— host 的 calls 就是那个上限。
+   而 SEEN_LIMIT=8000 正好是它的两倍，所以「这一拍还在窗口里的调用」的指纹永远不会被淘汰，
+   跨拍重算时必然全部命中、不会重复计费。下面用**真实规模**（4000 条 = MAX_CALLS）验证。
+
+   若把 SEEN_LIMIT 调到小于单拍调用数，淘汰就会误伤仍在窗口里的指纹 → 第二拍重复计费。
+   这正是 M05 要盯的边界：这条用例同时是 SEEN_LIMIT 的**下界证明**（必须 ≥ MAX_CALLS）。 */
+const manyHold2 = tickHold();
+const realMax = manyCalls.slice(0, 4000);        /* MAX_CALLS 规模 */
+const manyCallsB = realMax.map((one) => Object.assign({}, one));
+let manyTick2 = tickCost(manyHold2, { calls: manyCallsB });
+assert.strictEqual(manyTick2.money, 4000, '第一拍 4000 条（= MAX_CALLS）= ¥4000，实际 ' + manyTick2.money);
+manyTick2 = tickCost(manyHold2, { calls: manyCallsB });
+assert.strictEqual(manyTick2.money, 4000,
+	'第二拍喂同一批 4000 条时不得重复计费，实际 ' + manyTick2.money);
+assert.strictEqual(manyTick2.text, '总计 ¥4000.00', '第二拍金额文本不变，实际 ' + manyTick2.text);
+assert.ok(manyHold2.seen.size <= 8000, '指纹集合仍在上限内，实际 ' + manyHold2.seen.size);
+console.log('总计记账：指纹上限跨拍不重复计费（4000 条 = MAX_CALLS，第二拍仍 ¥4000.00）');
+
+/* 用例改了模块级价格库，还回去（后面的设置页用例仍按出厂价跑） */
+api.setConfig({ models: TICK_BASE_MODELS });
 
 /* 抓不到「下一年」的安排（官方还没发布，host 回空 days）：状态行照常显示已写入的本年数量，
    不出现"国务院还没发布 X 年放假安排"那句。抓取回包是异步的，等一拍再断言。 */
@@ -1272,3 +2269,17 @@ setImmediate(() => {
 
 	console.log('\nALL CHECKS PASSED');
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+

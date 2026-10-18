@@ -17,7 +17,8 @@ const { tmpdir } = require('os');
 	const mod = await import('../lib/release-age.js');
 	const {
 		nameOfSelector, versionOfSelector, parseExcludeBlock, unionSelectors,
-		mergeExcludeIntoYaml, findProfileDir, ensureReleaseAgeExclude
+		mergeExcludeIntoYaml, findProfileDir, ensureReleaseAgeExclude,
+		keepRecentVersions, MAX_EXEMPT_VERSIONS
 	} = mod;
 
 	/* ---------------------------------------------------------- 选择器解析 */
@@ -68,6 +69,97 @@ const { tmpdir } = require('os');
 	assert.ok(lines[0].includes('2.1.1') && lines[0].includes('2.2.0'), '旧版本与新版本都在这一条里：' + lines[0]);
 	console.log('同名追加（#732 的坑）：' + lines[0]);
 
+	/* ------------------------------------------------- 版本不累积（回归）
+	   早先 `unionSelectors` 把所有历史版本永久并进同一条规则：更新 N 次后长成
+	   `2.0.0 || 2.0.1 || 2.1.0 || 2.1.1 || 2.1.2 || …`。两个实际坏处：
+	     · 规则无限变长，用户看不懂这一行在干什么；
+	     · 更要紧：一旦某次真的写成两条同名规则，pnpm 只认第一条 → 新版本被
+	       24 小时发布年龄挡下（这正是修复前磁盘上的真实状态）。
+	   现在的语义是「目标版本 + 最近一个」，见 MAX_EXEMPT_VERSIONS。 */
+	const DEEP = [
+		'packages:',
+		'  - .',
+		'',
+		'minimumReleaseAgeExclude:',
+		'  - dsh-desktop-statusbar@2.0.0 || 2.0.1 || 2.1.0 || 2.1.1 || 2.1.2',
+		'  - other-plugin@1.0.0 || 1.0.1 || 1.0.2 || 1.0.3',
+		''
+	].join('\n');
+	const trimmed = mergeExcludeIntoYaml(DEEP, 'dsh-desktop-statusbar', '2.2.0');
+	const trimLines = trimmed.text.split('\n').filter((l) => l.includes('dsh-desktop-statusbar'));
+	assert.strictEqual(trimLines.length, 1, '仍然只有一条规则');
+	const trimVersions = trimLines[0].replace(/^.*?@/, '').replace(/['"]/g, '').split('||').map((one) => one.trim());
+	assert.ok(trimVersions.length <= MAX_EXEMPT_VERSIONS,
+		'历史版本必须裁到 ' + MAX_EXEMPT_VERSIONS + ' 个以内，实际 ' + JSON.stringify(trimVersions));
+	assert.ok(trimVersions.includes('2.2.0'), '目标版本在');
+	assert.ok(trimVersions.includes('2.1.2'), '上一版保留（可回滚）');
+	assert.ok(!trimVersions.includes('2.0.0'), '最早的被裁掉');
+	/* 别人的规则一条都不能少、也不能被裁 */
+	assert.ok(trimmed.text.includes('other-plugin@1.0.0 || 1.0.1 || 1.0.2 || 1.0.3'),
+		'别的插件的多版本规则必须原样保留（不裁剪、不加引号）\n' + trimmed.text);
+	console.log('版本不累积：' + trimLines[0].trim() + '（别人的规则原样）');
+
+	/* ------------------------------------------------- 反复升级也不膨胀 */
+	let rolling = one;
+	['2.2.0', '2.3.0', '2.4.0', '2.5.0'].forEach((version) => {
+		rolling = mergeExcludeIntoYaml(rolling, 'dsh-desktop-statusbar', version).text;
+	});
+	const rollLine = rolling.split('\n').filter((l) => l.includes('dsh-desktop-statusbar'))[0];
+	const rollVersions = rollLine.replace(/^.*?@/, '').replace(/['"]/g, '').split('||').map((one) => one.trim());
+	assert.ok(rollVersions.length <= MAX_EXEMPT_VERSIONS, '连续升级 4 次后仍是 ' + rollVersions.length + ' 个版本');
+	assert.ok(rollVersions.includes('2.5.0'), '最后的目标版本在');
+	console.log('连续升级 4 次后：' + rollLine.trim());
+
+	/* ------------------------------------------------- 别人的规则逐字节不变
+	   这是**共享文件**（多个插件共用 profile 的 pnpm-workspace.yaml）。只改我们那一行，
+	   其它行一个字节都不能动 —— 包括：
+	     · 不含 `||` 的简单规则（`other-plugin@1.0.0`）→ 不能被加上引号；
+	     · 含 `||` 的多版本规则 → 不能丢版本、不能被裁剪、不能被引号包起来；
+	     · 作用域包的引号写法 → 原样保留。
+	   早先的实现把每个条目都重新生成一遍，于是 `dshmarket@1.66.22 || 1.66.32`
+	   被写成 `'dshmarket@1.66.22 || 1.66.32'` —— 语义等价但改写了别人的配置。 */
+	const OTHERS = [
+		'  - other-plugin@1.0.0',
+		'  - multi-plugin@2.0.0 || 2.0.1 || 2.0.2 || 2.0.3 || 2.0.4',
+		"  - '@scope/pkg@1.0.0'",
+		''
+	].join('\n');
+	const shared = [
+		'packages:',
+		'  - .',
+		'',
+		'minimumReleaseAgeExclude:',
+		'  - dsh-desktop-statusbar@2.1.1 || 2.1.2',
+		''
+	].join('\n').replace('  - dsh-desktop-statusbar@2.1.1 || 2.1.2\n', '  - dsh-desktop-statusbar@2.1.1 || 2.1.2\n' + OTHERS);
+	const sharedOut = mergeExcludeIntoYaml(shared, 'dsh-desktop-statusbar', '2.2.0');
+	const otherLines = (text) => text.split('\n')
+		.filter((line) => /^\s*-\s/.test(line))
+		.filter((line) => line.indexOf('dsh-desktop-statusbar') === -1);
+	assert.deepStrictEqual(otherLines(sharedOut.text), otherLines(shared),
+		'别人的规则必须逐字节不变（不许加引号、不许裁剪、不许丢版本）\n'
+		+ '改前：' + JSON.stringify(otherLines(shared)) + '\n改后：' + JSON.stringify(otherLines(sharedOut.text)));
+	console.log('别人的规则：逐字节不变（' + otherLines(sharedOut.text).length + ' 行）');
+
+	/* --------------------------------- 目标版本必须保住（即使它比现有的都老）
+	   回滚场景：用户从 2.5.0 退回 2.0.0 → 目标版本比已保留的都小。
+	   裁剪算法若只取"最大的 N 个"，会把目标版本裁掉、导致这次安装被发布年龄挡住。 */
+	const rollback = [
+		'packages:',
+		'  - .',
+		'',
+		'minimumReleaseAgeExclude:',
+		'  - dsh-desktop-statusbar@2.4.0 || 2.5.0',
+		''
+	].join('\n');
+	const rb = mergeExcludeIntoYaml(rollback, 'dsh-desktop-statusbar', '2.0.0');
+	const rbLine = rb.text.split('\n').filter((l) => l.includes('dsh-desktop-statusbar'))[0];
+	const rbVersions = rbLine.replace(/^.*?@/, '').replace(/['"]/g, '').split('||').map((one) => one.trim());
+	assert.ok(rbVersions.includes('2.0.0'),
+		'回滚场景下目标版本 2.0.0 必须保留（否则这次安装被发布年龄挡住）：' + rbLine);
+	assert.ok(rbVersions.length <= MAX_EXEMPT_VERSIONS, '仍然不超过上限：' + JSON.stringify(rbVersions));
+	console.log('回滚到更老版本：' + rbLine.trim());
+
 	/* --------------------------------------- 已经包含目标版本：不再重复写 */
 	const already = mergeExcludeIntoYaml(one, 'dsh-desktop-statusbar', '2.1.1');
 	assert.strictEqual(already.changed, false, '已经放行过就不再改动');
@@ -89,6 +181,28 @@ const { tmpdir } = require('os');
 	assert.strictEqual(kept.text.split('\n').filter((l) => l.includes('dsh-desktop-statusbar')).length, 1, '我们的规则合成一条');
 	console.log('与其它插件共存：别的规则没被动');
 
+	/* ------------------------------------------ 安全阀：文件里已有**重复键**时拒绝写入
+	   这是共享文件最坏的一种输入：`minimumReleaseAgeExclude:` 出现两次（历史遗留，
+	   或两个插件各自追加过）。定位函数只找第一个块，替换后第二个原样留着 →
+	   输出仍是两个同名键 → YAML `duplicated mapping key` → pnpm 拒绝加载整个 profile
+	   → **所有插件都装不上**。这种状态下唯一安全的动作是什么都不做（见实现里的安全阀）。 */
+	const DUP = [
+		'packages:',
+		'  - .',
+		'',
+		'minimumReleaseAgeExclude:',
+		'  - other-plugin@1.0.0',
+		'minimumReleaseAgeExclude:',
+		'  - another@2.0.0',
+		''
+	].join('\n');
+	const dupOut = mergeExcludeIntoYaml(DUP, 'dsh-desktop-statusbar', '2.2.0');
+	assert.strictEqual(dupOut.ok, false, '已有重复键时必须拒绝写入（不能写出更坏的 YAML）');
+	assert.strictEqual(dupOut.reason, 'duplicate-key', '给出 duplicate-key 原因');
+	assert.strictEqual(dupOut.changed, false, '拒绝时不得声称有改动');
+	assert.strictEqual(dupOut.text, DUP, '拒绝时正文必须**逐字节不变**');
+	console.log('安全阀：文件已有两个 minimumReleaseAgeExclude 时拒绝写入、正文不变');
+
 	/* ------------------------------------------ 多条同名（pnpm 的坏形态） */
 	const doubled = [
 		'packages:',
@@ -102,8 +216,16 @@ const { tmpdir } = require('os');
 	const fixed = mergeExcludeIntoYaml(doubled, 'dsh-desktop-statusbar', '2.2.0');
 	const fixedLines = fixed.text.split('\n').filter((l) => l.includes('dsh-desktop-statusbar'));
 	assert.strictEqual(fixedLines.length, 1, '两条同名被并成一条（这就是 #732 的修复）');
-	assert.ok(fixedLines[0].includes('2.0.0') && fixedLines[0].includes('2.1.1') && fixedLines[0].includes('2.2.0'), '三个版本都在：' + fixedLines[0]);
-	console.log('修复同名多条：' + fixedLines[0]);
+	/* 版本数**有上限**：只留目标版本 + 最近一个（见 MAX_EXEMPT_VERSIONS）。
+	   早先这里断言「三个版本都在」，那正是"历史版本永久累积"这个缺陷被固化成期望。
+	   累积的实际坏处：规则无限变长，且一旦某次写成两条同名规则，pnpm 只认第一条、
+	   新版本反被发布年龄策略挡住。留 2 个是为了让用户能回滚上一版。 */
+	const fixedVersions = (fixedLines[0].replace(/^.*?@/, '').replace(/['"]/g, '').split('||') || []).map((one) => one.trim());
+	assert.ok(fixedVersions.length <= MAX_EXEMPT_VERSIONS, '版本数不超过上限 ' + MAX_EXEMPT_VERSIONS + '，实际 ' + JSON.stringify(fixedVersions));
+	assert.ok(fixedVersions.includes('2.2.0'), '目标版本 2.2.0 必须在：' + fixedLines[0]);
+	assert.ok(fixedVersions.includes('2.1.1'), '上一版 2.1.1 保留（可回滚）：' + fixedLines[0]);
+	assert.ok(fixedVersions.includes('2.0.0') !== true, '更老的 2.0.0 应被裁掉：' + fixedLines[0]);
+	console.log('修复同名多条（并裁剪到 ' + fixedVersions.length + ' 个版本）：' + fixedLines[0]);
 
 	/* --------------------------------------------------- 引号与注释不丢 */
 	const quoted = [
@@ -142,7 +264,21 @@ const { tmpdir } = require('os');
 		const missing = ensureReleaseAgeExclude(join(dir, 'nope'), '2.2.0');
 		assert.strictEqual(missing.ok, false, '文件不存在时失败');
 		assert.strictEqual(missing.reason, 'unreadable', '给出 unreadable');
-		console.log('落盘：写入 / 幂等 / 拒绝非法版本 / 缺文件不抛错 全部正确');
+
+		/* 落盘路径的安全阀：文件里已有重复键时，绝不能写盘（盘上内容保持原样） */
+		const dupDir = mkdtempSync(join(tmpdir(), 'dsb-age-dup-'));
+		try {
+			writeFileSync(join(dupDir, 'pnpm-workspace.yaml'), DUP, 'utf8');
+			const dupWrite = ensureReleaseAgeExclude(dupDir, '2.2.0');
+			assert.strictEqual(dupWrite.ok, false, '落盘路径也要拒绝重复键文件');
+			assert.strictEqual(dupWrite.reason, 'duplicate-key', '落盘路径给出 duplicate-key');
+			assert.strictEqual(dupWrite.changed, false, '落盘路径不得声称有改动');
+			assert.strictEqual(readFileSync(join(dupDir, 'pnpm-workspace.yaml'), 'utf8'), DUP,
+				'拒绝时磁盘文件必须逐字节不变（否则就是把共享文件写坏了）');
+		} finally {
+			rmSync(dupDir, { recursive: true, force: true });
+		}
+		console.log('落盘：写入 / 幂等 / 拒绝非法版本 / 缺文件不抛错 / 拒绝重复键文件 全部正确');
 
 		/* ---------------------------------------------------------------- 不产生重复键
 		   这个键不只有「独占一行 + 下面挂列表」一种写法：pnpm 生态里 flow 风格
