@@ -1,10 +1,7 @@
 # dsh-desktop-statusbar 2.2.0 发布说明
 
-- 版本：`2.2.0`（上一版 `2.1.2`）
-- 适用宿主：DeepSeek Harness `0.2.1-rc.2`（桌面端）
-- 发布日期：2026-10-17
-- 兼容性：**设置项与配置版本不变**，升级后原有字段顺序、单价、币种、余额配置全部保留；安装后需**完全退出并重启 DSH**。
-- 收录：本版起收录于 [dshmarket](https://awesome-dsh-plugin.com/p/raphael-y7/dsh-desktop-statusbar/)
+- 版本：`2.2.0`
+- 发布日期：2026-10-18
 
 ## 本次变更
 
