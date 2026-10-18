@@ -98,6 +98,7 @@ Peak hours are **09:00–12:00 and 14:00–18:00 Beijing time, Monday to Friday*
 
 - Fastest / slowest TTFT and speed come from a new host-side projection: **you must fully quit and restart DSH** before it starts collecting
 - A model with no price is not billed; adding the price back-fills its earlier calls
+- One-click update relies on `pnpm`: the desktop app uses the copy bundled with the host, while CLI / web usage needs `pnpm` on the system. If neither is found, the update says so explicitly **and logs every location it tried**; you can also point it at a specific command with the `DSH_DESKTOP_STATUSBAR_PNPM` environment variable
 
 ## Development
 
