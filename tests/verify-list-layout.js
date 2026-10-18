@@ -195,12 +195,13 @@ assert.strictEqual(skillStars.length, 1, '只有手动调用过的那一行带�
 assert.strictEqual(skillStars[0].props['aria-label'], '手动触发', '星号的读屏名称是「手动触发」');
 assert.strictEqual(skillStars[0].props.role, 'img', '星号带 img 角色：span 默认 generic，aria-label 会被读屏忽略');
 assert.strictEqual(skillStars[0].props['aria-hidden'], undefined, '不再用 aria-hidden 把星号整个藏掉');
-assert.strictEqual(skillStars[0].props.title, '手动触发', '星号有悬停说明（手动触发）');
+/* 不挂 title：星号只有 11px，鼠标几乎落不到上面，原生悬停气泡是"偶尔冒一下"的意外行为 */
+assert.strictEqual(skillStars[0].props.title, undefined, '星号**没有**原生悬停气泡（用户明确不要）');
 assert.strictEqual(textOf(skillStars[0]), '*', '视觉内容仍是 *');
 /* HTML 落点：星号在名字后面、同一个 name 节点里，且是上标类 */
 const skillHtml = toHtml(skillPanel);
-assert.ok(skillHtml.indexOf('ponytail<span class="dsb-sup" role="img" aria-label="手动触发" title="手动触发">*</span>') !== -1,
-	'上标星号紧跟技能名之后，实际 ' + skillHtml);
+assert.ok(skillHtml.indexOf('ponytail<span class="dsb-sup" role="img" aria-label="手动触发">*</span>') !== -1,
+	'上标星号紧跟技能名之后且不带 title，实际 ' + skillHtml);
 console.log('技能注入：' + skillRows.map((one) => one.name + ' ' + one.value).join(' / '));
 
 /* 英文界面：同一套排序，星号的读屏文案走英文 t */
@@ -219,8 +220,8 @@ assert.deepStrictEqual(compactRows, [
 	{ name: '第二次压缩*', value: '第20轮后' }
 ], '自动压缩给第X轮Y步；手动/轮间压缩用 afterTurn 给「第X轮后」+ 行尾上标星号，实际 ' + JSON.stringify(compactRows));
 const compactHtml = toHtml(subPanel(countsTip, 0, 3));
-assert.ok(compactHtml.indexOf('第二次压缩<span class="dsb-sup" role="img" aria-label="手动触发" title="手动触发">*</span>') !== -1,
-	'压缩星号落在整行末尾，实际 ' + compactHtml);
+assert.ok(compactHtml.indexOf('第二次压缩<span class="dsb-sup" role="img" aria-label="手动触发">*</span>') !== -1,
+	'压缩星号落在整行末尾（同样不挂 title），实际 ' + compactHtml);
 /* afterTurn 也拿不到（老日志 / 宿主没给）时仍给横杠；英文界面用 After turn */
 const bareCompact = api.compactList([{ turn: null, step: null, manual: true, afterTurn: null }], t);
 assert.strictEqual(bareCompact.rows[0].value, '-', 'turn 与 afterTurn 都没有 → 横杠');
