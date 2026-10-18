@@ -2036,7 +2036,13 @@ const tickCost = (hold, opts) => {
 	if (o.models !== undefined) api.setConfig({ models: o.models });
 	const book = api.snapshot().models;
 	const view = api.segmentView('cost', {
-		sessionUsage: { models: book, calls: o.calls === undefined ? [] : o.calls, overflow: o.overflow },
+		sessionUsage: {
+			models: book,
+			calls: o.calls === undefined ? [] : o.calls,
+			overflow: o.overflow,
+			/* 压缩摘要的 token 累计（宿主新字段）：总计用量要把这部分加上 */
+			summaryParts: o.summaryParts
+		},
 		sessionModel: { provider: 'deepseek-official', model: 'deepseek-flash' },
 		usage: o.usage,
 		subagent: o.subagent === undefined ? null : o.subagent,
@@ -2220,6 +2226,33 @@ assert.strictEqual(overTick.text, '总计 ¥2.00', 'calls ¥1.00 + overflow ¥1.
 overTick = tickCost(overHold, { calls: [overCallA], overflow: overBucket });
 assert.strictEqual(overTick.text, '总计 ¥2.00', 'overflow 不得每拍重复计入，实际 ' + overTick.text);
 console.log('总计记账：overflow 只在建账那拍计一次（¥2.00 不涨）');
+
+/* ---- 场景 5b：总计**用量**要含压缩摘要（端到端，走真实 segmentView）----
+   背景：「总计费用」是我们逐条算的、含摘要；「总计用量」原本只读官方 tokenUsage 投影，
+   官方只折 assistant 事件、**不含摘要** → 同一个气泡里两个数字口径不一致。
+   用户拍板：官方投影继续用，只把摘要这部分额外加上。
+   这条用例必须走**真实的 segmentView('cost', ...)** 并读 tip.panel.totalText ——
+   只测 summaryTokenParts / mergeTokenParts 这些纯函数抓不到「客户端忘了把摘要加进去」
+   这个变异（实测纯函数用例下该变异存活）。 */
+const sumUsage = { uncachedInputTokens: 1000, cacheReadTokens: 2000, cacheWriteTokens: 0, outputTokens: 3000 };
+const sumParts = { input: 100000, cacheRead: 50000, cacheWrite: 0, output: 40000 };
+const sumView = (withSummary) => api.segmentView('cost', {
+	sessionUsage: {
+		models: api.snapshot().models, calls: [],
+		summaryParts: withSummary === true ? sumParts : undefined
+	},
+	sessionModel: { provider: 'deepseek-official', model: 'deepseek-flash' },
+	usage: sumUsage, subagent: null,
+	currency: 'CNY', defaultCurrency: 'CNY', models: api.snapshot().models,
+	now: TICK_OFF, sessionId: 'tick-session-sum', totalHold: tickHold()
+}, t);
+const textOfPanel = (view) => (view === null || view.tip === undefined ? null : view.tip.panel.totalText);
+/* 官方投影三段之和 = 1000 + 2000 + 3000 = 6,000 */
+assert.strictEqual(textOfPanel(sumView(false)), '6,000', '没有摘要时总计用量 = 官方投影之和，实际 ' + textOfPanel(sumView(false)));
+/* 摘要四段换成三段 = cached 50000 + missInput 100000 + output 40000 = 190,000 */
+assert.strictEqual(textOfPanel(sumView(true)), '196,000',
+	'有摘要时总计用量 = 官方投影 6,000 + 摘要 190,000 = 196,000，实际 ' + textOfPanel(sumView(true)));
+console.log('总计用量含摘要：6,000 → 196,000（多出的正好是摘要那 190,000）');
 
 /* ---- 场景 6：已结算指纹集合有上限（长会话内存不能无限增长）---- */
 const manyCalls = [];

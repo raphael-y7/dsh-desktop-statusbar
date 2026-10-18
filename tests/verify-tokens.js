@@ -15,7 +15,7 @@ const assert = require('assert');
 const PLUGIN = path.join(__dirname, '..', 'lib', 'client.js');
 let code = fs.readFileSync(PLUGIN, 'utf8');
 code = code.replace('\t\texports.apply = apply;',
-	'\t\texports.__t = { tokenPanelView, tokensTip, meterBar, mergeTokenParts, sessionTokenParts, billableParts };\n\t\texports.apply = apply;');
+	'\t\texports.__t = { tokenPanelView, tokensTip, meterBar, mergeTokenParts, sessionTokenParts, billableParts, summaryTokenParts };\n\t\texports.apply = apply;');
 
 const fakeWindow = {
 	localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -181,5 +181,50 @@ assert.deepStrictEqual(Array.from(tipOnlySub.panel.segments, (one) => one.light 
 assert.strictEqual(api.tokensTip(null, '总计用量', t, null).panel.totalText, '-', '两个来源都没有时仍是横杠面板');
 console.log('无主会话数据时仍出面板（子代理块在左、只有命中段浅色）');
 
+/* 7. 总计用量要**含压缩摘要**（用户拍板的「官方投影继续用，只把摘要额外加上」）
+   背景：「总计费用」是我们自己逐条算的、含摘要；而「总计用量」原本只读官方 tokenUsage
+   投影，官方只折 assistant 事件、**不含摘要** → 同一个气泡里两个数字口径不一致。
+   宿主现在额外给出 summaryParts（只属于摘要的四段），客户端要把它加到总计用量上。
+   口径转换必须与 billableParts 一致：input + cacheWrite 算 missInput、cacheRead 算 cached、
+   output 算 output —— 否则三行明细与总量对不上。 */
+const SUM_PARTS = { input: 496385, cacheRead: 1152, cacheWrite: 0, output: 4186 };
+const sumAsParts = api.summaryTokenParts(SUM_PARTS);
+assert.strictEqual(JSON.stringify(sumAsParts), JSON.stringify({ cached: 1152, missInput: 496385, output: 4186 }),
+	'摘要四段按 billableParts 口径映射：cacheRead→cached、input+cacheWrite→missInput、output→output');
+/* 宿主老版本没有这个字段 → null，调用方当 0 处理，行为退回改动前 */
+assert.strictEqual(api.summaryTokenParts(undefined), null, '老宿主没有 summaryParts → null');
+assert.strictEqual(api.summaryTokenParts(null), null, 'summaryParts 为 null → null');
+/* 空对象：host 不会写这种值，但即便出现也只会加 0，不该崩 */
+assert.strictEqual(JSON.stringify(api.summaryTokenParts({})), JSON.stringify({ cached: 0, missInput: 0, output: 0 }),
+	'空对象映射成三段全 0（加进去等于没加，不会崩）');
+/* 关键：加上摘要后总量必须**变多**，而且多的正好是摘要那部分 */
+const officialParts = { cached: 1900000, missInput: 29631, output: 41007 };
+const withSummary = api.mergeTokenParts(officialParts, sumAsParts);
+assert.strictEqual(JSON.stringify(withSummary), JSON.stringify({
+	cached: 1900000 + 1152,
+	missInput: 29631 + 496385,
+	output: 41007 + 4186
+}), '总计用量 = 官方投影 + 摘要（三段逐项相加）');
+const totalWithout = officialParts.cached + officialParts.missInput + officialParts.output;
+const totalWith = withSummary.cached + withSummary.missInput + withSummary.output;
+const summaryTotal = 1152 + 496385 + 4186;
+assert.strictEqual(totalWith - totalWithout, summaryTotal,
+	'加上摘要后总量正好多出摘要那 ' + summaryTotal + ' 个 token，实际多 ' + (totalWith - totalWithout));
+/* 再加队友：三段都保留，顺序是 官方 → 摘要 → 队友 */
+const withAll = api.mergeTokenParts(withSummary, { cached: 1000, missInput: 2000, output: 3000 });
+assert.strictEqual(JSON.stringify(withAll), JSON.stringify({
+	cached: 1900000 + 1152 + 1000,
+	missInput: 29631 + 496385 + 2000,
+	output: 41007 + 4186 + 3000
+}), '总计用量 = 官方投影 + 摘要 + 队友');
+/* mergeTokenParts 两段都要容忍 null（摘要/队友任一段缺失时不能崩） */
+assert.strictEqual(JSON.stringify(api.mergeTokenParts(officialParts, null)), JSON.stringify(officialParts), '第二段为 null 时当 0，不崩');
+assert.strictEqual(JSON.stringify(api.mergeTokenParts(null, sumAsParts)), JSON.stringify(sumAsParts), '第一段为 null 时当 0，不崩');
+assert.strictEqual(JSON.stringify(api.mergeTokenParts(null, null)), JSON.stringify({ cached: 0, missInput: 0, output: 0 }), '两段都 null → 全 0');
+console.log('总计用量含摘要：官方投影 + 摘要 + 队友（三段逐项相加，多出的正好是摘要量）');
+
 console.log('');
 console.log('TOKEN PANEL CHECKS PASSED');
+
+
+
