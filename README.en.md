@@ -38,7 +38,7 @@ Replaces the stats line under the message input in the DSH desktop app with a co
   | Session cost | Cumulative token breakdown for this session |
   | Balance | Top-up balance / granted balance / quota left |
 
-- **Session data drill-down**: context compactions mark the node they happened at, skills injected counts the skills injected in this session, and tool calls list every tool the session used by count; click the title to go back up
+- **Session data drill-down**: context compactions mark the node they happened at, skills injected counts the skills injected in this session, and tool calls list every tool the session used with its call count; click the title to go back up
 - **Version check and update**: DSH checks for the latest version on startup, shows a hint next to the "Status bar" nav item when one is available, and offers a one-click update button in settings
 - **GitHub support**: your support is the biggest motivation for the developer to keep going! Click the button to open the GitHub project page and help with a star — thanks, everyone!
 - **Cost estimation**: priced with the official peak/off-peak rules; each call is computed from the moment it happened and the model it used
