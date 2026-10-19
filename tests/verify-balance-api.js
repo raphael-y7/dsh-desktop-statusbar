@@ -267,10 +267,25 @@ async function main() {
 		credits: { total: 1, packages: [{ packageName: hugeName, remain: 1, size: 2, monthly: false }] }
 	});
 	assert.strictEqual(hugeNameOut.rewards.length, 1, '超长包名仍保留一条（不是整条丢掉）');
-	assert.strictEqual(hugeNameOut.rewards[0].name.length, 201,
-		'包名截断到 200 字符 + 省略号（下游前缀剥离是 O(n²)，不截会卡死主线程），实际 '
-		+ hugeNameOut.rewards[0].name.length);
-	assert.strictEqual(hugeNameOut.rewards[0].name.slice(-1), '…', '截断处补省略号，用户看得出被截了');
+	assert.ok(hugeNameOut.rewards[0].name.length < 300,
+		'超长包名被截到远小于原名（下游前缀剥离是 O(n²)，不截会卡死主线程），实际 '
+		+ hugeNameOut.rewards[0].name.length + '（原名 500000）');
+	assert.ok(hugeNameOut.rewards[0].name.indexOf('…') !== -1, '截断处有省略号，用户看得出被截了');
+	assert.strictEqual(hugeNameOut.rewards[0].name.indexOf('XXX'), 0, '保留开头的正常部分（不是整条丢掉）');
+	/* 两个前缀相同、后缀不同的超长包**不能**被截成同名 —— 否则客户端会把它们误合并成 ×2 一行、
+	   显示一个伪造的合计（防御代码自己制造错误数据）。 */
+	const twoLong = wb.parse({
+		credits: {
+			total: 2,
+			packages: [
+				{ packageName: 'A'.repeat(300) + 'tail-one', remain: 1, size: 10, monthly: false },
+				{ packageName: 'A'.repeat(300) + 'tail-two', remain: 1, size: 10, monthly: false }
+			]
+		}
+	});
+	assert.strictEqual(twoLong.rewards.length, 2, '两个超长包都保留');
+	assert.notStrictEqual(twoLong.rewards[0].name, twoLong.rewards[1].name,
+		'前 200 字相同、后缀不同的两个超长包，截断后名字仍不同（否则会被误聚合）');
 	/* 正常长度的包名一个字都不能动 */
 	const normalName = wb.parse({
 		credits: { total: 1, packages: [{ packageName: 'CodeBuddy个人版国内运营裂变包', remain: 1, size: 2, monthly: false }] }

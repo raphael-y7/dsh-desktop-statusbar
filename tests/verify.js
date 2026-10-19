@@ -1984,30 +1984,44 @@ assert.ok(hoverSuppressedAt !== -1, 'StatusBar 里必须把开关传给 rowsPane
 const hoverSuppressedArg = wiringSource.slice(hoverSuppressedAt, hoverSuppressedAt + 120);
 assert.ok(/hoverSuppressed:\s*hoverPlainOff\b/.test(hoverSuppressedArg),
 	'hoverSuppressed 必须接 hoverPlainOff（不是恒 false / 恒 true），实际片段：' + hoverSuppressedArg.slice(0, 80));
-/* hoverPlainOff 的两个写点都必须存在：置 true（判出放不下）与复位（换气泡/重新放得下） */
+/* 复位的**每一条路径**都必须在场。这不是"数够两处就行"的静态计数 ——
+   审查实测过：只覆盖「气泡变 null」时，换字段（tipId 直接切换、不经过 null）会让
+   本次会话的工具名悬停永久失效。四条路径缺一条都是真 bug：
+     ① 判出放不下 → 置 true
+     ② 同气泡内重新放得下 → 复位
+     ③ 关气泡（tipId → null）→ 复位
+     ④ 换字段（toggleTip）/ 进出子视图（open / back）→ 复位 */
 assert.ok(/setHoverPlainOff\(true\)/.test(wiringSource), '判出放不下时必须 setHoverPlainOff(true)');
 assert.ok(/setHoverPlainOff\(false\)/.test(wiringSource),
-	'必须有 setHoverPlainOff(false) 复位 —— 否则碰到一次长工具名后，此页面悬停永久失效');
-/* 复位必须**同时**覆盖两条路径，缺一条就有 bug：
-   ① 同气泡内重新放得下时复位（量测 effect 里，紧随 setHoverPlainOff(true) 之后）；
-   ② 关气泡 / 换气泡时复位（tipId 清理 effect 里）—— 缺这条就是审查发现的死锁：
-      `HoverPlainOff` 一旦置 true，悬停全被禁用 → 再也触发不了量测 → 永不复位 → 本页面永久失效。 */
+	'必须有 setHoverPlainOff(false) 复位 —— 否则碰到一次长工具名后，悬停永久失效');
 const resetAll = [];
 let resetAt = wiringSource.indexOf('setHoverPlainOff(false)');
 while (resetAt !== -1) {
 	resetAll.push(resetAt);
 	resetAt = wiringSource.indexOf('setHoverPlainOff(false)', resetAt + 1);
 }
-assert.ok(resetAll.length >= 2,
-	'必须有**两处** setHoverPlainOff(false)：同气泡重新放得下 与 关气泡时复位，实际 ' + resetAll.length + ' 处');
+assert.ok(resetAll.length >= 3,
+	'复位至少要覆盖三处：同气泡重新放得下 / 关气泡 / 换字段或进出子视图，实际 ' + resetAll.length + ' 处');
 const resetNearClose = resetAll.some((at) => {
 	const around = wiringSource.slice(Math.max(0, at - 300), at + 100);
 	return around.indexOf('setHoverCard(null)') !== -1;
 });
-assert.ok(resetNearClose,
-	'必须有一处复位写在「气泡关闭就清空悬停状态」的 effect 里（setHoverCard(null) 附近）——'
-	+ '否则碰到一次长工具名后，此页面所有工具名悬停永久失效');
-console.log('悬停接线：hoverSuppressed = hoverPlainOff；判出放不下置 true，关气泡复位');
+assert.ok(resetNearClose, '必须有一处复位写在「气泡关闭就清空悬停状态」的 effect 里（setHoverCard(null) 附近）');
+/* 换字段那条路径：toggleTip 里必须有复位（tipId 直接从 "counts" 切到 "cost"，不经过 null） */
+const toggleAt = wiringSource.indexOf('const toggleTip =');
+assert.ok(toggleAt !== -1, '找得到 toggleTip（点字段切换气泡）');
+assert.ok(wiringSource.slice(toggleAt, toggleAt + 800).indexOf('setHoverPlainOff(false)') !== -1,
+	'toggleTip 换字段时必须复位 hoverPlainOff —— 缺这条的话：碰到一次长工具名后，'
+	+ '点任何一个状态栏字段都会让本次会话的工具名悬停永久失效（审查实测的死锁）');
+/* 子视图 open / back 也要复位 */
+const openAt = wiringSource.indexOf('open: (index) => {');
+const backAt = wiringSource.indexOf('back: () => {');
+assert.ok(openAt !== -1 && backAt !== -1, '找得到子视图的 open / back');
+assert.ok(wiringSource.slice(openAt, openAt + 300).indexOf('setHoverPlainOff(false)') !== -1,
+	'进入子视图（open）时必须复位 hoverPlainOff');
+assert.ok(wiringSource.slice(backAt, backAt + 300).indexOf('setHoverPlainOff(false)') !== -1,
+	'从子视图返回（back）时必须复位 hoverPlainOff');
+console.log('悬停接线：hoverSuppressed = hoverPlainOff；置 true 与四条复位路径（放得下 / 关气泡 / 换字段 / 进出子视图）都在');
 
 /* ---------------------------------------------- 悬停文字放不下就不显示（取代缩放）
    用户拍板：工具名很长、气泡不够长时，**所有**工具名的悬停提示一律不出现，
