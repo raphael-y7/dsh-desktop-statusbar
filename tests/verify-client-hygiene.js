@@ -355,12 +355,25 @@ assert.strictEqual(textOf(base.tree).indexOf('抓取失败'), -1,
 	'按 shot.cjs 的下标注入后不该出现「抓取失败」—— 那是草稿被塞进 holidayNote 的症状');
 
 /* shot.cjs 里的 draft 必须自带 currency：下拉按钮显示的是 draft.currency 而不是 config.currency，
-   漏了它英文截图会退回默认的 CNY，与整页英文界面自相矛盾（2026-10 实际踩过）。 */
-assert.ok(/presets\[5\][\s\S]*?currency:\s*'(USD|CNY)'/.test(pricingBlock),
-	'pricingShot 的 draft 预设必须写 currency（英文截图靠它显示 USD，漏了会退回 CNY）');
-const shotCurrency = /currency:\s*'(\w+)'/.exec(pricingBlock);
-assert.ok(shotCurrency !== null, 'pricingShot 里应能找到币种预设');
-console.log('      截图 draft 带 currency：' + shotCurrency[1] + '（下拉按钮显示它，不是 config.currency）');
+   漏了它英文截图会退回默认的 CNY，与整页英文界面自相矛盾（2026-10 实际踩过）。
+
+   ⚠ 必须**按语言分支分别断言**。`presets[5]` 是个三元表达式（en 在前、zh 在后），
+   写成一个 `/presets\[5\][\s\S]*?currency:\s*'(USD|CNY)'/` 会让非贪婪量词一路跨到 zh 分支的
+   'CNY' 上照样匹配成功 —— 删掉 en 的 'USD'（= 复现那个 bug）测试仍然绿（审查实测发现）。
+   这里先把 en / zh 两个分支的片段各切出来，再分别断言。 */
+const draftStart = pricingBlock.indexOf('presets[5]');
+assert.ok(draftStart !== -1, 'pricingShot 里应能找到 presets[5]（draft 预设）');
+const draftBlock = pricingBlock.slice(draftStart, pricingBlock.indexOf('presets[8]', draftStart));
+assert.ok(draftBlock.length > 0, '切得出 presets[5] 到 presets[8] 之间的草稿预设片段');
+const enBranch = /locale === 'en'\s*\?\s*\{([\s\S]*?)\}\s*:\s*\{/.exec(draftBlock);
+const zhBranch = /locale === 'en'\s*\?\s*\{[\s\S]*?\}\s*:\s*\{([\s\S]*?)\}\s*;/.exec(draftBlock);
+assert.ok(enBranch !== null, '切得出 en 分支（locale === \'en\' ? { ... }）');
+assert.ok(zhBranch !== null, '切得出 zh 分支（: { ... }）');
+assert.ok(/currency:\s*'USD'/.test(enBranch[1]),
+	'**en 分支**的 draft 必须写 currency: \'USD\' —— 英文截图靠它显示 USD，漏了会退回 CNY（真 bug 就复发在这）');
+assert.ok(/currency:\s*'CNY'/.test(zhBranch[1]),
+	'zh 分支的 draft 写 currency: \'CNY\'（与中文界面的价格套一致）');
+console.log('      截图 draft 币种：en → USD / zh → CNY（按分支分别断言，不再跨分支误匹配）');
 
 /* ------------------------------------------------- 禁选（拖动不刷蓝底） */
 /* 用户拍板：底栏、底栏气泡、设置页按住鼠标拖动会刷出蓝色选中底，看着像出了 bug。

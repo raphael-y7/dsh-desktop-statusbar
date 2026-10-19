@@ -52,6 +52,37 @@ const EXPECT = {
 	assert.deepStrictEqual(mod.parseHolidayNotice('', 2026), [], '空文本不报错');
 	console.log('= HTML 正文、调休上班句、空文本都处理正确');
 
+	/* ---------------------------------------------- 畸形 HTML 不能拖死主线程
+	   这段处理的是外部网页（内容不受我们控制），历史实现有两个准二次复杂度的写法：
+	     · `/<script[\s\S]*?<\/script>/gi`：缺闭合时从每个 `<` 往后扫到文末；
+	     · `/<[^>]+>/g`：`[^>]` 没排除 `<`，大量孤立 `<` 时反复跨越大段文本。
+	   实测 40 万个未闭合 `<script>` 旧实现要 6 秒、20 万孤立 `<` 要 12 秒，
+	   全都卡在 host 主线程上（整个 DSH 界面无响应）。这里用**耗时上限**钉住：
+	   新实现是纯线性扫描，这些输入应在毫秒级完成。 */
+	const timeOf = (label, fn) => {
+		const started = Date.now();
+		const out = fn();
+		const ms = Date.now() - started;
+		assert.ok(ms < 1500, label + ' 应在 1.5 秒内完成（线性扫描），实际 ' + ms + 'ms —— '
+			+ '超过说明又退回了「每个起点往后扫」的写法');
+		return out;
+	};
+	/* 未闭合 script：拿不到闭合标签时整段丢弃，不能反复重扫 */
+	const openScripts = '<script>'.repeat(20000);
+	timeOf('2 万个未闭合 <script>', () => mod.holidayHtmlToText(openScripts));
+	/* 大量孤立 `<`：`[^<>]` 遇到 `<` 立刻失败，不会跨越大段文本 */
+	const strayLt = '<'.repeat(100000);
+	timeOf('10 万个孤立 <', () => mod.holidayHtmlToText(strayLt));
+	/* 正常的成对标签仍要正确剥掉（健壮性修复不能把功能改坏） */
+	assert.strictEqual(mod.holidayHtmlToText('<p>甲</p><script>bad()</script><p>乙</p>'), '甲\n乙',
+		'script 段整段丢掉，其余标签剥成换行');
+	assert.strictEqual(mod.holidayHtmlToText('<style>.a{}</style>正文'), '正文', 'style 段同样丢掉');
+	assert.strictEqual(mod.holidayHtmlToText('没有标签的纯文本'), '没有标签的纯文本', '纯文本原样返回');
+	/* 超长文档按 2MB 截断：宁可解析不全，也不能让主线程卡住 */
+	const huge = '<p>甲</p>' + 'x'.repeat(3 * 1024 * 1024);
+	timeOf('3MB 超长文档', () => mod.holidayHtmlToText(huge));
+	console.log('= 畸形 HTML（未闭合 script / 孤立 < / 3MB 超长）都在 1.5 秒内完成，标签仍正确剥除');
+
 	console.log('');
 	console.log('HOLIDAY PARSE CHECKS PASSED');
 })().catch((error) => {

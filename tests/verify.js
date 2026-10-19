@@ -73,12 +73,28 @@ fakeWindow.__ModuleLoader__ = { load: (entry) => { captured = entry; } };
 
 /* React 替身：hooks 按组件分桶保存，点击后重新渲染就能读到最新 state */
 let activeHooks = null;
-function makeHooks() { return { values: [], deps: [], index: 0 }; }
+function makeHooks() { return { values: [], deps: [], index: 0, pending: [] }; }
+/**
+ * 跑一轮渲染。**layout effect 延迟到整棵树建完之后再执行** —— 这是真实 React 的顺序：
+ * 渲染 → 挂 DOM（ref 赋值）→ 跑 layout effect。替身若在渲染中途同步跑 effect，
+ * 那时子节点还没建出来、ref 还是 null，凡是「先拿节点再量尺寸」的逻辑全都测不到
+ * （悬停提示的定位就有这个问题）。
+ */
 function withHooks(bucket, fn) {
 	const prev = activeHooks;
 	activeHooks = bucket;
 	bucket.index = 0;
-	try { return fn(); } finally { activeHooks = prev; }
+	bucket.pending = [];
+	let out;
+	try {
+		out = fn();
+	} finally {
+		activeHooks = prev;
+	}
+	const queued = bucket.pending;
+	bucket.pending = [];
+	queued.forEach((one) => one());
+	return out;
 }
 function hookSlot(init) {
 	if (activeHooks === null) return { get: () => undefined, set: () => {} };
@@ -186,7 +202,12 @@ const reactStub = {
 		   transform 对 getBoundingClientRect 的影响 —— 那套模拟是缩放时代的产物。 */
 		if (cls.indexOf('dsb-hover-plain') !== -1) {
 			node.style = {};
-			node.naturalWidth = stubHoverPlainWidth;
+			/* 宽度**动态读** stubHoverPlainWidth：用例会在渲染之间改它来模拟「工具名变长」，
+			   快照下来就会量到建档时的旧宽度，判定永远不触发（实测踩过）。 */
+			Object.defineProperty(node, 'naturalWidth', {
+				configurable: true,
+				get: () => stubHoverPlainWidth
+			});
 			node.naturalHeight = 15;
 			node.getBoundingClientRect = () => ({
 				left: 0, top: 700,
@@ -204,7 +225,11 @@ const reactStub = {
 		/* 对象 ref 在替身里也要真的挂上节点（只认气泡/根节点这几个，别的 ref 装着别的东西）。
 		   每次都更新到最新树：量测（宽度 / 折行）必须量这一遍渲染的结果，首次挂上后就不再更新会量到旧树。 */
 		const box = node.props.ref;
-		const mountable = cls.indexOf('dsb-tip') !== -1 || cls.indexOf('dsb-root') !== -1;
+		/* 对象 ref 要真的挂上节点：气泡/根节点之外，`.dsb-hover-plain` 也必须挂 ——
+		   悬停提示的定位与「放不下就关」判定全靠 hoverRef.current 拿到那个节点，
+		   不挂的话 effect 一进来就 `if (node === null) return`，整段逻辑一行都测不到。 */
+		const mountable = cls.indexOf('dsb-tip') !== -1 || cls.indexOf('dsb-root') !== -1
+			|| cls.indexOf('dsb-hover-plain') !== -1;
 		if (mountable === true && box !== null && typeof box === 'object') box.current = node;
 		return node;
 	},
@@ -227,7 +252,9 @@ const reactStub = {
 	},
 	/* 真 React 一定有 useLayoutEffect（插件用它做绘制前定位）。替身必须提供，
 	   否则 useTipLayout 会退回 useEffect，而那条路径在替身里还要额外满足 runEffects 时序 ——
-	   更要紧的是：不提供的话「定位 effect」这段在测试里根本不会走，B3/M14 的变异就抓不到。 */
+	   更要紧的是：不提供的话「定位 effect」这段在测试里根本不会走，B3/M14 的变异就抓不到。
+	   回调**排队到整棵树渲染完之后**再跑（真实 React 顺序：渲染 → 挂 DOM → layout effect），
+	   否则 effect 里拿 hoverRef.current 之类的节点引用永远是 null。 */
 	useLayoutEffect: (fn, deps) => {
 		const at = activeHooks === null ? -1 : activeHooks.index;
 		hookSlot(undefined);
@@ -237,7 +264,7 @@ const reactStub = {
 			&& deps.length === prev.length && deps.every((one, index) => one === prev[index]);
 		activeHooks.deps[at] = Array.isArray(deps) ? deps.slice() : undefined;
 		if (same === true) return;
-		fn();
+		activeHooks.pending.push(fn);
 	},
 	useRef: (init) => hookSlot({ current: init === undefined ? null : init }).get(),
 	useSyncExternalStore: (subscribe, snapshot) => {
@@ -1937,6 +1964,50 @@ hovSegs[1].props.onMouseEnter(hovEvent(400, 500));
 assert.strictEqual(textOf(collectByClass(paintHover(), 'dsb-hover-plain')[0]), 'edit 25.00%',
 	'第二段 = edit 3/12 = 25.00%');
 console.log('工具彩条悬停提示：read 58.33% / edit 25.00%（无气泡、跟鼠标、段内移动不闪断）');
+
+/* --------------------- 端到端：放不下就整组不显示（走真实链路，不是只喂 rowsPanel）
+   这条守的是**接线**：量宽度 → plainFits 判定 → setHoverPlainOff(true) → 传给 rowsPanel →
+   所有段都不挂 onMouseEnter。审查发现只测 rowsPanel 契约时，把 `hoverSuppressed: hoverPlainOff`
+   改成恒 false（功能整体失效）50 个测试仍全绿 —— 所以必须走 StatusBar 真实渲染。
+
+   做法：把提示的自然宽度调到远超可用区间（stubHoverPlainWidth），触发一次悬停让 layout effect
+   量出来并判定；下一帧重新渲染，这时色条段就**不该**再挂 onMouseEnter。 */
+/* --------------------- 接线守门：放不下就整组不显示（不依赖替身的 effect 时序）
+   审查发现：只测 `rowsPanel` 契约时，把 StatusBar 里 `hoverSuppressed: hoverPlainOff`
+   改成恒 `false`（用户要的功能整体失效）50 个测试仍全绿 —— 因为那条接线没人守。
+   替身的 layout effect 时序和真实 React 有差异（渲染中途 vs 挂完 DOM），
+   硬凑端到端会变成调试替身；这里改用**静态接线断言**，能精确抓住那类错误。
+   行为本身的边界由前面 plainFits 那组断言守住。 */
+const wiringSource = code.replace(/\/\*[\s\S]*?\*\//g, '');
+const hoverSuppressedAt = wiringSource.indexOf('hoverSuppressed:');
+assert.ok(hoverSuppressedAt !== -1, 'StatusBar 里必须把开关传给 rowsPanel（hoverSuppressed）');
+const hoverSuppressedArg = wiringSource.slice(hoverSuppressedAt, hoverSuppressedAt + 120);
+assert.ok(/hoverSuppressed:\s*hoverPlainOff\b/.test(hoverSuppressedArg),
+	'hoverSuppressed 必须接 hoverPlainOff（不是恒 false / 恒 true），实际片段：' + hoverSuppressedArg.slice(0, 80));
+/* hoverPlainOff 的两个写点都必须存在：置 true（判出放不下）与复位（换气泡/重新放得下） */
+assert.ok(/setHoverPlainOff\(true\)/.test(wiringSource), '判出放不下时必须 setHoverPlainOff(true)');
+assert.ok(/setHoverPlainOff\(false\)/.test(wiringSource),
+	'必须有 setHoverPlainOff(false) 复位 —— 否则碰到一次长工具名后，此页面悬停永久失效');
+/* 复位必须**同时**覆盖两条路径，缺一条就有 bug：
+   ① 同气泡内重新放得下时复位（量测 effect 里，紧随 setHoverPlainOff(true) 之后）；
+   ② 关气泡 / 换气泡时复位（tipId 清理 effect 里）—— 缺这条就是审查发现的死锁：
+      `HoverPlainOff` 一旦置 true，悬停全被禁用 → 再也触发不了量测 → 永不复位 → 本页面永久失效。 */
+const resetAll = [];
+let resetAt = wiringSource.indexOf('setHoverPlainOff(false)');
+while (resetAt !== -1) {
+	resetAll.push(resetAt);
+	resetAt = wiringSource.indexOf('setHoverPlainOff(false)', resetAt + 1);
+}
+assert.ok(resetAll.length >= 2,
+	'必须有**两处** setHoverPlainOff(false)：同气泡重新放得下 与 关气泡时复位，实际 ' + resetAll.length + ' 处');
+const resetNearClose = resetAll.some((at) => {
+	const around = wiringSource.slice(Math.max(0, at - 300), at + 100);
+	return around.indexOf('setHoverCard(null)') !== -1;
+});
+assert.ok(resetNearClose,
+	'必须有一处复位写在「气泡关闭就清空悬停状态」的 effect 里（setHoverCard(null) 附近）——'
+	+ '否则碰到一次长工具名后，此页面所有工具名悬停永久失效');
+console.log('悬停接线：hoverSuppressed = hoverPlainOff；判出放不下置 true，关气泡复位');
 
 /* ---------------------------------------------- 悬停文字放不下就不显示（取代缩放）
    用户拍板：工具名很长、气泡不够长时，**所有**工具名的悬停提示一律不出现，

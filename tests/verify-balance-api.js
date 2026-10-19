@@ -125,6 +125,13 @@ async function main() {
 	assert.strictEqual(dsOut.currency, 'CNY', 'DeepSeek 币种');
 	assert.deepStrictEqual(dsOut.parts, [{ label: 'toppedUp', amount: '10.00' }, { label: 'granted', amount: '2.34' }], 'DeepSeek 两行构成');
 	assert.strictEqual(byId('deepseek').parse({ balance_infos: [] }), null, 'DeepSeek 空列表给 null');
+	/* 数组元素为 null（上游坏数据）：不能抛 TypeError —— 抛了整条余额就永久变横杠 */
+	assert.strictEqual(byId('deepseek').parse({ balance_infos: [null] }), null,
+		'DeepSeek 列表元素是 null ⇒ 给 null（不抛 TypeError）');
+	assert.strictEqual(byId('zhipu-quota').parse({ success: true, data: { limits: [null] } }), null,
+		'智谱配额列表元素是 null ⇒ 给 null（不抛 TypeError）');
+	assert.strictEqual(byId('zhipu-quota').parse({ success: true, data: { limits: [null, { type: 'TOKENS_LIMIT', percentage: 50 }] } }).total,
+		'50.00%', '智谱混入 null 时跳过坏元素、正常元素照常解析');
 
 	/* 「累计消费」只有智谱能给：其他平台不该凭空造出这一行（气泡第三行的显示依据） */
 	const spentCount = (id, data) => {
@@ -248,6 +255,36 @@ async function main() {
 		{ name: '剩余超总量', used: 0, total: 10, expireAt: null, refreshAt: null, monthly: false },
 		{ name: '月度缺刷新', used: 6, total: 9, expireAt: null, refreshAt: null, monthly: true }
 	], '坏包跳过、坏字段降级为 null，不抛错；剩余超总量时 used 夹到 0（不显示负数）');
+
+	/* ----------------------------- 上游数据量上限（防主线程被拖死）
+	   上游是外部 API，包名多长、返回多少条都不由我们决定。两个上限：
+	     · 包名超 200 字符就截断 —— 下游 creditDisplayName 按前缀反复剥是 O(n²)，
+	       实测 500KB 名字能让浏览器主线程卡 18 秒；
+	     · 超过 256 条就忽略 —— 列表在底栏每秒重渲染路径上、没有 memo，
+	       实测 10 万条 ≈ 0.7 秒/帧。 */
+	const hugeName = 'X'.repeat(500000);
+	const hugeNameOut = wb.parse({
+		credits: { total: 1, packages: [{ packageName: hugeName, remain: 1, size: 2, monthly: false }] }
+	});
+	assert.strictEqual(hugeNameOut.rewards.length, 1, '超长包名仍保留一条（不是整条丢掉）');
+	assert.strictEqual(hugeNameOut.rewards[0].name.length, 201,
+		'包名截断到 200 字符 + 省略号（下游前缀剥离是 O(n²)，不截会卡死主线程），实际 '
+		+ hugeNameOut.rewards[0].name.length);
+	assert.strictEqual(hugeNameOut.rewards[0].name.slice(-1), '…', '截断处补省略号，用户看得出被截了');
+	/* 正常长度的包名一个字都不能动 */
+	const normalName = wb.parse({
+		credits: { total: 1, packages: [{ packageName: 'CodeBuddy个人版国内运营裂变包', remain: 1, size: 2, monthly: false }] }
+	}).rewards[0].name;
+	assert.strictEqual(normalName, 'CodeBuddy个人版国内运营裂变包', '正常包名原样保留（截断只对超长生效）');
+	/* 条数上限：300 条只取前 256 条 */
+	const manyPackages = [];
+	for (let i = 0; i < 300; i += 1) {
+		manyPackages.push({ packageName: '包' + i, remain: 1, size: 2, monthly: false });
+	}
+	const capped = wb.parse({ credits: { total: 1, packages: manyPackages } });
+	assert.strictEqual(capped.rewards.length, 256, '套餐条数上限 256（超出的忽略，不让渲染拖死底栏）');
+	assert.strictEqual(capped.rewards[0].name, '包0', '保留的是前面那些包（顺序不变）');
+	assert.strictEqual(capped.rewards[255].name, '包255', '取满 256 条');
 
 	/* ------------------------------------- connect 类插件的通用发现（白名单 + 具名抽取器） */
 	/* 路由筛选：只认 /plugins/<id>/<只读动词>，写操作与 SSE 一律不进候选 */
