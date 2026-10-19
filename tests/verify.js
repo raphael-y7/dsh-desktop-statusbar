@@ -21,7 +21,7 @@ code = code.replace(marker,
      `rowsPanel` 要导出：它是**唯一**给「标题下色条」定 `dsb-bar` / `dsb-bar-hoverable` 的地方，
      而令牌面板（tokens）走的是另一条渲染路径（meterBar 里类名硬编码），
      想真切到那个三元表达式，只能直接把 rowsPanel 调起来渲染。 */
-  '\t\texports.__test = { segmentView, segmentText, detectLocale, formatDuration, formatSeconds, formatThroughput, SEGMENTS, DEFAULT_SEGMENTS, STORAGE_KEY, DEFAULT_PRICES, snapshot, setConfig, StatusBar, SettingsSection, dropIndexAt, moveItem, creditsPanel, BALANCE_COLORS, creditsLabel, formatCredits, plainBoundsOf, clampPlainLeft, plainFitScale, creditDisplayName, TOOL_BAR_COLORS, rowsPanel, creditsSort, creditsSortGroup, creditsSortDate, toolHoverSuppressed, LIST_ROWS_PER_COLUMN_MAX };\n' + marker);
+  '\t\texports.__test = { segmentView, segmentText, detectLocale, formatDuration, formatSeconds, formatThroughput, SEGMENTS, DEFAULT_SEGMENTS, STORAGE_KEY, DEFAULT_PRICES, snapshot, setConfig, StatusBar, SettingsSection, dropIndexAt, moveItem, creditsPanel, BALANCE_COLORS, creditsLabel, formatCredits, plainBoundsOf, clampPlainLeft, plainFits, creditDisplayName, TOOL_BAR_COLORS, rowsPanel, creditsSort, creditsSortGroup, creditsSortDate, LIST_ROWS_PER_COLUMN_MAX };\n' + marker);
 
 const store = new Map();
 /* 预置一份"乱序 + 只勾四段 + 非默认币种"的旧配置：出厂默认要从这种状态拉回来 */
@@ -106,7 +106,7 @@ const stubRing = { getBoundingClientRect: () => stubRect(stubRingLeft, 20) };
 /* 底栏最右那一项（末尾字段）：右对齐/宽度上限都按它的右边界算 */
 let stubBarRight = 985;
 const stubLastSeg = { getBoundingClientRect: () => stubRect(stubBarRight - 170, 170) };
-/* 悬停纯文字提示的**自然宽度**（未缩放）。测试按需改大来触发 plainFitScale < 1。 */
+/* 悬停纯文字提示的**自然宽度**。测试按需改大到放不下，用来触发「整组关掉悬停」。 */
 let stubHoverPlainWidth = 60;
 /* 悬停提示定位 effect 要量的三个盒子（宽度够用即可，只关心相对关系）：
    标题行 head（算垂直居中）、标题文字 headline（算水平左界）、色条 bar（算水平右界）。 */
@@ -181,31 +181,20 @@ const reactStub = {
 			node.querySelectorAll = (selector) => (selector === '.dsb-seg' ? [stubLastSeg] : []);
 		}
 		/* 悬停纯文字提示（.dsb-hover-plain）：必须给 `style`，否则 onHoverMove 一进来就
-		   `if (node.style === undefined) return`，段内移动那条路径**一行都测不到**
-		   （这正是 M14「把 hoverPlainWidthRef 改成用缩放后宽度」变异仍然全绿的原因）。
-		   同时要**忠实模拟 transform 的影响**：
-		     · getBoundingClientRect() 返回的是**视觉**尺寸 → 要按 style.transform 里的 scale 打折；
-		     · offsetWidth 是**布局**宽度 → 不受 transform 影响，永远是 naturalWidth。
-		   这样实现若误用 getBoundingClientRect().width 存 ref，测试就能抓到污染。 */
+		   `if (node.style === undefined) return`，段内移动那条路径**一行都测不到**。
+		   宽度只暴露 offsetWidth（布局宽度）：提示不再做缩放，替身也就不必模拟
+		   transform 对 getBoundingClientRect 的影响 —— 那套模拟是缩放时代的产物。 */
 		if (cls.indexOf('dsb-hover-plain') !== -1) {
 			node.style = {};
 			node.naturalWidth = stubHoverPlainWidth;
 			node.naturalHeight = 15;
-			const scaleOf = () => {
-				const raw = typeof node.style.transform === 'string' ? node.style.transform : '';
-				const m = /scale\(\s*([\d.]+)\s*\)/.exec(raw);
-				return m === null ? 1 : Number(m[1]);
-			};
-			node.getBoundingClientRect = () => {
-				const s = scaleOf();
-				return {
-					left: 0, top: 700,
-					width: node.naturalWidth * s,
-					height: node.naturalHeight * s,
-					right: node.naturalWidth * s, bottom: 700 + node.naturalHeight * s
-				};
-			};
-			/* offsetWidth 是整数、且**不含** transform —— 真实浏览器语义 */
+			node.getBoundingClientRect = () => ({
+				left: 0, top: 700,
+				width: node.naturalWidth,
+				height: node.naturalHeight,
+				right: node.naturalWidth, bottom: 700 + node.naturalHeight
+			});
+			/* offsetWidth 是整数 —— 真实浏览器语义 */
 			Object.defineProperty(node, 'offsetWidth', {
 				configurable: true,
 				get: () => Math.round(node.naturalWidth)
@@ -1949,53 +1938,44 @@ assert.strictEqual(textOf(collectByClass(paintHover(), 'dsb-hover-plain')[0]), '
 	'第二段 = edit 3/12 = 25.00%');
 console.log('工具彩条悬停提示：read 58.33% / edit 25.00%（无气泡、跟鼠标、段内移动不闪断）');
 
-/* ------------------------------------------------------------------ 悬停文字缩放（B3 / M14）
-   这一段专治「hoverPlainWidthRef 被缩放后的宽度污染」，分两层验证：
-
-   ① **数值层**（直接跑 plainFitScale）：把"自然宽"与"缩放后视觉宽"两种输入分别喂进去，
-      证明只有用自然宽才能得到稳定的比例；用视觉宽会算出更大的 scale，
-      下一次 transform 更小 → 再量更小 → 一路收敛到下限。这是 bug 的数学本质。
-
-   ② **结构层**（读实现源码）：`hoverPlainWidthRef` 的写入与读取都必须走
-      `offsetWidth`（布局宽度，不含 transform），**不能**是
-      `getBoundingClientRect().width`（含 transform，重跑 effect 时会拿到缩放后的值）。
-      这条是给"以后有人改回 gBCR"准备的护栏 —— 变异回 gBCR 时立刻红。 */
-const fitBoundsForScale = api.plainBoundsOf({ right: 60 }, { right: 400 }, 1280);   /* 可用 67..400 = 333 */
-assert.strictEqual(api.plainFitScale(600, fitBoundsForScale, 1280) < 1, true,
-	'自然宽 600 > 可用 333 → 必须缩放');
-const naturalScale = api.plainFitScale(600, fitBoundsForScale, 1280);
-/* 模拟"被污染"：600 × 0.5 = 300 的视觉宽，再拿去算一次比例 */
-const pollutedScale = api.plainFitScale(300, fitBoundsForScale, 1280);
-assert.strictEqual(pollutedScale, 1,
-	'若把**缩放后的视觉宽**（600×0.5=300）当成自然宽再算一次，比例会变成 1（= 文字弹回原大小）—— '
-	+ '这正是宽度来源搞错时的表现：缩放比例在两个值之间来回跳，或一路缩到 0.5 下限。实际 ' + pollutedScale);
-assert.notStrictEqual(naturalScale, pollutedScale,
-	'自然宽与视觉宽算出的比例必须不同（否则说明 plainFitScale 根本没用到宽度）');
-
-/* 结构层：实现里写/读 ref 的那两处都必须用 offsetWidth，不许出现 gBCR().width。
-   ⚠ 必须先**剥掉注释**再断言：注释里也会写 `offsetWidth` 三个字（解释为什么不能用 gBCR），
-   不剥的话把实现改回 gBCR 时那些字样仍在窗口里，断言照样绿（实测变异存活）。
-   `code` 是经过 marker 替换的那份源码（文件顶部就有）。 */
+/* ---------------------------------------------- 悬停文字放不下就不显示（取代缩放）
+   用户拍板：工具名很长、气泡不够长时，**所有**工具名的悬停提示一律不出现，
+   不是只关掉那个超长的、也不是缩小硬塞进去。所以这里守两件事：
+     ① plainFits 判的是「放得下吗」，边界值卡准；
+     ② 实现里**不许再有缩放**（scale / transform:scale 一条都不留）——
+        变异回"缩小硬塞"时立刻红。 */
+/* 剥掉注释再断言：注释里也会写 plainFitScale / transform:scale 这些字样（解释为什么不这么做），
+   不剥的话把实现改回去时那些字样仍在窗口里，断言照样绿（实测变异存活）。 */
 const codeNoComments = code
 	.replace(/\/\*[\s\S]*?\*\//g, '')
 	.replace(/(^|[^:'"\\])\/\/[^\n]*/g, '$1');
-const widthWriteAt = codeNoComments.indexOf('hoverPlainWidthRef.current =');
-const hoverWidthWrite = codeNoComments.slice(Math.max(0, widthWriteAt - 600), widthWriteAt + 120);
-assert.ok(hoverWidthWrite.indexOf('offsetWidth') !== -1,
-	'写入 hoverPlainWidthRef 时必须用 offsetWidth（布局宽度，不含 transform）。'
-	+ '\n实际片段：' + hoverWidthWrite.slice(0, 200)
-	+ '\n理由：定位 effect 的依赖含 hoverMouse，鼠标一动就重跑；重跑时节点还带着上一帧的 '
-	+ 'transform: scale(x)，用 getBoundingClientRect().width 量到的是缩放后宽度 → ref 被写小 '
-	+ '→ 悬停文字一路缩到 0.5 下限（实测自然宽 600 被写成 300）。');
-const hoverReadAt = codeNoComments.indexOf('const natural = hoverPlainWidthRef.current > 0');
-assert.ok(hoverReadAt !== -1, '找得到 onHoverMove 里读 ref 的地方');
-const hoverRead = codeNoComments.slice(Math.max(0, hoverReadAt - 400), hoverReadAt + 220);
-assert.ok(hoverRead.indexOf('offsetWidth') !== -1,
-	'onHoverMove 的兜底宽度也必须用 offsetWidth（不能退回 gBCR 的视觉宽）\n实际片段：' + hoverRead.slice(0, 240));
-/* 反面断言：这两处都不许出现 getBoundingClientRect().width 作为宽度来源 */
-assert.strictEqual(/hoverPlainWidthRef\.current = [^;]*getBoundingClientRect/.test(codeNoComments), false,
-	'hoverPlainWidthRef 的写入不许来自 getBoundingClientRect（那是含 transform 的视觉宽）');
-console.log('悬停文字缩放：自然宽 / 视觉宽的比例差异已钉住；ref 的写读都走 offsetWidth（B3/M14）');
+const fitBoundsForPlain = api.plainBoundsOf({ right: 60 }, { right: 400 }, 1280);   /* 可用 67..400 = 333 */
+assert.strictEqual(api.plainFits(333, fitBoundsForPlain, 1280), true, '刚好放满：算放得下');
+assert.strictEqual(api.plainFits(100, fitBoundsForPlain, 1280), true, '明显放得下：算放得下');
+assert.strictEqual(api.plainFits(334, fitBoundsForPlain, 1280), false,
+	'多 1px 就放不下 → 返回 false（提示该关掉，不是缩小）');
+assert.strictEqual(api.plainFits(600, fitBoundsForPlain, 1280), false,
+	'长 MCP 工具名（自然宽 600 > 可用 333）→ 放不下');
+/* 退化输入一律当"放得下"：量不出来就别关，宁可显示也不误伤 */
+assert.strictEqual(api.plainFits(0, fitBoundsForPlain, 1280), true, '宽度为 0（还没量到）→ 当放得下');
+assert.strictEqual(api.plainFits(NaN, fitBoundsForPlain, 1280), true, '宽度是 NaN → 当放得下');
+assert.strictEqual(api.plainFits(999, null, 0), true, '没有 bounds 也没有视口信息 → 当放得下');
+assert.strictEqual(api.plainFits(999, { min: 400, max: 300 }, 1280), true, '区间为负（无处可放）→ 当放得下，交给夹取兜底');
+/* 结构层：缩放必须已被彻底移除 —— 不许再出现缩放比例，也不许写 transform: scale */
+assert.strictEqual(api.plainFitScale, undefined, 'plainFitScale 已删除（放不下就关，不再算缩放比例）');
+assert.strictEqual(/plainFitScale/.test(codeNoComments), false,
+	'实现里不许再出现 plainFitScale —— 那是"缩小硬塞"的旧路径');
+assert.strictEqual(/transform:\s*"scale\(/.test(codeNoComments), false,
+	'悬停提示的样式里不许再写 transform: scale（不再缩放文字）');
+assert.strictEqual(/hoverPos\.scale/.test(codeNoComments), false,
+	'hoverPos 不再携带 scale 字段（缩放状态已移除）');
+/* 判据必须走 plainFits：找到调用处，确认它决定的是"关掉"而不是"缩小" */
+const fitsCallAt = codeNoComments.indexOf('plainFits(layoutWidth');
+assert.ok(fitsCallAt !== -1, '定位 effect 里必须调用 plainFits 判断放不放得下');
+const fitsCall = codeNoComments.slice(fitsCallAt, fitsCallAt + 400);
+assert.ok(fitsCall.indexOf('setHoverPlainOff(true)') !== -1,
+	'plainFits 返回 false 时必须关掉整组悬停提示（setHoverPlainOff(true)），实际片段：' + fitsCall.slice(0, 260));
+console.log('悬停文字：放不下就整组不显示（plainFits 边界已钉住），缩放逻辑已彻底移除');
 /* 复位，别影响后面的用例 */
 stubHoverPlainWidth = 60;
 stubBarWidth = 273;
@@ -2028,24 +2008,8 @@ assert.strictEqual(api.plainBoundsOf({ right: 400 }, { right: 300 }, 1280), null
 	'标题右边界已越过色条右边界（区间为负）：返回 null，交给夹取兜底');
 console.log('悬停文字水平夹取：左=标题右边界+1ch / 右=色条右边界');
 
-/* 悬停文字缩放的**特例性**：用户拍板「缩小到能放下为止，此为特例，一般情况下不缩小」。
-   一般情况（放得下）必须 scale === 1，即一个像素都不缩 —— 这条比"能缩"更重要，
-   否则正常长度的工具名也会被无端缩小，看着像坏了。 */
-const fitBounds = { min: 127, max: 400 };   /* 可用宽度 273px */
-assert.strictEqual(api.plainFitScale(100, fitBounds, 1280), 1, '放得下（100 < 273）：不缩放');
-assert.strictEqual(api.plainFitScale(273, fitBounds, 1280), 1, '刚好放满：仍然不缩放');
-assert.ok(Math.abs(api.plainFitScale(546, fitBounds, 1280) - 0.5) < 1e-9, '放不下（546）：缩到 0.5 刚好放下');
-const partial = api.plainFitScale(400, fitBounds, 1280);
-assert.ok(partial < 1 && partial > 0.5, '略放不下时按比例缩（不一步缩到底），实际 ' + partial);
-/* 下限 0.5：11px 再小就看不清了，宁可溢出也不缩成不可读 */
-assert.strictEqual(api.plainFitScale(100000, fitBounds, 1280), 0.5, '缩放下限 0.5，不会缩成不可读');
-/* 退化输入：没有边界信息、宽度非法时一律不缩放（保持原来的行为，不引入新的抖动） */
-assert.strictEqual(api.plainFitScale(0, fitBounds, 1280), 1, '宽度为 0 时按不缩放处理');
-assert.strictEqual(api.plainFitScale(NaN, fitBounds, 1280), 1, '宽度是 NaN 时按不缩放处理');
-assert.strictEqual(api.plainFitScale(999, null, 0), 1, '没有 bounds 也没有视口信息：不缩放');
-/* 区间本身是负的（标题右边界已越过色条右边）：无横向空间可缩，退回不缩放 */
-assert.strictEqual(api.plainFitScale(999, { min: 400, max: 300 }, 1280), 1, '区间为负时不缩放（无处可放，交给夹取兜底）');
-console.log('悬停文字缩放：只在放不下时缩，一般情况一个像素都不缩');
+/* 悬停文字「放不下就整组不显示」的断言见本文件前面那段（搜 plainFits）：
+   缩放功能已被移除，这里不再有"缩小到能放下"的用例。 */
 
 /* ===================================== 总计：增量式记账（走真实渲染路径）======
    用户拍板的口径：**每条调用只算一次钱、算完固化，之后永不重算**；

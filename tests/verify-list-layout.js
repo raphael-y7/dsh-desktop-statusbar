@@ -22,7 +22,7 @@ const marker = '\t\texports.apply = apply;';
 assert.ok(code.includes(marker), 'exports.apply marker not found');
 code = code.replace(marker,
 	'\t\texports.__layout = { segmentView, rowsPanel, listColumns, toolColumnsOverflow, nextToolRows, '
-	+ 'skillList, toolList, compactList, toolHoverSuppressed, '
+	+ 'skillList, toolList, compactList, '
 	+ 'LIST_ROWS_PER_COLUMN, LIST_ROWS_PER_COLUMN_MAX };\n' + marker);
 
 const fakeWindow = {
@@ -265,17 +265,10 @@ assert.deepStrictEqual(listRows(enToolPanel).map((one) => one.name), toolFlat.ma
 console.log('中英工具行一致：' + listRows(enToolPanel).map((one) => one.name).join(' / '));
 
 /* ------------------------ 工具名悬停提示：放不下时**整组**关掉（用户拍板） */
-/* 判据只有「行数加到上限 + 这一排仍放不下」才算真的到头：
-   加行途中（3 → 4 → 5 …）短暂溢出是正常的，提前关会让悬停忽有忽无。 */
-assert.strictEqual(api.toolHoverSuppressed(true, api.LIST_ROWS_PER_COLUMN_MAX), true,
-	'行数到上限且仍放不下 → 整组关闭悬停提示');
-assert.strictEqual(api.toolHoverSuppressed(true, api.LIST_ROWS_PER_COLUMN_MAX - 1), false,
-	'还没到上限（还能再加行）→ 不能关，否则悬停会忽有忽无');
-assert.strictEqual(api.toolHoverSuppressed(false, api.LIST_ROWS_PER_COLUMN_MAX), false,
-	'放得下 → 不关（即使行数已经是上限）');
-assert.strictEqual(api.toolHoverSuppressed(false, 3), false, '放得下 + 默认行数 → 不关');
-/* 落进真实渲染树：hoverSuppressed 为 true 时彩条每段都不挂 onMouseEnter。
-   注意不是只关超长那一个 —— 是**所有**段都不挂（半套提示比没有提示更难看）。 */
+/* 判据不在这个文件里：它问的是「那行小字本身放不放得下」，由 StatusBar 量完 DOM 后
+   用 plainFits 判定（见 tests/verify.js 的 plainFits 段），结果通过 hoverSuppressed 传进来。
+   这里只守渲染侧的契约：**hoverSuppressed 为 true 时所有段都不挂 onMouseEnter**，
+   不是只关超长那一个 —— 半套提示比没有提示更难看。 */
 const hoverSegs = (suppressed) => {
 	const sub = {
 		id: 2,
@@ -289,12 +282,14 @@ const hoverSegs = (suppressed) => {
 };
 const wired = hoverSegs(undefined).filter((one) => typeof one.props.onMouseEnter === 'function').length;
 assert.ok(wired > 0, '未关闭时彩条段挂悬停处理（基线非零，否则下面的断言没意义）');
+assert.strictEqual(hoverSegs(false).filter((one) => typeof one.props.onMouseEnter === 'function').length, wired,
+	'hoverSuppressed=false 时照常挂悬停处理（默认行为不变）');
 assert.strictEqual(hoverSegs(true).filter((one) => typeof one.props.onMouseEnter === 'function').length, 0,
 	'关闭时**所有**彩条段都不挂悬停处理（不是只关超长那个）');
 assert.ok(collectByClass(api.rowsPanel(countsTip, null, { current: null }, {
 	id: 2, rowsPerColumn: api.LIST_ROWS_PER_COLUMN_MAX, hover: () => {}, hoverSuppressed: true
 }), 'dsb-meter-row').length > 0, '悬停关掉后工具列表照常显示（只关提示，不关内容）');
-console.log('工具名悬停：到顶仍放不下时整组关闭（' + wired + ' 段 → 0 段）；列表内容不受影响');
+console.log('工具名悬停：hoverSuppressed 时整组关闭（' + wired + ' 段 → 0 段）；列表内容不受影响');
 
 /* toolList 纯数据：不同工具名天然不合并；排序规则同面板 */
 assert.deepStrictEqual(Array.from(api.toolList({ read: 2, ops_bash: 9, ops_read_file: 1 }, t).rows,
