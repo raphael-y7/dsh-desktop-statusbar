@@ -21,7 +21,7 @@ code = code.replace(marker,
      `rowsPanel` 要导出：它是**唯一**给「标题下色条」定 `dsb-bar` / `dsb-bar-hoverable` 的地方，
      而令牌面板（tokens）走的是另一条渲染路径（meterBar 里类名硬编码），
      想真切到那个三元表达式，只能直接把 rowsPanel 调起来渲染。 */
-  '\t\texports.__test = { segmentView, segmentText, detectLocale, formatDuration, formatSeconds, formatThroughput, SEGMENTS, DEFAULT_SEGMENTS, STORAGE_KEY, DEFAULT_PRICES, snapshot, setConfig, StatusBar, SettingsSection, dropIndexAt, moveItem, creditsPanel, BALANCE_COLORS, creditsLabel, formatCredits, plainBoundsOf, clampPlainLeft, plainFitScale, creditDisplayName, TOOL_BAR_COLORS, rowsPanel };\n' + marker);
+  '\t\texports.__test = { segmentView, segmentText, detectLocale, formatDuration, formatSeconds, formatThroughput, SEGMENTS, DEFAULT_SEGMENTS, STORAGE_KEY, DEFAULT_PRICES, snapshot, setConfig, StatusBar, SettingsSection, dropIndexAt, moveItem, creditsPanel, BALANCE_COLORS, creditsLabel, formatCredits, plainBoundsOf, clampPlainLeft, plainFitScale, creditDisplayName, TOOL_BAR_COLORS, rowsPanel, creditsSort, creditsSortGroup, creditsSortDate, toolHoverSuppressed, LIST_ROWS_PER_COLUMN_MAX };\n' + marker);
 
 const store = new Map();
 /* 预置一份"乱序 + 只勾四段 + 非默认币种"的旧配置：出厂默认要从这种状态拉回来 */
@@ -712,6 +712,66 @@ assert.strictEqual(api.segmentView('balance', {
 	...wbSrc,
 	balance: { ok: true, total: '177', currency: '', isCredits: true, rewards: [] }
 }, t).tip, undefined, 'rewards 为空数组时不给气泡');
+/* ------------------------------------------------ 积分套餐排序（三档） */
+/* 用户拍板：① 每月固定刷新的套餐永远第一行；② 裂变包永远最后；③ 其余按过期时间升序。
+   关键约束：**先按原顺序聚合相邻同名包、最后才整体排序** —— 先排会把十几个裂变包
+   按日期打散，聚合成「×N」就失效了。 */
+assert.strictEqual(api.creditsSortGroup({ monthly: true }), 0, '月度刷新包归第 1 档（永远第一行）');
+assert.strictEqual(api.creditsSortGroup({ monthly: false, name: '运营裂变包' }), 2, '裂变包归第 3 档（永远最后）');
+assert.strictEqual(api.creditsSortGroup({ monthly: false, name: '拉新权益包' }), 1, '普通包归第 2 档（按到期时间排）');
+assert.strictEqual(api.creditsSortGroup({ monthly: true, name: '月度裂变包' }), 0,
+	'月度优先于裂变：既是月度又是裂变时，月度那档赢（第一行位置不能被挤走）');
+/* 三档同时出现：月度置顶、其余按到期升序、裂变置底（即使裂变包到期最早） */
+assert.deepStrictEqual(creditRowsOf([
+	{ name: '普通包晚', used: 0, total: 100, monthly: false, expireAt: '2026-12-01' },
+	{ name: '运营裂变包', used: 0, total: 100, monthly: false, expireAt: '2026-10-01' },
+	{ name: '普通包早', used: 0, total: 100, monthly: false, expireAt: '2026-10-26' },
+	{ name: '月度包', used: 0, total: 100, monthly: true, refreshAt: '2026-11-01' }
+]).map((one) => one.name), ['月度包', '普通包早', '普通包晚', '运营裂变包'],
+	'月度包置顶 → 其余按到期升序（10-26 在 12-01 前）→ 裂变包置底（即使它 10-01 最早到期）');
+assert.deepStrictEqual(creditRowsOf([
+	{ name: '运营裂变包', used: 0, total: 100, monthly: false, expireAt: '2026-01-01' },
+	{ name: '普通包', used: 0, total: 100, monthly: false, expireAt: '2026-12-31' }
+]).map((one) => one.name), ['普通包', '运营裂变包'],
+	'裂变包的可读性优先于日期：到期再早也排最后');
+/* 月度档内按刷新日升序；没有日期的排在有日期之后（不猜日期，也不插队） */
+assert.deepStrictEqual(creditRowsOf([
+	{ name: '月度B', used: 0, total: 100, monthly: true, refreshAt: '2026-12-01' },
+	{ name: '月度A', used: 0, total: 100, monthly: true, refreshAt: '2026-11-01' },
+	{ name: '月度无日期', used: 0, total: 100, monthly: true }
+]).map((one) => one.name), ['月度A', '月度B', '月度无日期'],
+	'月度档内按刷新日升序；没有日期的排最后');
+/* 排序稳定：同档同日期、或都缺日期时保持上游原顺序，界面不会每次刷新跳来跳去 */
+assert.deepStrictEqual(creditRowsOf([
+	{ name: '同B', used: 0, total: 100, monthly: false, expireAt: '2026-11-07' },
+	{ name: '同A', used: 0, total: 100, monthly: false, expireAt: '2026-11-07' }
+]).map((one) => one.name), ['同B', '同A'], '到期日相同 → 保持上游原顺序');
+assert.deepStrictEqual(creditRowsOf([
+	{ name: '无日期B', used: 0, total: 100, monthly: false },
+	{ name: '无日期A', used: 0, total: 100, monthly: false }
+]).map((one) => one.name), ['无日期B', '无日期A'], '都没有日期 → 保持上游原顺序');
+/* 聚合先于排序：11 条裂变包跨两个到期日，排序后仍只出现一行 */
+const crossDateSplit = [];
+for (let i = 0; i < 11; i += 1) {
+	crossDateSplit.push({
+		name: '运营裂变包', used: 0, total: 100, monthly: false,
+		expireAt: i % 2 === 0 ? '2026-12-01' : '2026-11-07'
+	});
+}
+const crossDateRows = creditRowsOf(crossDateSplit);
+assert.strictEqual(crossDateRows.length, 1, '11 条裂变包跨两个到期日 → 仍聚合成 1 行（先聚合后排序）');
+assert.strictEqual(crossDateRows[0].count, 11, '聚合行记录 11 条');
+assert.strictEqual(crossDateRows[0].label, '运营裂变包×11 · 11-07 到期(最近)',
+	'聚合后取最近到期日 11-07 并标 (最近)');
+/* 排序函数是纯函数：返回新数组，不改入参 */
+const sortInput = [
+	{ name: '裂变包', monthly: false, expireAt: '2026-01-01' },
+	{ name: '月度包', monthly: true, refreshAt: '2026-12-01' }
+];
+const sortSnapshot = sortInput.map((one) => one.name);
+const sortOutput = api.creditsSort(sortInput);
+assert.deepStrictEqual(sortInput.map((one) => one.name), sortSnapshot, 'creditsSort 不改入参顺序（返回新数组）');
+assert.deepStrictEqual(Array.from(sortOutput, (one) => one.name), ['月度包', '裂变包'], '返回的才是排好序的新数组');
 /* 英文文案：标题 / 月度刷新 / 到期 / 已用 都走英文词表 */
 const enBalance = {
 	segBalance: 'Balance', f_balance: 'Balance {symbol}{amount}',

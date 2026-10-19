@@ -73,6 +73,18 @@ Both ways above install from the npm registry; the package name is `dsh-desktop-
 npm view dsh-desktop-statusbar version
 ```
 
+### When the built-in updater fails
+
+The one-click update button inside the plugin can fail on some desktop builds — it either does nothing or reports a failure. Do not keep clicking it. Use the official install entry instead and **append `@version` to the package name** to pin the exact version:
+
+```powershell
+dsh plugin --profile desktop add dsh-desktop-statusbar@2.2.2
+```
+
+The same string works in the plugin panel — type `dsh-desktop-statusbar@2.2.2` into the **Add plugin** field.
+
+Use whatever version you see (the version on the release page, or the output of the `npm view` command above). Pinning the version has a second benefit: **you get exactly the build you asked for**, with no chance of a stale cached package.
+
 Also listed on [dshmarket](https://awesome-dsh-plugin.com/p/raphael-y7/dsh-desktop-statusbar/), [dshfind](https://dshfind.com/zh/plugins/raphael-y7/dsh-desktop-statusbar) and [1024Store](https://deepseek1024.com/plugins/Rapheal-Y7/dsh-desktop-statusbar).
 
 ## Usage

@@ -73,6 +73,18 @@ dsh plugin --profile desktop add dsh-desktop-statusbar
 npm view dsh-desktop-statusbar version
 ```
 
+### 插件自带的更新失效时
+
+插件里那个一键更新按钮，在某些桌面端版本上会失败（点了没反应、或者直接显示失败）。这时不要反复点，改用官方安装入口、**在包名后面加上 `@版本号`** 指定到具体版本，就能精确装上：
+
+```powershell
+dsh plugin --profile desktop add dsh-desktop-statusbar@2.2.2
+```
+
+插件面板里同样可以这样填 —— 在「添加插件」的输入框里写 `dsh-desktop-statusbar@2.2.2`。
+
+版本号填你看到的最新版本即可（发布页右侧的版本号，或上面那条 `npm view` 命令的输出）。带上版本号还有一个好处：**装上的就是你想要的那一版**，不会因为缓存拿到旧包。
+
 本插件亦收录于 [dshmarket](https://awesome-dsh-plugin.com/p/raphael-y7/dsh-desktop-statusbar/)、[dshfind](https://dshfind.com/zh/plugins/raphael-y7/dsh-desktop-statusbar) 与 [1024Store](https://deepseek1024.com/plugins/Rapheal-Y7/dsh-desktop-statusbar)。
 
 ## 使用

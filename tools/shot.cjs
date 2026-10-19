@@ -236,15 +236,19 @@ function pricingShot(locale) {
      教训：**下标是脆的**，加 hook 必须回来重数，并用 `node tools/shot.cjs` 实际生成一次确认。 */
   const presets = [];
   presets[4] = 'deepseek-flash';
-  /* 浮层里的数字也要跟着币种走：预设草稿按语言挑人民币或美元那套 */
+  /* 浮层里的数字也要跟着币种走：预设草稿按语言挑人民币或美元那套。
+     **`currency` 必须一起写**：下拉按钮显示的正是 `draft.currency`（不是 config.currency），
+     漏了它英文截图就会退回默认的 CNY —— 与整页英文界面自相矛盾（2026-10 实际踩过）。 */
   presets[5] = locale === 'en'
     ? {
       tiered: true,
+      currency: 'USD',
       peak: { input: '0.3', cacheRead: '0.006', cacheWrite: '0', output: '1.2' },
       offPeak: { input: '0.15', cacheRead: '0.003', cacheWrite: '0', output: '0.6' }
     }
     : {
       tiered: true,
+      currency: 'CNY',
       peak: { input: '2', cacheRead: '0.04', cacheWrite: '0', output: '8' },
       offPeak: { input: '1', cacheRead: '0.02', cacheWrite: '0', output: '4' }
     };

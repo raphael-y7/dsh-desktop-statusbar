@@ -354,6 +354,44 @@ assert.strictEqual(findAll(renderSettings(noDraft).tree, isEditPop).length, 0,
 assert.strictEqual(textOf(base.tree).indexOf('抓取失败'), -1,
 	'按 shot.cjs 的下标注入后不该出现「抓取失败」—— 那是草稿被塞进 holidayNote 的症状');
 
+/* shot.cjs 里的 draft 必须自带 currency：下拉按钮显示的是 draft.currency 而不是 config.currency，
+   漏了它英文截图会退回默认的 CNY，与整页英文界面自相矛盾（2026-10 实际踩过）。 */
+assert.ok(/presets\[5\][\s\S]*?currency:\s*'(USD|CNY)'/.test(pricingBlock),
+	'pricingShot 的 draft 预设必须写 currency（英文截图靠它显示 USD，漏了会退回 CNY）');
+const shotCurrency = /currency:\s*'(\w+)'/.exec(pricingBlock);
+assert.ok(shotCurrency !== null, 'pricingShot 里应能找到币种预设');
+console.log('      截图 draft 带 currency：' + shotCurrency[1] + '（下拉按钮显示它，不是 config.currency）');
+
+/* ------------------------------------------------- 禁选（拖动不刷蓝底） */
+/* 用户拍板：底栏、底栏气泡、设置页按住鼠标拖动会刷出蓝色选中底，看着像出了 bug。
+   这几处都是插件自己画的纯展示/操作界面，没有复制文字的需求。
+   ::selection 也要写透明 —— 只写 user-select:none 时，某些内核在「先按下再拖动」
+   的路径上仍会画一层选中色。 */
+const cssText = loadClient([]).shot.CSS;
+assert.ok(typeof cssText === 'string' && cssText.length > 0, '样式表是字符串（能直接断言规则）');
+const escSel = (one) => one.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const SELECTION_OFF = ['.dsb-root', '.dsb-tip', '.dsb-settings', '.dsb-hover-plain', '.dsb-drag-card'];
+SELECTION_OFF.forEach((selector) => {
+	assert.ok(new RegExp(escSel(selector) + '[^{}]*\\{[^}]*user-select:none').test(cssText),
+		selector + ' 必须禁选（拖动时不能刷出蓝色选中底）');
+	assert.ok(new RegExp(escSel(selector) + '[^{}]*\\{[^}]*webkit-user-select:none').test(cssText),
+		selector + ' 还要带 -webkit- 前缀（内核差异）');
+});
+assert.ok(/::selection[^{}]*\{[^}]*background:transparent/.test(cssText),
+	'::selection 要写透明背景（不能只靠 user-select:none）');
+['.dsb-root', '.dsb-tip', '.dsb-settings'].forEach((selector) => {
+	assert.ok(new RegExp(escSel(selector) + '[^{}]*::selection').test(cssText),
+		selector + ' 也要覆盖 ::selection');
+});
+/* 禁选不能把设置页的输入框一起禁掉 —— 改价格那几个框还要能点进去编辑 */
+assert.ok(/\.dsb-settings input[^{}]*\{[^}]*user-select:text/.test(cssText),
+	'设置页输入框单独放开 user-select:text（禁选不能把编辑功能误伤）');
+const offAt = cssText.indexOf('.dsb-root,.dsb-tip,.dsb-settings');
+const onAt = cssText.indexOf('.dsb-settings input');
+assert.ok(offAt !== -1 && onAt !== -1, '禁选规则与输入框规则都在样式表里');
+assert.ok(onAt > offAt, '输入框的 user-select:text 写在禁选之后，层叠才能覆盖它');
+console.log('      禁选：' + SELECTION_OFF.join(' / ') + ' 全部 user-select:none + ::selection 透明；输入框保留可编辑');
+
 console.log('      渲染实测：' + names.length + ' 个 useState；'
 	+ '下标 4 = editing（展开第一张卡）、下标 5 = draft（框里显示预设值）、下标 8 = currencyOpen（false 收起 / true 展开）');
 console.log('\n全部通过');
