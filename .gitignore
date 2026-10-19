@@ -17,3 +17,9 @@ tests/.dsh-test-home*/
 # _diag/ 是一次性审查报告与排查脚本（含历史版本源码副本），不入库。
 # 它也不会进 npm 包（package.json 的 files 字段没有它），但留在仓库里容易被 git add -A 带进提交。
 _diag/
+
+# 发布说明是工作材料：它贴进 GitHub Release 之后就长在 Release 页面上了，不必在仓库里留副本。
+# 历史各版都在 _diag/release-notes/（上面那条规则已覆盖）。
+# 这条锚定在**仓库根目录**，专门挡住 a764dc7 / 51f34b4 两次误提交的那种写法；
+# 不写成无锚定的 `release-notes-*.md`，免得将来真把说明放进 docs/ 之类要随包发布的位置时被静默忽略。
+/release-notes-*.md
