@@ -455,8 +455,9 @@ assert.ok(!wbBar.includes('¥177'), '积分不带货币符号（不能显示成 
    没有 tip 就不是可点击项、点不出气泡、悬停也不弹。 */
 const wbView = api.segmentView('balance', { ...wbSrc, balance: { ok: true, total: '177', currency: '', isCredits: true } }, t);
 assert.strictEqual(wbView.tip, undefined, '没有 rewards 时不给气泡（没有可展开的内容，弹空气泡会误以为能点）');
-/* 非空 rewards：给「积分套餐」气泡（credits 面板）；值 = 已用/总数，顺序按上游。
-   夹具用宿主真实数据（used/total 是原始 number，可能带浮点尾数，客户端要格式化到两位小数去尾零）。 */
+/* 非空 rewards：给「积分套餐」气泡（credits 面板）；值 = 已用/总数。
+   夹具用宿主真实数据（used/total 是原始 number，可能带浮点尾数，客户端要格式化到两位小数去尾零）。
+   顺序按 2.2.2 的三档规则：月度刷新包置顶 → 其余按到期时间升序 → 裂变包置底（本夹具没有裂变包）。 */
 const REWARDS = [
 	{ name: 'CodeBuddy个人体验版', used: 500, total: 500, expireAt: null, refreshAt: '2026-11-01', monthly: true },
 	{ name: '拉新权益包', used: 552.42999936, total: 1500, expireAt: '2026-11-07', refreshAt: null, monthly: false },
@@ -472,16 +473,17 @@ assert.strictEqual(wbRewardView.tip.title, '积分套餐', '气泡标题走 tipC
 assert.strictEqual(wbRewardView.tip.panel.totalText, '177', '面板右侧显示总积分');
 assert.deepStrictEqual(Array.from(wbRewardView.tip.panel.rewards, (one) => ({ label: one.label, valueText: one.valueText })), [
 	{ label: '个人体验版 · 11-01 刷新', valueText: '已用 500 / 500' },
-	{ label: '拉新权益包 · 11-07 到期', valueText: '已用 552.43 / 1500' },
+	{ label: 'Free Plan Subscription · 11-01 刷新', valueText: '已用 0 / 100' },
 	{ label: 'Bonus Pack · 10-26 到期', valueText: '已用 12.39 / 250' },
-	{ label: 'Free Plan Subscription · 11-01 刷新', valueText: '已用 0 / 100' }
-], '月度包显「· MM-DD 刷新」、一次性包显「· MM-DD 到期」；值两位小数去尾零；顺序按上游；包名保持上游原名（不翻译）');
-/* 进度条比例 = used / total，夹在 0-100；0/100 的套餐不画进度段 */
+	{ label: '拉新权益包 · 11-07 到期', valueText: '已用 552.43 / 1500' }
+], '月度包显「· MM-DD 刷新」、一次性包显「· MM-DD 到期」；值两位小数去尾零；**月度包置顶、其余按到期升序**；包名保持上游原名（不翻译）');
+/* 进度条比例 = used / total，夹在 0-100；0/100 的套餐不画进度段。
+   索引跟着上面三档排序后的顺序走：0 个人体验版 / 1 Free Plan / 2 Bonus Pack / 3 拉新权益包 */
 const percentOf = (at) => wbRewardView.tip.panel.rewards[at].percent;
 assert.ok(Math.abs(percentOf(0) - 100) < 1e-9, '已用满 → 100%');
-assert.ok(Math.abs(percentOf(1) - (552.42999936 / 1500) * 100) < 1e-6, '拉新权益包按 used/total 算比例');
+assert.strictEqual(percentOf(1), 0, '已用 0 → 0%（不画进度段）');
 assert.ok(Math.abs(percentOf(2) - (12.389999979999999 / 250) * 100) < 1e-6, 'Bonus Pack 按 used/total 算比例');
-assert.strictEqual(percentOf(3), 0, '已用 0 → 0%（不画进度段）');
+assert.ok(Math.abs(percentOf(3) - (552.42999936 / 1500) * 100) < 1e-6, '拉新权益包按 used/total 算比例');
 /* 渲染层：标题下先一条横杠（复用 .dsb-meter-divider），每个套餐一个块 = 一行 + 一条进度 */
 const creditsTree = api.creditsPanel(wbRewardView.tip.panel, wbRewardView.tip.title, null, { current: null });
 assert.strictEqual(collectByClass(creditsTree, 'dsb-meter-divider').length, 1, '积分套餐气泡标题下有一条横杠');
@@ -494,10 +496,10 @@ assert.strictEqual(collectByClass(creditsTree, 'dsb-credit').length, 4, '每个�
 const creditRowNodes = collectByClass(creditsTree, 'dsb-meter-row');
 assert.strictEqual(creditRowNodes.length, 4, '每个套餐一行（包名/备注 + 已用/总量）');
 assert.deepStrictEqual(Array.from(creditRowNodes, (row) => textOf(collectByClass(row, 'dsb-meter-name')[0])),
-	['个人体验版 · 11-01 刷新', '拉新权益包 · 11-07 到期', 'Bonus Pack · 10-26 到期', 'Free Plan Subscription · 11-01 刷新'],
-	'行首是包名 + 备注；包名保持上游原名（不翻译）');
+	['个人体验版 · 11-01 刷新', 'Free Plan Subscription · 11-01 刷新', 'Bonus Pack · 10-26 到期', '拉新权益包 · 11-07 到期'],
+	'行首是包名 + 备注；月度包置顶、其余按到期升序；包名保持上游原名（不翻译）');
 assert.deepStrictEqual(Array.from(creditRowNodes, (row) => textOf(collectByClass(row, 'dsb-meter-value')[0])),
-	['已用 500 / 500', '已用 552.43 / 1500', '已用 12.39 / 250', '已用 0 / 100'], '行尾是已用 / 总量');
+	['已用 500 / 500', '已用 0 / 100', '已用 12.39 / 250', '已用 552.43 / 1500'], '行尾是已用 / 总量');
 /* 进度方向：已用从**左边**起 —— 前段灰（已用宽）、后段透明（剩余宽）；
    100% 只画整条灰；0% 仍渲染空轨道（有 .dsb-bar、没有填充段） */
 assert.strictEqual(collectByClass(creditsTree, 'dsb-bar').length, 4, '每个套餐都有进度条（0% 也画空轨道）');
@@ -506,18 +508,18 @@ const usedPct = (value, total) => (value / total) * 100;
 const pct1000 = (n) => Math.round(n * 1000) / 1000;
 const expectSegs = [
 	{ width: 100, color: api.BALANCE_COLORS.topUp },
-	{ width: usedPct(552.42999936, 1500), color: api.BALANCE_COLORS.topUp },
-	{ width: 100 - usedPct(552.42999936, 1500), color: 'transparent' },
 	{ width: usedPct(12.389999979999999, 250), color: api.BALANCE_COLORS.topUp },
-	{ width: 100 - usedPct(12.389999979999999, 250), color: 'transparent' }
+	{ width: 100 - usedPct(12.389999979999999, 250), color: 'transparent' },
+	{ width: usedPct(552.42999936, 1500), color: api.BALANCE_COLORS.topUp },
+	{ width: 100 - usedPct(552.42999936, 1500), color: 'transparent' }
 ];
 assert.strictEqual(creditSegs.length, expectSegs.length, '100% 段 1 段 + 两个部分套餐各 2 段（灰已用 + 透明剩余）；0% 无段');
 assert.deepStrictEqual(Array.from(creditSegs, (one) => one.props.style.backgroundColor),
 	expectSegs.map((one) => one.color), '已用段用余额灰（BALANCE_COLORS.topUp），剩余段透明');
 assert.deepStrictEqual(Array.from(creditSegs, (one) => pct1000(parseFloat(one.props.style.width))),
 	expectSegs.map((one) => pct1000(one.width)), '前段宽 = used%、后段宽 = 100 - used%（已用从左起）');
-/* 0% 的套餐：有轨道、无填充段 */
-const zeroCredit = collectByClass(creditsTree, 'dsb-credit')[3];
+/* 0% 的套餐：有轨道、无填充段（排序后它在第 2 位） */
+const zeroCredit = collectByClass(creditsTree, 'dsb-credit')[1];
 assert.strictEqual(collectByClass(zeroCredit, 'dsb-bar').length, 1, '0% 套餐有进度条轨道');
 assert.strictEqual(collectByClass(zeroCredit, 'dsb-bar-seg').length, 0, '0% 套餐没有填充段（只有空轨道）');
 /* 14 条套餐：列表容器仍是同一个滚动类（CSS 有半屏高度上限），条数照常 */
@@ -555,18 +557,18 @@ const wbReal = api.segmentView('balance', {
 const realRows = Array.from(wbReal.tip.panel.rewards);
 assert.deepStrictEqual(realRows.map((one) => one.label), [
 	'个人体验版 · 11-01 刷新',
+	'Bonus Pack · 10-26 到期',
 	'拉新权益包 · 11-07 到期',
-	'运营裂变包×11 · 11-07 到期(最近)',
-	'Bonus Pack · 10-26 到期'
-], '14 条真实数据 → 剥前缀后 4 行；聚合行带 ×11 且日期标「(最近)」，非聚合行保持原样；Bonus Pack 保持原名');
-assert.deepStrictEqual(realRows.map((one) => one.count), [1, 1, 11, 1], '聚合分组记录原始套餐数量');
+	'运营裂变包×11 · 11-07 到期(最近)'
+], '14 条真实数据 → 剥前缀后 4 行；**月度包置顶、裂变包置底、其余按到期升序**；聚合行带 ×11 且日期标「(最近)」');
+assert.deepStrictEqual(realRows.map((one) => one.count), [1, 1, 1, 11], '聚合分组记录原始套餐数量');
 assert.ok(realRows[0].label.indexOf('×') === -1 && realRows[0].label.indexOf('(最近)') === -1, '非聚合行不带 ×N / (最近)');
-assert.ok(realRows[3].label.indexOf('×') === -1 && realRows[3].label.indexOf('(最近)') === -1, '非聚合行不带 ×N / (最近)');
+assert.ok(realRows[1].label.indexOf('×') === -1 && realRows[1].label.indexOf('(最近)') === -1, '非聚合行不带 ×N / (最近)');
 assert.deepStrictEqual(realRows.map((one) => one.valueText), [
-	'已用 500 / 500', '已用 552.43 / 1500', '已用 0 / 1100', '已用 12.39 / 250'
+	'已用 500 / 500', '已用 12.39 / 250', '已用 552.43 / 1500', '已用 0 / 1100'
 ], '相邻同名裂变包 used/total 相加（0/1100）');
-assert.strictEqual(realRows[2].percent, 0, '裂变包合计已用 0 → percent 0（画空轨道）');
-assert.deepStrictEqual(realRows.map((one) => one.name), ['个人体验版', '拉新权益包', '运营裂变包', 'Bonus Pack'],
+assert.strictEqual(realRows[3].percent, 0, '裂变包合计已用 0 → percent 0（画空轨道）');
+assert.deepStrictEqual(realRows.map((one) => one.name), ['个人体验版', 'Bonus Pack', '拉新权益包', '运营裂变包'],
 	'前缀按顺序剥、只剥开头：CodeBuddy → 个人版 → 国内；没有前缀的包名原样保留');
 /* 单条不聚合；不相邻同名不合并（顺序按首次出现位置） */
 const creditRowsOf = (rewards) => Array.from(api.segmentView('balance', {
@@ -615,10 +617,10 @@ const captureTree = api.creditsPanel(wbReal.tip.panel, wbReal.tip.title, null, {
 	back: () => {}
 });
 collectByClass(captureTree, 'dsb-meter-row-plain')[0].props.onClick({ stopPropagation() {} });
-assert.strictEqual(openedCredit, 2, '点聚合行打开第 2 组的明细');
+assert.strictEqual(openedCredit, 3, '点聚合行打开第 3 组（裂变包）的明细 —— 排序后裂变包在最后');
 let backCalls = 0;
 const openTree = api.creditsPanel(wbReal.tip.panel, wbReal.tip.title, null, { current: null }, {
-	id: 2,
+	id: 3,
 	open: () => {},
 	back: () => { backCalls += 1; }
 });
@@ -633,8 +635,8 @@ assert.strictEqual(textOf(collectByClass(openTree, 'dsb-meter-headline')[0]), '�
 assert.strictEqual(collectByClass(openTree, 'dsb-meter-figures').length, 1, '子视图标题右侧显示该组剩余积分');
 assert.strictEqual(textOf(collectByClass(openTree, 'dsb-meter-figures')[0]), '1100',
 	'11 个包各 100、已用 0 → 该组剩余 1100');
-assert.strictEqual(wbReal.tip.panel.rewards[2].remaining, 1100, '分组数据带 remaining = total - used');
-assert.strictEqual(wbReal.tip.panel.rewards[2].remainingText, '1100', '分组数据带 remainingText');
+assert.strictEqual(wbReal.tip.panel.rewards[3].remaining, 1100, '分组数据带 remaining = total - used');
+assert.strictEqual(wbReal.tip.panel.rewards[3].remainingText, '1100', '分组数据带 remainingText');
 /* 主面板 head 的全局总积分保持不变 */
 assert.strictEqual(textOf(collectByClass(creditsTree, 'dsb-meter-figures')[0]), '177', '主面板右侧仍是全局总积分 177');
 assert.strictEqual(collectByClass(openTree, 'dsb-meter-back').length, 1, '标题变成返回入口');
@@ -650,7 +652,7 @@ const subZero = collectByClass(openTree, 'dsb-credit')[0];
 assert.strictEqual(collectByClass(subZero, 'dsb-bar').length, 1, '明细块有进度条轨道');
 assert.strictEqual(collectByClass(subZero, 'dsb-bar-seg').length, 0, '0% 明细块没有填充段');
 /* 分组保留原始成员明细：raw 名、自己的日期备注、真实 used/total */
-const mergedItems = wbReal.tip.panel.rewards[2].items;
+const mergedItems = wbReal.tip.panel.rewards[3].items;
 assert.strictEqual(mergedItems.length, 11, '聚合组保留 11 个原始成员');
 assert.strictEqual(mergedItems[0].name, 'CodeBuddy个人版国内运营裂变包', '明细里保留原始包名');
 assert.deepStrictEqual(Array.from(mergedItems, (one) => one.used), new Array(11).fill(0), '明细 used 是各自真实值');
@@ -731,14 +733,15 @@ assert.strictEqual(wbEn.text, 'Balance 177', '英文界面积分总数不带货�
 assert.strictEqual(wbEn.tip.title, 'Points packages', '英文标题');
 assert.deepStrictEqual(Array.from(wbEn.tip.panel.rewards, (one) => one.label), [
 	/* 包名**不跟随界面语言**：上游给什么就显示什么（国内站是中文、国际站是英文），
-	   只剥掉 CodeBuddy/个人版/国内 这些渠道前缀。所以英文界面里出现中文包名是预期行为。 */
+	   只剥掉 CodeBuddy/个人版/国内 这些渠道前缀。所以英文界面里出现中文包名是预期行为。
+	   顺序与中文界面同一套三档规则：月度包置顶 → 其余按到期升序 → 裂变包置底。 */
 	'个人体验版 · refreshes 11-01',
-	'拉新权益包 · expires 11-07',
+	'Free Plan Subscription · refreshes 11-01',
 	'Bonus Pack · expires 10-26',
-	'Free Plan Subscription · refreshes 11-01'
-], '英文月度「· refreshes MM-DD」/ 一次性「· expires MM-DD」；包名保持上游原名（不翻译）');
+	'拉新权益包 · expires 11-07'
+], '英文月度「· refreshes MM-DD」/ 一次性「· expires MM-DD」；**月度包置顶、其余按到期升序**；包名保持上游原名（不翻译）');
 assert.deepStrictEqual(Array.from(wbEn.tip.panel.rewards, (one) => one.valueText), [
-	'Used 500 / 500', 'Used 552.43 / 1500', 'Used 12.39 / 250', 'Used 0 / 100'
+	'Used 500 / 500', 'Used 0 / 100', 'Used 12.39 / 250', 'Used 552.43 / 1500'
 ], '英文「Used X / Y」，数字同样两位小数去尾零');
 /* 英文聚合行：×11 + (nearest) */
 const wbEnReal = api.segmentView('balance', {
@@ -747,10 +750,10 @@ const wbEnReal = api.segmentView('balance', {
 }, tEnBalance);
 assert.deepStrictEqual(Array.from(wbEnReal.tip.panel.rewards, (one) => one.label), [
 	'个人体验版 · refreshes 11-01',
+	'Bonus Pack · expires 10-26',
 	'拉新权益包 · expires 11-07',
-	'运营裂变包×11 · expires 11-07 (nearest)',
-	'Bonus Pack · expires 10-26'
-], '英文聚合行带 ×11 且日期标 (nearest)；非聚合行不带；包名同样保持上游原名');
+	'运营裂变包×11 · expires 11-07 (nearest)'
+], '英文聚合行带 ×11 且日期标 (nearest)；非聚合行不带；顺序同样月度置顶、裂变包置底');
 /* 失败态 / 查询中：也要按积分口径显示，别又冒出一个 ¥；没有 rewards 同样不给气泡 */
 const wbMid = render({ ...wbSrc, balance: null }, allSegs);
 assert.ok(wbMid.includes('余额 -') && !wbMid.includes('¥'), 'WorkBuddy 查询中也按积分口径（无 ¥），got: ' + wbMid.join(' | '));
