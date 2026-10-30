@@ -4,6 +4,7 @@
  */
 const path = require('path');
 const assert = require('assert');
+const fs = require('fs');
 
 const INDEX = path.join(__dirname, '..', 'lib', 'index.js');
 
@@ -12,6 +13,21 @@ globalThis.setInterval = () => 0;
 
 /* 隔离真实家目录：否则会读到本机 ~/.dsh/.credentials.yaml，余额来源就会跟着环境变 */
 process.env.DSH_HOME = path.join(__dirname, '.dsh-test-home');
+
+/* 预置一份**当天的**汇率缓存：余额路由每次被调用时会顺带检查"今天拉过汇率没有"，
+   没有缓存就会真的发一次网络请求，把下面「余额只发一次请求」那条计数打乱。
+   预置之后 shouldRefresh 返回 false，汇率请求根本不发，测的仍是余额这条契约本身。
+   注意 fetchedAt 要晚于今天 9:00，否则会被判成"今天还没拉过"（见 exchange-rate.js）。 */
+(() => {
+	const dir = path.join(process.env.DSH_HOME, 'dsh-status-bar');
+	fs.mkdirSync(dir, { recursive: true });
+	const nineAm = new Date();
+	nineAm.setHours(9, 0, 0, 0);
+	fs.writeFileSync(
+		path.join(dir, 'exchange-rate.json'),
+		JSON.stringify({ rate: 6.6768, fetchedAt: Math.max(Date.now(), nineAm.getTime() + 1000), source: 'test-fixture' })
+	);
+})();
 
 (async () => {
 	const mod = await import('file:///' + INDEX.replace(/\\/g, '/'));
