@@ -218,6 +218,114 @@ globalThis.setInterval = () => 0;
 	assert.strictEqual(slash.globalInstruction, 'AGENTS.md', 'agent-instructions 仍走全局提示词那条路');
 	assert.deepStrictEqual(slash.skills, [{ name: 'i-have-adhd', manual: true }, { name: 'ponytail', manual: false }, { name: 'my-dow-theory', manual: true }], '全局提示词不算技能注入');
 
+	/* 子能力读取（task-12）：模型读 `skills/<包名>/references/...` 里的子能力文档时也要记一条，
+	   用 `sub: true` 与"注入技能本身"区分开。用户要的是「我用了哪个子能力」能看见：
+	   平铺显示、不加父技能前缀、名字后加角标。用独立 state，免得动上面那串断言。 */
+	let sub = progressProj.init();
+	/* ① `<包名>/references/<X>/<X>.md`（ponytail / mao / sunzi 这类布局）：目录名与文件名同名 */
+	sub = progressProj.apply(sub, {
+		type: 'tool/call', time: Date.now(),
+		data: {
+			turn: 1, step: 1, name: 'read',
+			arguments: JSON.stringify({ file_path: 'C:\\Users\\rapha\\.agents\\skills\\ponytail\\references\\ponytail-review\\ponytail-review.md' })
+		}
+	});
+	progressProj.stateSchema.parse(sub);
+	assert.deepStrictEqual(sub.skills, [{ name: 'ponytail-review', manual: false, sub: true }],
+		'读 ponytail 的子能力文档 ⇒ 记 { name, manual:false, sub:true }（反斜杠路径也要认出）');
+	assert.strictEqual(sub.toolCalls, 1, '读子能力文档照样算一次工具调用（既有逻辑不动）');
+	assert.deepStrictEqual(sub.toolCounts, { read: 1 }, '工具名计数照旧');
+
+	/* ② `<包名>/references/capabilities/<X>.md`（gann 那类主入口 + capabilities 子目录）。
+	   参数用 `path` 键（read 的另一种写法），顺便覆盖"两个键都认"。 */
+	sub = progressProj.apply(sub, {
+		type: 'tool/call', time: Date.now(),
+		data: {
+			turn: 1, step: 2, name: 'read',
+			arguments: JSON.stringify({ path: '/home/u/.agents/skills/gann-trend-detector/references/capabilities/trend-judgment.md' })
+		}
+	});
+	progressProj.stateSchema.parse(sub);
+	assert.deepStrictEqual(sub.skills, [
+		{ name: 'ponytail-review', manual: false, sub: true },
+		{ name: 'trend-judgment', manual: false, sub: true }
+	], '读 gann 的 capabilities/trend-judgment.md ⇒ 记 trend-judgment（斜杠路径、path 键也认）');
+
+	/* ③ 辅助文件不记：形状本身就是判据（这些文件名不符合那两种形状），不需要白名单。
+	   同时覆盖"单文件子能力"（references/<名>.md，candlestick 那种）也**不**记。 */
+	const subBefore = sub.skills.length;
+	[
+		'/home/u/.agents/skills/gann-trend-detector/references/glossary.md',
+		'/home/u/.agents/skills/gann-trend-detector/references/overview.md',
+		'/home/u/.agents/skills/x/references/cheatsheet.md',
+		'/home/u/.agents/skills/x/references/capability-index.md',
+		'/home/u/.agents/skills/candlestick-analysis/references/candlestick-analysis.md',
+		/* 目录名与文件名不同名 ⇒ 不是 ① 那种形状，不记 */
+		'/home/u/.agents/skills/some-skill/references/notes/other-name.md',
+		'/home/u/.agents/skills/some-skill/references/capabilities/',
+		'/home/u/.agents/skills/some-skill/references/capabilities/x.txt',
+		'/home/u/.agents/skills/ponytail/SKILL.md',
+		'/home/u/project/src/index.js'
+	].forEach((one) => {
+		sub = progressProj.apply(sub, {
+			type: 'tool/call', time: Date.now(),
+			data: { turn: 1, step: 3, name: 'read', arguments: JSON.stringify({ path: one }) }
+		});
+	});
+	progressProj.stateSchema.parse(sub);
+	assert.strictEqual(sub.skills.length, subBefore,
+		'辅助文件 / 单文件子能力 / 普通源码都不记（实际多了 ' + (sub.skills.length - subBefore) + ' 条）');
+	assert.strictEqual(sub.toolCalls, 12, '不记技能但这些读取照样各算一次工具调用（前面 3 次 + 这 9 次）');
+
+	/* 一次 ops_read_files 读多个文件：命中的按读到顺序各记一条 */
+	sub = progressProj.apply(sub, {
+		type: 'tool/call', time: Date.now(),
+		data: {
+			turn: 1, step: 4, name: 'ops_read_files',
+			arguments: JSON.stringify({
+				files: [
+					{ path: '/s/.agents/skills/mao-selected-works-skill/references/mao-investigation/mao-investigation.md' },
+					{ path: '/s/.agents/skills/gann-trend-detector/references/glossary.md' },
+					{ path: '/s/.agents/skills/gann-trend-detector/references/capabilities/position-sizing.md' }
+				]
+			})
+		}
+	});
+	progressProj.stateSchema.parse(sub);
+	assert.deepStrictEqual(sub.skills.slice(-2), [
+		{ name: 'mao-investigation', manual: false, sub: true },
+		{ name: 'position-sizing', manual: false, sub: true }
+	], 'ops_read_files 一次读多个：命中的按顺序各记一条，没命中的跳过');
+
+	/* ④ 斜杠命令仍是 manual:true 且**不带** sub 键（客户端靠"有没有 sub"决定角标位置，
+	   多一个 sub:false 会让它误判成子能力） */
+	let slashCheck = progressProj.init();
+	slashCheck = progressProj.apply(slashCheck, { type: 'user/message', time: Date.now(), data: { source: { kind: 'skill-invocation', name: 'i-have-adhd', form: 'instructions' } } });
+	slashCheck = progressProj.apply(slashCheck, { type: 'tool/call', time: Date.now(), data: { turn: 1, step: 1, name: 'skill', arguments: '{"name":"ponytail"}' } });
+	progressProj.stateSchema.parse(slashCheck);
+	assert.deepStrictEqual(slashCheck.skills, [{ name: 'i-have-adhd', manual: true }, { name: 'ponytail', manual: false }],
+		'斜杠命令 manual:true、skill 工具 manual:false，两条都**没有** sub 键');
+	assert.strictEqual(Object.prototype.hasOwnProperty.call(slashCheck.skills[0], 'sub'), false,
+		'斜杠命令那条不许出现 sub 键（客户端按"有 sub"判子能力）');
+	assert.strictEqual(Object.prototype.hasOwnProperty.call(slashCheck.skills[1], 'sub'), false,
+		'skill 工具那条同样不许出现 sub 键');
+
+	/* ⑤ 老数据兼容：`sub` 是 optional，旧 state（skills 里没有这个键）必须仍能过 .strict() 校验。
+	   这是硬要求 —— 老缓存反序列化时 schema 收紧过一次，整条投影会被宿主拒掉。 */
+	const legacy = {
+		turn: 1, turnSteps: 2, toolCalls: 3, toolCounts: { read: 2, skill: 1 },
+		skills: [{ name: 'ponytail', manual: false }, { name: 'i-have-adhd', manual: true }],
+		globalInstruction: null, compactCount: 0, compactTurn: null, compactStep: null, compacts: []
+	};
+	assert.doesNotThrow(() => progressProj.stateSchema.parse(legacy),
+		'老 state（skills 无 sub 字段）必须仍能通过 schema 校验（sub 是 optional）');
+	const parsedLegacy = progressProj.stateSchema.parse(legacy);
+	assert.strictEqual(parsedLegacy.skills.length, 2, '老数据解析后技能条数不变');
+	assert.strictEqual(parsedLegacy.skills[0].sub, undefined, '老数据里没有 sub 就是 undefined，不会被补成 false');
+	/* stateVersion 要升过一档：技能新增子能力标记，旧缓存得重放才能把读过的子能力补进来 */
+	assert.ok(progressProj.stateVersion >= 9, 'stateVersion 已提升（技能新增 sub 标记），实际 ' + progressProj.stateVersion);
+	console.log('子能力标记:', JSON.stringify(sub.skills.slice(-2)), '· stateVersion =', progressProj.stateVersion);
+
 	/* 压缩落点：宿主在 compaction/end 判定结果——成功（不带 error，且必有 compaction/summary）才计数。
 	   轮号取 end 的 turn，步号取压缩前最后一条同轮 step/start（压缩事务中间不会插 step/start） */
 	progress = progressProj.apply(progress, { type: 'compaction/start', time: Date.now(), data: { compactionId: 'x', turn: 1 } });

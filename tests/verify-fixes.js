@@ -2,8 +2,12 @@
  * 回归测试：本轮对抗性审查发现并修复的缺陷，逐条钉住，避免以后改回去。
  *
  * 覆盖 6 条：
- *   ① 开发模式与设置页组件状态不同步 —— 卸载时若只清定时器，devMode 会留着，
- *      重挂后界面没有胶囊、按钮却显示演示版本号，点下去只播演示不安装。
+ *   ① 开发模式**跨页面常驻** —— 关掉设置页不该退出开发模式（退出只由版本号手势触发）。
+ *      这条曾经是反的：早期开发模式只影响设置页那颗更新按钮，卸载不复位会让胶囊与按钮脱节，
+ *      所以当时要求卸载时复位；现在开发模式还接管了对话页底栏的假数据，卸载就复位会把
+ *      底栏假数据一起带走，用户已确认「跨页面一直存在是预期行为」，故改为**断言不许复位**。
+ *      该语义以**行为断言**为准，见 `tests/verify-dev-mode.js` 的 ⑯；这里只留一条结构检查
+ *      （卸载 effect 里不许调 setDevMode），不再用「源码里不许出现某字符串」那种写法守卫。
  *   ② 价格库上报的请求体上限太小 —— 24 个模型就超过 4KB 被掐断，价格库静默不同步。
  *   ③ 失败原因 update.reason 只写不读 —— 所有失败都退化成「更新失败」四个字。
  *   ④ release-age 在 flow 写法下写出重复键 —— pnpm 拒绝解析整个 profile。
@@ -29,12 +33,22 @@ function stripComments(source) {
 const clientCode = stripComments(client);
 const hostCode = stripComments(host);
 
-console.log('===== ① 开发模式：卸载时必须复位模块级状态 =====');
-assert.ok(/react\.useEffect\(\(\) => \(\) => \{\s*if \(devMode === true\) setDevMode\(false\);?\s*\}/.test(clientCode),
-	'设置页卸载时要复位 devMode（否则重挂后 devMode=true 但胶囊不显示，更新按钮变成空操作）');
-assert.ok(!/useEffect\(\(\) => \(\) => \{\s*if \(devTimer !== null\) \{ clearTimeout\(devTimer\); devTimer = null; \} \}\s*\}, \[\]\)/.test(clientCode),
-	'不能只清定时器、不重置 devMode');
-console.log('      卸载时调用 setDevMode(false)，且只在真的开着时才调');
+console.log('===== ① 开发模式：卸载设置页**不得**关掉它（跨页面常驻） =====');
+/* 语义已反转（用户拍板）：开发模式是模块级开关，跨页面常驻 —— 关掉设置页不等于要退出开发模式。
+   早先这里是反过来的断言（要求卸载时 `if (devMode === true) setDevMode(false)`），
+   原因是那时开发模式只影响设置页那颗更新按钮，卸载不复位会留下「胶囊没了、按钮还是演示版号」
+   的不一致。现在开发模式还接管了**对话页底栏的假数据**，卸载就复位等于把底栏假数据一起带走。
+   所以现在要钉住的是：**卸载路径里不许再出现关闭开发模式的复位**，退出只能靠版本号手势。
+
+   **这条语义主要靠行为断言守护**，见 `tests/verify-dev-mode.js` 的 ⑯（真渲染底栏、
+   断言组件关掉后假数据消失且 `isDevMode() === false`）。
+   这里保留的两条是**结构**检查（卸载 effect 的形态），不再做「源码里不许出现某个字符串」
+   那种字面量匹配 —— 那种守卫测的是写法不是行为：把 `setDevMode(!devMode)` 改成语义相同的
+   `setDevMode(false)` 就会误红，而把关闭逻辑挪进别的函数又能轻易绕过。
+   生产代码因此不必再为迁就测试而写成晦涩的形式（`lib/client.js` 里那段已改回直观写法）。 */
+assert.ok(!/useEffect\(\(\) => \(\) => \{[^}]*setDevMode/.test(clientCode),
+	'卸载 effect（useEffect 返回的 cleanup）里不许调用 setDevMode —— 那会把对话页底栏的假数据一起关掉');
+console.log('      卸载 effect 里没有 setDevMode 复位；「退出只由手势触发」由 verify-dev-mode.js 的 ⑯ 行为断言守护');
 
 console.log('\n===== ② 价格库上报：上限要够用，失败要能看见 =====');
 /* 请求体上限必须有量级提升：24 个模型约 4.2KB，旧的 4096 不够 */

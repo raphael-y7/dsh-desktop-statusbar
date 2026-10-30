@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Desktop Status Bar",
-    "description": "Replaces the stats line under the DSH desktop conversation with a configurable status bar: 10 optional reorderable fields, official peak/off-peak cost estimates, custom model prices and account balance."
+    "description": "Replaces the stats line under the DSH desktop conversation with a configurable status bar: 9 optional reorderable fields plus the context ring at the head of the bar, official peak/off-peak cost estimates, custom model prices and account balance."
   }
 }

@@ -17,8 +17,15 @@
  *   G  主文件 usage-ledger.json 损坏/删除 → 回退同目录 usage-ledger.json.bak
  *   H  台账顶层字段齐全：version=3 / updatedAt / priceFingerprint / unpricedBackfill /
  *      days / seen / sessions / files
+ *   J  台账被外部写坏时 /api/daily-usage 不许崩：days[key] 是 null / 'oops' / 0 / []、
+ *      某天某个字段是 null、unpriced[模型] 是 null 或其某一档是 null、
+ *      days 本身是字符串或数组 —— 十种坏法各跑一轮，每种都必须 200 + ok:true。
+ *      （旧写法 `ledger.days[key] ?? 默认值` 只挡 null/undefined，挡不住 'oops' 与 0；
+ *       `one = bucket[name]` 只判键在不在，unpriced[模型] 为 null 时 `one.offPeak` 直接抛。
+ *       一抛，整条路由恒返回 ledger-failed，活跃总览永久打不开。契约来源：task-73 E 项。）
  *
- * 全程只在 tests/ 下的隔离目录里跑（.dsh-test-home-keep / -migrate / -v1 / -bak / -race），
+ * 全程只在 tests/ 下的隔离目录里跑（.dsh-test-home-keep / -migrate / -v1 / -bak / -race /
+ * -harden-1…10），
  * 绝不碰真实 ~/.dsh/dsh-status-bar/。
  * 用法：node tests/verify-ledger-keep.js
  */
@@ -26,6 +33,8 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const assert = require('assert');
+const os = require('os');
+const { pathToFileURL } = require('url');
 
 const INDEX = path.join(__dirname, '..', 'lib', 'index.js');
 const HOME_KEEP = path.join(__dirname, '.dsh-test-home-keep');      /* A/B/D/E/H */
@@ -35,8 +44,25 @@ const HOME_V1 = path.join(__dirname, '.dsh-test-home-v1');          /* F 的 v1 
 const HOME_RACE = path.join(__dirname, '.dsh-test-home-race');      /* F 顺序变体 */
 const HOME_LEGACY = path.join(__dirname, '.dsh-test-home-legacy');  /* F 回扫判据（当年规则） */
 const HOME_BAK2 = path.join(__dirname, '.dsh-test-home-bak2');      /* G 的 .bak 污染补测 */
+const HOME_BILL = path.join(__dirname, '.dsh-test-home-bill');      /* I：v4 分币种 + 迁移重扫 */
+const HOME_YIELD = path.join(__dirname, '.dsh-test-home-yield');    /* I-7：让出事件循环 */
+
+/* 契约 J：每种坏法各要一份**全新的 home + 全新的模块实例**（单变量隔离），
+   所以给它留一组目录，编号即坏法编号。 */
+const HOME_HARDEN = (n) => path.join(__dirname, '.dsh-test-home-harden-' + n);
 
 globalThis.setInterval = () => 0;
+
+/* setImmediate 计数桩：v4 重算（rebuildCostByDay）每 4 个文件让出一次事件循环，
+   靠它证明"让出真的发生了"（否则重扫 197MB 会把宿主主线程钉住好几秒）。
+   **必须在 import index.js 之前装**：模块里的 `setImmediate` 是全局查找，
+   运行时替换全局即可被计数到。真实现仍调用原函数，不影响调度语义。 */
+let immediateCalls = 0;
+const realSetImmediate = globalThis.setImmediate;
+globalThis.setImmediate = function patchedSetImmediate(fn, ...rest) {
+	immediateCalls += 1;
+	return realSetImmediate.call(this, fn, ...rest);
+};
 
 const BEIJING = 8 * 3600 * 1000;
 const M = 1000000;
@@ -146,7 +172,10 @@ const ledgerNumbersOf = (day) => ({
   });
   assert.ok(handler !== null, 'host 路由已注册');
 
-  const hit = (pathname, options) => new Promise((resolve) => {
+  /* 调一次路由。**reject 必须传出去**：契约 J 要断言「handler 的 Promise 不 reject」，
+     旧写法 `pending.then(() => resolve(...))` 少了 reject 分支 —— handler 一 reject，
+     外层 Promise 既不 resolve 也不 reject，测试会永久挂起而不是报红（挂起比红更难查）。 */
+  const hit = (pathname, options) => new Promise((resolve, reject) => {
     const opts = options === undefined ? {} : options;
     let status = null, body = null;
     const res = { writeHead: (c) => { status = c; }, end: (t) => { body = t; } };
@@ -160,12 +189,17 @@ const ledgerNumbersOf = (day) => ({
     const pending = Promise.resolve(handler(req, res));
     if (opts.body !== undefined) (listeners.data || []).forEach((fn) => fn(opts.body));
     (listeners.end || []).forEach((fn) => fn());
-    pending.then(() => resolve({ status, body: body === null ? null : JSON.parse(body) }));
+    pending.then(
+      () => resolve({ status, body: body === null ? null : JSON.parse(body) }),
+      (error) => reject(error),
+    );
   });
 
   const postPrices = (models) => hit('/dsh-desktop-statusbar/api/prices', { method: 'POST', body: JSON.stringify({ models }) });
   const daily = () => hit('/dsh-desktop-statusbar/api/daily-usage?force=1');
   const dayOf = (payload) => payload.days.filter((d) => d.date === DAY)[0];
+  /** 按指定日期挑日桶（I 组用"今天/去年"两个日期，不能只认固定的 DAY） */
+  const dayOn = (payload, key) => payload.days.filter((d) => d.date === key)[0];
   const useHome = (home) => { process.env.DSH_HOME = home; };
 
   /* ==================================================================
@@ -205,7 +239,7 @@ const ledgerNumbersOf = (day) => ({
     + ' cost=' + dayA.cost + '，unpriced.alpha-x.offPeak=' + JSON.stringify(alphaA.offPeak));
 
   /* 契约 H：台账顶层字段 */
-  assert.strictEqual(ledgerA.version, 3, 'version=3，实际 ' + ledgerA.version);
+  assert.strictEqual(ledgerA.version, 4, 'version=4（v4 起按币种分桶），实际 ' + ledgerA.version);
   assert.strictEqual(typeof ledgerA.updatedAt, 'number', 'updatedAt 是数字');
   assert.ok(ledgerA.updatedAt > 0, 'updatedAt 已写入，实际 ' + ledgerA.updatedAt);
   assert.strictEqual(typeof ledgerA.priceFingerprint, 'string', 'priceFingerprint 是字符串');
@@ -315,7 +349,7 @@ const ledgerNumbersOf = (day) => ({
   const dayM1 = dayOf(migrated.body);
   assert.deepStrictEqual(numbersOf(dayM1), numbersOf(dayM0), '迁移 + 回扫不许改动历史 token / cost / calls');
   const ledgerM1 = readLedgerOf(HOME_MIGRATE);
-  assert.strictEqual(ledgerM1.version, 3, '读入 v2 后台账版本升到 3，实际 ' + ledgerM1.version);
+  assert.strictEqual(ledgerM1.version, 4, '读入 v2 后台账版本升到 4，实际 ' + ledgerM1.version);
   assert.strictEqual(ledgerM1.unpricedBackfill, 'done', '回扫做过一次后标成 done，实际 ' + ledgerM1.unpricedBackfill);
   const unpricedM1 = ledgerM1.days[DAY].unpriced;
   assert.ok(unpricedM1 !== undefined, '回扫要把「当时缺价」的用量补进 unpriced');
@@ -423,7 +457,7 @@ const ledgerNumbersOf = (day) => ({
     'gamma-z': { peak: { input: 4, cacheRead: 0.08, cacheWrite: 0, output: 8 }, offPeak: { input: 2, cacheRead: 0.04, cacheWrite: 0, output: 4 } },
   });
   const migratedNow = readLedgerOf(HOME_RACE);
-  assert.strictEqual(migratedNow.version, 3, 'v2 读入后版本号升到 3，实际 ' + migratedNow.version);
+  assert.strictEqual(migratedNow.version, 4, 'v2 读入后版本号升到 4，实际 ' + migratedNow.version);
   assert.strictEqual(migratedNow.unpricedBackfill, 'pending', 'v2 读入后标成待回扫，实际 ' + migratedNow.unpricedBackfill);
   assert.deepStrictEqual(ledgerNumbersOf(migratedNow.days[DAY]), v2DayNumbers, '迁移不许动 days 里的数字');
   assert.ok(migratedNow.priceFingerprint.length > 0, 'v2 台账的价格指纹原样带过来了');
@@ -547,6 +581,394 @@ const ledgerNumbersOf = (day) => ({
   assert.deepStrictEqual(numbersOf(v1After), numbersOf(v1Base),
     '无指纹的老台账迁移后不许把已经算过的历史再补一遍（契约 F：当时有价的不重复计入）');
   console.log('F v1 变体：无指纹台账迁移后 cost=' + v1After.cost + '（历史未被重复计入）');
+
+  /* ==================================================================
+   * 契约 I（task-52）：按币种分桶 + v4 迁移重扫
+   *   用户要求：活跃总览的金额"各自算各自"，美元 7.77 + 人民币 145.66
+   *   要显示成 ¥145.66+$7.77，而不是把两个数直接加成一个混合值。
+   *   三条红线：写盘前备份 / 绝不清空 days / 重扫失败的天不许变 0。
+   * ================================================================== */
+  freshHome(HOME_BILL);
+  useHome(HOME_BILL);
+
+  const BIJ = 8 * 3600 * 1000;
+  const bijKey = (ms) => dateKeyOf(ms);
+  const bijStamp = (daysAgo, hour) => {
+    const n = new Date(Date.now() + BIJ);
+    return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate() - daysAgo, hour - 8, 0, 0);
+  };
+  /* 今年内的一天（落在重扫窗口里）与去年的一天（**在**窗口外） */
+  const TODAY_AT = bijStamp(1, 20);
+  const TODAY_KEY = bijKey(TODAY_AT);
+  const LAST_YEAR_AT = (() => {
+    const n = new Date(Date.now() + BIJ);
+    /* 去年 12 月 20 日：一定在「今年 1 月 1 日」之前 ⇒ 重扫永远覆盖不到 */
+    return Date.UTC(n.getUTCFullYear() - 1, 11, 20, 12, 0, 0);
+  })();
+  const LAST_YEAR_KEY = bijKey(LAST_YEAR_AT);
+
+  /* 人民币模型（alpha-cny，CNY）与美元模型（beta-usd，USD）各一笔，同一天 */
+  const CNY_MODEL = 'alpha-cny';
+  const USD_MODEL = 'beta-usd';
+  const BOOK_TWO = {
+    [CNY_MODEL]: { currency: 'CNY', peak: { input: 100, cacheRead: 0, cacheWrite: 0, output: 0 }, offPeak: { input: 100, cacheRead: 0, cacheWrite: 0, output: 0 } },
+    [USD_MODEL]: { currency: 'USD', peak: { input: 7.77, cacheRead: 0, cacheWrite: 0, output: 0 }, offPeak: { input: 7.77, cacheRead: 0, cacheWrite: 0, output: 0 } },
+  };
+  /* 人民币：1M input × 100/1M = ¥100；美元：1M input × 7.77/1M = $7.77 */
+  const evCny = (seq) => ({ type: 'assistant/message', seq, time: TODAY_AT, data: { turn: 1, step: seq, message: { source: { kind: 'model', provider: 'p', model: CNY_MODEL } }, usage: { inputTokens: M, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 } } });
+  const evUsd = (seq) => ({ type: 'assistant/message', seq, time: TODAY_AT, data: { turn: 1, step: seq, message: { source: { kind: 'model', provider: 'p', model: USD_MODEL } }, usage: { inputTokens: M, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 } } });
+  writeSessionLog(HOME_BILL, 'mix-session', [evCny(1), evUsd(2)]);
+
+  /* 预置一份 v3 老台账：去年那天有 cost（重扫窗口外）、今年这天也有 cost（会被重扫） */
+  const legacyDays = {
+    [LAST_YEAR_KEY]: {
+      input: 500, cacheRead: 0, cacheWrite: 0, output: 0, calls: 3, cost: 88.88,
+      peak: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
+    },
+    [TODAY_KEY]: {
+      input: 2 * M, cacheRead: 0, cacheWrite: 0, output: 0, calls: 2, cost: 107.77,
+      peak: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
+    },
+  };
+  const v3Ledger = {
+    version: 3, updatedAt: Date.now() - 60000, priceFingerprint: '',
+    unpricedBackfill: 'done',
+    days: legacyDays,
+    seen: {}, sessions: {}, files: {},
+  };
+  fs.writeFileSync(ledgerFileOf(HOME_BILL), JSON.stringify(v3Ledger), 'utf8');
+
+  /* 先报价格库（v4 迁移发生在读台账时，价格库要在扫描前就位，否则算不出钱） */
+  const postedTwo = await postPrices(BOOK_TWO);
+  assert.strictEqual(postedTwo.status, 200, '混币价格库上报成功');
+
+  const mixed = await daily();
+  const dayMix = dayOf(mixed.body);
+  assert.ok(dayMix !== undefined, '混币日桶存在');
+
+  /* 契约 I-1：同一天既有美元模型又有人民币模型 ⇒ 两个独立数 */
+  assert.deepStrictEqual(dayMix.costByCurrency, { CNY: 100, USD: 7.77 },
+    'costByCurrency 必须是 {CNY:100, USD:7.77} 两个独立数，实际 ' + JSON.stringify(dayMix.costByCurrency));
+  /* 契约 I-4：cost 仍是两币种之和（老字段语义一个字不动） */
+  assert.strictEqual(dayMix.cost, 107.77, 'cost 仍是 100 + 7.77 = 107.77（老客户端照旧读它），实际 ' + dayMix.cost);
+  console.log('I-1 混币日桶：costByCurrency=' + JSON.stringify(dayMix.costByCurrency) + ' · cost=' + dayMix.cost);
+
+  /* 契约 I-2：重扫窗口外（去年）的那天，cost 与迁移前一致 —— **绝不被清零** */
+  const lastYearLedger = readLedgerOf(HOME_BILL).days[LAST_YEAR_KEY];
+  assert.ok(lastYearLedger !== undefined, '去年那天的日桶还在（days 不许被清空）');
+  assert.strictEqual(lastYearLedger.cost, 88.88,
+    '【证据 1】重扫窗口外的天 cost 迁移前后一致（88.88），实际 ' + lastYearLedger.cost);
+  assert.strictEqual(lastYearLedger.input, 500, '去年的 token 一个都不许丢，实际 ' + lastYearLedger.input);
+  assert.strictEqual(lastYearLedger.calls, 3, '去年的 calls 一个都不许丢，实际 ' + lastYearLedger.calls);
+  console.log('I-2 【证据1】窗口外（' + LAST_YEAR_KEY + '）cost=' + lastYearLedger.cost
+    + ' token=' + lastYearLedger.input + ' calls=' + lastYearLedger.calls + '（迁移前后一致）');
+
+  /* 契约 I-3：v4 迁移后台账版本、标记、token 不丢 */
+  const billLedger = readLedgerOf(HOME_BILL);
+  assert.strictEqual(billLedger.version, 4, '迁移后台账版本是 4，实际 ' + billLedger.version);
+  assert.strictEqual(billLedger.costByCurrencyBackfill, 'done', '重扫跑完标记成 done，实际 ' + billLedger.costByCurrencyBackfill);
+  assert.strictEqual(billLedger.days[TODAY_KEY].legacyCost, 107.77,
+    '迁移时给有 cost 的天存了快照，实际 ' + String(billLedger.days[TODAY_KEY].legacyCost));
+  /* 只有 cost > 0 的天才存快照（体积控制） */
+  assert.strictEqual(billLedger.days[LAST_YEAR_KEY].legacyCost, 88.88, '去年那天也有快照');
+  console.log('I-3 v4 迁移：version=' + billLedger.version + ' backfill=' + billLedger.costByCurrencyBackfill
+    + ' legacyCost(今天)=' + billLedger.days[TODAY_KEY].legacyCost);
+
+  /* 契约 I-3b：磁盘上必须有 .bak 备份（写盘前备份红线） */
+  assert.ok(fs.existsSync(ledgerFileOf(HOME_BILL) + '.bak'), '写盘前必须留下 .bak 备份');
+  console.log('I-3b 备份存在：' + path.basename(ledgerFileOf(HOME_BILL)) + '.bak');
+
+  /* 契约 I-5：本周 / 当月 / 当年三处聚合都带 costByCurrency */
+  assert.ok(mixed.body.totals.costByCurrency !== undefined && mixed.body.totals.costByCurrency !== null,
+    'totals 要带 costByCurrency');
+  assert.strictEqual(mixed.body.totals.costByCurrency.CNY, 100, '本周 totals 的人民币合计，实际 ' + JSON.stringify(mixed.body.totals.costByCurrency));
+  assert.strictEqual(mixed.body.totals.costByCurrency.USD, 7.77, '本周 totals 的美元合计');
+  const monthOfDay = mixed.body.month.days.filter((d) => d.date === TODAY_KEY)[0];
+  assert.ok(monthOfDay !== undefined, '当月里找得到今天');
+  assert.deepStrictEqual(monthOfDay.costByCurrency, { CNY: 100, USD: 7.77 }, '当月每天的 costByCurrency 正确');
+  const yearMonth = mixed.body.year.months[new Date(TODAY_AT + BIJ).getUTCMonth()];
+  assert.ok(yearMonth !== undefined, '当年里找得到这个月');
+  assert.strictEqual(yearMonth.costByCurrency.CNY, 100, '当年该月的 CNY 合计，实际 ' + JSON.stringify(yearMonth.costByCurrency));
+  assert.strictEqual(yearMonth.costByCurrency.USD, 7.77, '当年该月的 USD 合计');
+  console.log('I-5 三处聚合都带 costByCurrency：周 ' + JSON.stringify(mixed.body.totals.costByCurrency)
+    + ' · 月未定义项 ' + JSON.stringify(monthOfDay.costByCurrency) + ' · 年 ' + JSON.stringify(yearMonth.costByCurrency));
+
+  /* 契约 I-6【证据 2】：重扫时日志已删的天，cost 不许被清零 —— legacyCost 顶回去。
+     必须真的让重扫发生一次（把标记打回 pending），否则走的是增量、什么都没重算，
+     那样这条断言等于没测（踩过：删了日志但标记已 done，cost 保持原值纯属"没动过"）。 */
+  fs.rmSync(path.join(HOME_BILL, 'sessions', 'mix-session'), { recursive: true, force: true });
+  const beforeDeleteI = readLedgerOf(HOME_BILL);
+  beforeDeleteI.costByCurrencyBackfill = "pending"
+  beforeDeleteI.files = {}
+  fs.writeFileSync(ledgerFileOf(HOME_BILL), JSON.stringify(beforeDeleteI), "utf8")
+  const afterDeleteI = await daily();
+  const dayAfterDelete = dayOn(afterDeleteI.body, TODAY_KEY);
+  assert.ok(dayAfterDelete !== undefined, '日志删掉后日桶仍在');
+  assert.strictEqual(dayAfterDelete.cost, 107.77,
+    '【证据 2】日志已删的天 cost 保持不变（legacyCost 兜底），实际 ' + dayAfterDelete.cost);
+  /* 日志没了 ⇒ 分不出币种。这里只钉住"cost 绝不被清零"，
+     costByCurrency 可能是空、也可能残留上一次的值 —— 两者对客户端都安全
+     （有值就按值显示，没值走「¥ + 混合数」），所以不做强断言。 */
+  console.log('I-6 【证据2】日志删掉后重扫 cost=' + dayAfterDelete.cost + '（legacyCost 顶回，未变 0）');
+
+  /* 契约 I-7【task-55】：v4 重算不许把宿主主线程钉住。
+     判据是**用户体感**，不是实现细节：重算期间主线程最长一次不被让出多久。
+     （这里曾经数 setImmediate 调用次数、要求"每 4 个文件让出一次"，
+     那是旧同步实现的细节；解压改异步后 `await` 本身就是让出点，
+     文件间那套让出已删除，旧计数断言只会永远红。） */
+  freshHome(HOME_YIELD);
+  useHome(HOME_YIELD);
+
+  const YIELD_FILES = 20;
+  /* 每个文件塞够多的用量事件，让"同步解压一段"有可测量的耗时 */
+  for (let i = 1; i <= YIELD_FILES; i += 1) {
+    const events = [];
+    for (let k = 1; k <= 300; k += 1) {
+      events.push(usageEvent(k, k, CNY_MODEL, { inputTokens: M, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 }));
+    }
+    writeSessionLog(HOME_YIELD, 'yield-' + i, events);
+  }
+  /* 预置一份 v3 台账（触发 v4 重算） */
+  const yieldLedger = {
+    version: 3, updatedAt: Date.now() - 60000, priceFingerprint: '',
+    unpricedBackfill: 'done', days: {}, seen: {}, sessions: {}, files: {},
+  };
+  fs.writeFileSync(ledgerFileOf(HOME_YIELD), JSON.stringify(yieldLedger), 'utf8');
+  await postPrices(BOOK_TWO);
+
+  /* 计时探针：记录"两次采样之间的最大间隔"= 最长同步块。
+     **不能用 setInterval**：本文件顶部把 `globalThis.setInterval` 换成了空实现
+     （防止插件的定时器把进程吊住），用它采样会拿到全 0。
+     改用 `setTimeout` 自递归 —— 回调只在主线程空闲时才执行，
+     相邻两次回调的间隔即一段同步执行的时长。 */
+  let blockStart = Date.now();
+  let longestBlock = 0;
+  let sampling = true;
+  const sample = () => {
+    if (sampling !== true) return;
+    const now = Date.now();
+    const spent = now - blockStart;
+    if (spent > longestBlock) longestBlock = spent;
+    blockStart = now;
+    setTimeout(sample, 1);
+  };
+  setTimeout(sample, 1);
+  immediateCalls = 0;
+  const yieldStarted = Date.now();
+  const yieldRun = await daily();
+  const yieldTotal = Date.now() - yieldStarted;
+  sampling = false;
+  const tailBlock = Date.now() - blockStart;
+  if (tailBlock > longestBlock) longestBlock = tailBlock;
+
+  assert.ok(yieldRun.status === 200 && yieldRun.body.ok === true, '重算这轮 daily-usage 正常返回');
+  /* 这里曾经断言「每 4 个文件 setImmediate 一次（≥5 次）」，那是**旧实现的细节**。
+     解压改成异步之后，`await` 本身就是让出点，文件间那套让出已删除（YIELD_SLICE_MS 已移除），
+     所以 setImmediate 只被调用 1 次 —— 旧断言测的是一个不存在的实现，只会永远红。
+     改成测**用户真正关心的东西**：重算期间主线程最长一次不被让出多久。
+     实测该值从同步时代的 1188ms 降到 200ms 量级；100ms 是"用户几乎无感"的阈值。 */
+  assert.ok(longestBlock < 100,
+    '重算期间最长同步块应 < 100ms（界面不卡），实际 ' + longestBlock + ' ms');
+  console.log('I-7 让出：' + YIELD_FILES + ' 个文件重算 ⇒ 最长单次同步块 ' + longestBlock
+    + ' ms / 总耗时 ' + yieldTotal + ' ms · setImmediate 调用 ' + immediateCalls + ' 次（仅供参考，不断言）');
+
+  /* ==================================================================
+   * 契约 J（task-73 E 项）：台账被外部写坏，/api/daily-usage 不许崩。
+   *
+   * 要防的是这条链：坏值 → 记账时抛 TypeError → queueLedgerJob 的 Promise reject
+   * → 路由 catch 成 `{ ok: false, reason: 'ledger-failed' }` → 活跃总览永久打不开，
+   * 用户只能手删台账文件。所以每种坏法的判据都是**同一件事故的入口与出口**：
+   *   ① `hitWith()` 返回的 Promise 不许 reject（handler 自己不许抛）；
+   *   ② HTTP 200 且 `ok: true`（不许退化成 ledger-failed）。
+   *
+   * 为什么十种坏法各跑一轮、而不是塞进同一份台账：第一处抛错就中断整轮，
+   * 后面的坏法根本没被执行 —— 一盏灯只能证明一种坏法。
+   *
+   * **单变量隔离**：每种坏法重新载入一次 host 模块（模块级缓存 weekUsageCache /
+   * weekUsageScan / activePriceBook 都必须是干净的），并用一个新的隔离 home。
+   * 重载用的是 lib/index.js 的**源码副本**：模块一旦加载，内容已在内存里，
+   * 副本只用来骗过 ESM 的 URL 缓存（同 URL 再 import 直接拿旧实例）。
+   * 副本与源文件逐字相同（只把相对 import 换成绝对 file URL），绝不改 lib/。
+   * ================================================================== */
+  const INDEX_SRC = fs.readFileSync(INDEX, 'utf8');
+  /* lib/index.js 里 `from './balance-api.js'` 这类相对路径，在副本所在目录（隔离 home）里
+     会解析失败 ⇒ 换成绝对 file URL。只动 import 说明符，不动任何逻辑。 */
+  const INDEX_FOR_COPY = INDEX_SRC.replace(/from '(\.\/[^']+)'/g, (whole, rel) => {
+    return "from '" + pathToFileURL(path.join(path.dirname(INDEX), rel)).href + "'";
+  });
+
+  /** 载入一份全新的模块实例并挂上路由（照抄本文件顶部 apply 的写法）。 */
+  async function loadHost(home) {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.mkdirSync(path.join(home, 'dsh-status-bar'), { recursive: true });
+    fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+    useHome(home);
+    const copy = path.join(home, 'index.copy.mjs');
+    fs.writeFileSync(copy, INDEX_FOR_COPY, 'utf8');
+    const fresh = await import(pathToFileURL(copy).href + '?v=' + Date.now() + '-' + Math.random());
+    let route = null;
+    fresh.apply({
+      logger: { info: () => {} },
+      effect: (fn) => fn(),
+      sessionProjections: { register: () => () => {} },
+      webServer: { register: (r) => { if (r.path === '/dsh-desktop-statusbar/api') route = r.handler; return () => {}; } },
+      credentials: undefined,
+    });
+    assert.ok(route !== null, '隔离实例的 host 路由已注册');
+    return route;
+  }
+
+  /** 用指定 handler 调一次路由：reject 直接抛给调用方（契约 J 的第 ① 条判据）。 */
+  function hitWith(route, pathname) {
+    return new Promise((resolve, reject) => {
+      let status = null, body = null;
+      const res = { writeHead: (c) => { status = c; }, end: (t) => { body = t; } };
+      const req = { url: pathname, method: 'GET', on: () => req, destroy: () => {} };
+      Promise.resolve(route(req, res)).then(
+        () => resolve({ status, body: body === null ? null : JSON.parse(body) }),
+        (error) => reject(error),
+      );
+    });
+  }
+
+  const HARDEN_URL = '/dsh-desktop-statusbar/api/daily-usage?force=1';
+  const HARDEN_MODEL = 'alpha-x';   /* 内置价目表里没有它 ⇒ 一定走 addUnpriced */
+
+  /** 往隔离 home 里放一条会话日志：一条缺价模型的用量事件（一定会走 addUnpriced）。 */
+  function writeHardenLog(home, tag, at) {
+    writeSessionLog(home, tag, [{
+      type: 'assistant/message',
+      seq: 1,
+      time: at,
+      data: {
+        turn: 1, step: 1,
+        message: { source: { kind: 'model', provider: 'p', model: HARDEN_MODEL } },
+        usage: U1,
+      },
+    }]);
+  }
+
+  /* 坏值必须落在"记账真的会读到它"的那一天、那一档：
+       · 当天日期要在近 7 天窗口里（否则主循环连看都不看）；
+       · 事件要落在**北京工作日高峰窗**里（09-12 / 14-18），isPeakTime 才是 true，
+         才会同时走到 `days[key].peak` 与 `unpriced[模型].peak` 两个分支 —— 坏法 6 / 8 才真被读到。
+     "哪种时点是高峰"不在这里另抄一份节假日表去猜（抄了就会与 host 漂移）：
+     直接**实测**——拿一份干净台账跑一遍，看 host 自己把 peak 记成了几。 */
+  const HARDEN_AT = (() => {
+    const now = Date.now();
+    const bjNow = new Date(now + BEIJING);
+    const candidates = [];
+    for (let back = 0; back < 7; back += 1) {
+      /* 同一北京日期的 10:00 与 15:00 各试一次：至少有一个落在高峰窗里 */
+      for (const hour of [10, 15]) {
+        const at = Date.UTC(bjNow.getUTCFullYear(), bjNow.getUTCMonth(), bjNow.getUTCDate() - back, hour, 0, 0) - BEIJING;
+        if (at > now - 60 * 1000) continue;
+        candidates.push(at);
+      }
+    }
+    return candidates;
+  })();
+
+  const HARDEN_DAY = await (async () => {
+    const probeHome = HOME_HARDEN('probe');
+    const probeRoute = await loadHost(probeHome);
+    await hitWith(probeRoute, HARDEN_URL);      /* 先让预热扫描跑完（空 home） */
+    const events = HARDEN_AT.map((at, i) => ({
+      type: 'assistant/message',
+      seq: i + 1,
+      time: at,
+      data: {
+        turn: 1, step: i + 1,
+        message: { source: { kind: 'model', provider: 'p', model: HARDEN_MODEL } },
+        usage: U1,
+      },
+    }));
+    writeSessionLog(probeHome, 'harden-probe', events);
+    await hitWith(probeRoute, HARDEN_URL);
+    const probeLedger = readLedgerOf(probeHome);
+    const hitKey = Object.keys(probeLedger.days).filter((key) => {
+      const day = probeLedger.days[key];
+      return day !== null && typeof day === 'object' && day.peak !== null && typeof day.peak === 'object'
+        && Number(day.peak.input) > 0;
+    })[0];
+    assert.ok(hitKey !== undefined,
+      '契约 J 前置：近 7 天内找不到被 host 判成高峰的时点（peak 全为 0），无法覆盖坏法 6 / 8');
+    return hitKey;
+  })();
+
+  /* 底座台账的日期就用实测出来的那一天：坏值正好落在会被记账读到的那一格。 */
+  const baseLedger = () => ({
+    version: 4,
+    updatedAt: Date.now() - 3600 * 1000,
+    priceFingerprint: '',
+    unpricedBackfill: 'done',
+    costByCurrencyBackfill: 'done',
+    days: {
+      [HARDEN_DAY]: {
+        input: 2 * M, cacheRead: 0, cacheWrite: 0, output: M, calls: 2, cost: 5,
+        peak: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
+        unpriced: {
+          [HARDEN_MODEL]: {
+            peak: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
+            offPeak: { input: M, cacheRead: 0, cacheWrite: 0, output: M },
+          },
+        },
+      },
+    },
+    seen: {}, sessions: {}, files: {},
+  });
+
+  /* 十种坏法。**一种一条，不许合并、不许删**：合并会互相遮挡（第一处抛错后面就不跑了）。 */
+  const BROKEN_LEDGERS = [
+    { n: 1, name: 'days[key] = null', build: () => { const l = baseLedger(); l.days[HARDEN_DAY] = null; return l; } },
+    { n: 2, name: "days[key] = 'oops'", build: () => { const l = baseLedger(); l.days[HARDEN_DAY] = 'oops'; return l; } },
+    { n: 3, name: 'days[key] = 0', build: () => { const l = baseLedger(); l.days[HARDEN_DAY] = 0; return l; } },
+    { n: 4, name: 'days[key] = []', build: () => { const l = baseLedger(); l.days[HARDEN_DAY] = []; return l; } },
+    { n: 5, name: 'days[key].input = null', build: () => { const l = baseLedger(); l.days[HARDEN_DAY].input = null; return l; } },
+    { n: 6, name: 'days[key].peak = null', build: () => { const l = baseLedger(); l.days[HARDEN_DAY].peak = null; return l; } },
+    { n: 7, name: 'days[key].unpriced[model] = null', build: () => { const l = baseLedger(); l.days[HARDEN_DAY].unpriced[HARDEN_MODEL] = null; return l; } },
+    { n: 8, name: 'days[key].unpriced[model].peak = null', build: () => { const l = baseLedger(); l.days[HARDEN_DAY].unpriced[HARDEN_MODEL].peak = null; return l; } },
+    { n: 9, name: 'ledger.days 本身是字符串', build: () => { const l = baseLedger(); l.days = 'oops'; return l; } },
+    { n: 10, name: 'ledger.days 是数组', build: () => { const l = baseLedger(); l.days = []; return l; } },
+  ];
+
+  const hardenResults = [];
+  for (const one of BROKEN_LEDGERS) {
+    const tag = '契约 J-' + one.n + '（' + one.name + '）';
+    const home = HOME_HARDEN(one.n);
+    const route = await loadHost(home);
+    /* 先把 apply 里的预热扫描跑完（此刻 home 是空的，什么都扫不到）。
+       顺序很关键：**必须在预热之后**才写坏台账 —— 否则预热会读到坏台账、
+       按修复逻辑把它重写回磁盘，路由随后读到的是修好的那份，测试会假绿。 */
+    await hitWith(route, HARDEN_URL);
+    /* 只写这一种坏台账 —— 单变量 */
+    fs.writeFileSync(ledgerFileOf(home), JSON.stringify(one.build()), 'utf8');
+    /* 再放一条"正在发生"的新用量：没有它，主循环整份跳过、坏值读都读不到（假绿） */
+    writeHardenLog(home, 'harden-' + one.n, HARDEN_AT[0]);
+
+    /* ①② 一次拿全：hitWith 的 reject 直接冒到这里，不在测试里吞掉。 */
+    let res = null;
+    try {
+      res = await hitWith(route, HARDEN_URL);
+    } catch (error) {
+      /* 这里是**重抛**（补上坏法名字），不是吞掉：路由 reject 必须让整轮测试红。 */
+      throw new Error(tag + ' 路由 handler 抛了错（应该自己兜住）：'
+        + String(error && error.message ? error.message : error));
+    }
+    assert.strictEqual(res.status, 200, tag + ' 必须返回 HTTP 200，实际 ' + res.status);
+    assert.ok(res.body !== null && typeof res.body === 'object', tag + ' 响应体要是对象');
+    assert.strictEqual(res.body.ok, true,
+      tag + ' 必须 ok:true（不许退化成 ledger-failed），实际 '
+      + JSON.stringify({ ok: res.body.ok, reason: res.body.reason }));
+    hardenResults.push({ n: one.n, name: one.name, ok: res.body.ok, status: res.status });
+    console.log('J-' + one.n + ' 坏台账「' + one.name + '」⇒ status=' + res.status + ' ok=' + res.body.ok);
+  }
+
+  assert.strictEqual(hardenResults.length, 10, '十种坏法必须全部覆盖，实际 ' + hardenResults.length + ' 种');
+  for (const one of BROKEN_LEDGERS) {
+    assert.ok(hardenResults.some((r) => r.n === one.n), '坏法 ' + one.n + '（' + one.name + '）漏跑了');
+  }
+  console.log('J 台账写坏不影响路由：' + hardenResults.length + ' 种坏法（实测高峰日 ' + HARDEN_DAY + '）全部 200 + ok:true');
 
   console.log('');
   console.log('LEDGER KEEP CHECKS PASSED');

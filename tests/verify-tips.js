@@ -15,7 +15,7 @@ const assert = require('assert');
 const PLUGIN = path.join(__dirname, '..', 'lib', 'client.js');
 let code = fs.readFileSync(PLUGIN, 'utf8');
 code = code.replace('\t\texports.apply = apply;',
-	'\t\texports.__t = { segmentView, segmentText, chineseNumber, SEGMENTS, DEFAULT_SEGMENTS, isSegmentOn, snapshot, toolList, TOOL_BAR_COLORS };\n\t\texports.apply = apply;');
+	'\t\texports.__t = { segmentView, segmentText, chineseNumber, SEGMENTS, DEFAULT_SEGMENTS, isSegmentOn, snapshot, toolList, TOOL_BAR_COLORS, skillList, compactList, creditsView, creditsPanel, applyColsFade, refreshColsFade, COLS_FADE_PX };\n\t\texports.apply = apply;');
 
 const fakeWindow = {
 	localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -27,7 +27,7 @@ fakeWindow.__ModuleLoader__ = { load: (e) => { captured = e; } };
 const sb = {
 	window: fakeWindow,
 	document: { querySelector: () => null, createElement: () => ({ dataset: {}, style: {} }), head: { appendChild() {} } },
-	console, Promise, Date, Math, JSON, Object, Array, Number, String, Boolean, Symbol, Set, Map, Error
+	console, Promise, Date, Math, JSON, Object, Array, Number, String, Boolean, Symbol, Set, Map, WeakMap, Error
 };
 sb.globalThis = sb;
 vm.createContext(sb);
@@ -35,7 +35,15 @@ vm.runInContext(code, sb, { filename: 'client.js' });
 const api = captured.factory((n) => {
 	if (n !== 'react') throw new Error('unexpected require: ' + n);
 	return {
-		createElement: () => ({}), useState: (v) => [v, () => {}], useRef: () => ({}),
+		/* createElement 保留 type / props / children：本文件要按**节点顺序**断言角标位置
+		   （星号在名字后、+ 也在名字后），只返回空对象就拿不到落点。
+		   其它纯数据断言不受影响（它们读的是 view 对象，不读渲染树）。 */
+		createElement: (type, props, ...children) => ({
+			type: type,
+			props: props === null || props === undefined ? {} : props,
+			children: children.flat(Infinity).filter((one) => one !== null && one !== undefined && one !== false)
+		}),
+		useState: (v) => [v, () => {}], useRef: () => ({}),
 		useSyncExternalStore: (s, g) => g(), useEffect: () => {}, Fragment: Symbol('F')
 	};
 }).__t;
@@ -88,6 +96,9 @@ const TEMPLATES = {
 	tipCompactWhere: '第{turn}轮{step}步',
 	tipCompactTurnOnly: '第{turn}轮',
 	tipCompactAfter: '第{turn}轮后',
+	/* 两种角标的读屏文案（技能列表用）：手动「手动触发」/ 子能力「子能力」 */
+	tipManual: '手动触发',
+	tipSub: '子能力',
 	unitCountSteps: ' 步',
 	unitCountCalls: ' 次',
 	unitSpeed: 't/s'
@@ -164,7 +175,7 @@ const src = {
 		globalInstruction: 'AGENTS.md',
 		compactCount: 2, compactTurn: 49, compactStep: 1,
 		/* 只给成功的压缩（宿主已滤掉失败）；第二条是用户手动压缩：轮间压缩没有 turn，
-		   用 afterTurn 记「发生在第几轮之后」→ 行尾上标星号 + 「第20轮后」 */
+		   用 afterTurn 记「发生在第几轮之后」→ 名字前上标星号 + 「第20轮后」 */
 		compacts: [
 			{ turn: 12, step: 3, manual: false, afterTurn: null },
 			{ turn: null, step: null, manual: true, afterTurn: 20 }
@@ -210,7 +221,7 @@ console.log('轮次气泡:', countsTip.rows.map((r) => r.label + ' ' + r.value).
    工具调用先按显示名长短（短的在前）再按次数降序；压缩次数逐条列落点 */
 assert.deepStrictEqual(Array.from(countsTip.rows[1].sub.rows, (row) => plainLabel(row.label)),
 	['AGENTS.md', 'ponytail*', 'my-dow-theory'],
-	'技能注入子视图：AGENTS.md 是全局提示词、固定第一不参与排序；ponytail 注入两次（其中一次手动）→ 合并 + 上标星号');
+	'技能注入子视图：AGENTS.md 是全局提示词、固定第一不参与排序；ponytail 注入两次（其中一次手动）→ 合并 + 星号在**名字后面**');
 /* 用户明确要求：技能注入只列名字，不显示统计次数（次数只在排序里用到） */
 assert.deepStrictEqual(Array.from(countsTip.rows[1].sub.rows, (row) => row.value), [undefined, undefined, undefined],
 	'技能注入的行不带数值（不显示次数）；AGENTS.md 也不显示次数');
@@ -227,11 +238,84 @@ assert.strictEqual(countsTip.rows[1].sub.tight, undefined, '技能注入子视�
 assert.strictEqual(countsTip.rows[0].sub.tight, undefined, '上下文压缩子视图不收紧间隙');
 assert.deepStrictEqual(Array.from(countsTip.rows[0].sub.rows, (row) => ({ label: plainLabel(row.label), value: row.value })), [
 	{ label: '第一次压缩', value: '第12轮3步' },
-	/* 星号在行尾（「第二次压缩*」）：上标挂在最后，不把「第二次」拆开；
+	/* 手动压缩那条的星号在**名字后面**（「第二次压缩*」）：与技能列表同一种写法；
 	   手动压缩没有 turn，落点用 afterTurn 显示「第20轮后」而不是横杠 */
 	{ label: '第二次压缩*', value: '第20轮后' }
-], '上下文压缩子视图：中文序数 + 第X轮Y步，按发生顺序；手动压缩的行尾加上标星号');
+], '上下文压缩子视图：中文序数 + 第X轮Y步，按发生顺序；手动压缩的星号在名字后（与技能列表一致）');
 console.log('子视图:', countsTip.rows.map((r) => pairs(r.sub.rows).map((x) => plainLabel(x.label) + ' ' + x.value).join(' / ')).join(' || '));
+
+/* ------------------------- 技能角标：手动星号在后 / 子能力 + 在后（用户拍板，最终形态） */
+/* 两次改口后的最终形态：
+     · 手动调用的技能 → `*` 在**名字后面**（`ponytail*`）
+     · 子能力（host 记的 `sub: true`）→ `+` 在**名字后面**（`ponytail-review+`）
+   用户理由：**子能力不可能由他手动调用**，两者不会落在同一个名字上，
+   所以不需要靠"前/后位置"区分两种标注；"星号在后"也更像脚注，和压缩列表同一种写法。
+   符号 `+` 是实机看完后从 `†` 换的：+ 笔画细、体量小，用 .dsb-sup-strong 加粗补回。
+   这里按**节点顺序**断言（不是只拼文本）：顺序断言直接钉住"在后"这件事。 */
+/* 单个角标节点的文本（plainLabel 只处理"整条 label"；这里要单独看某个节点） */
+const nodeText = (node) => {
+	if (node === null || node === undefined) return '';
+	if (typeof node === 'string' || typeof node === 'number') return String(node);
+	if (Array.isArray(node)) return node.map(nodeText).join('');
+	return (node.children || []).map(nodeText).join('');
+};
+const plainText = (label) => nodeText(label);
+
+/* ① 手动：名字在前、星号在后 */
+const manualRow = api.skillList([{ name: 'ponytail', manual: true }], null, t).rows[0];
+assert.ok(Array.isArray(manualRow.label), '手动调用的行 label 是节点数组');
+assert.strictEqual(manualRow.label.length, 2, '手动是 [名字, 星号] 两个节点，实际 ' + manualRow.label.length);
+assert.strictEqual(manualRow.label[0], 'ponytail', '第一个节点是名字');
+assert.strictEqual(plainText(manualRow.label[1]), '*', '第二个节点是星号（星号在名字**后**）');
+assert.strictEqual(manualRow.label[1].props['aria-label'], '手动触发', '星号读屏文案');
+
+/* ② 子能力：名字在前、+ 在后 */
+const subRow = api.skillList([{ name: 'ponytail', manual: false, sub: true }], null, t).rows[0];
+assert.ok(Array.isArray(subRow.label), '子能力的行 label 是节点数组');
+assert.strictEqual(subRow.label.length, 2, '子能力是 [名字, +] 两个节点，实际 ' + subRow.label.length);
+assert.strictEqual(subRow.label[0], 'ponytail', '名字排在**前**');
+assert.strictEqual(plainText(subRow.label[1]), '+', '第二个节点是 +（不是 *，也不是旧版的 †）');
+assert.strictEqual(subRow.label[1].props['aria-label'], '子能力', '+ 的读屏名称是「子能力」');
+assert.ok(String(subRow.label[1].props.className).split(' ').indexOf('dsb-sup') !== -1,
+	'+ 复用手动星号那套 .dsb-sup 上标样式');
+assert.ok(String(subRow.label[1].props.className).split(' ').indexOf('dsb-sup-strong') !== -1,
+	'+ 还要挂 .dsb-sup-strong 加粗到 600（+ 笔画细，同字号下会比星号轻一档）');
+
+/* ③ 两者并存（实际不会发生，代码仍兼容）：名字 + * + +，两个角标的读屏文案必须不同 */
+const bothRow = api.skillList([{ name: 'ponytail', manual: true, sub: true }], null, t).rows[0];
+assert.strictEqual(bothRow.label.length, 3, '名字 + 星号 + + 共三个节点，实际 ' + bothRow.label.length);
+assert.strictEqual(plainText(bothRow.label), 'ponytail*+', '拼起来是 名字*+，实际 ' + plainText(bothRow.label));
+assert.strictEqual(bothRow.label[1].props['aria-label'], '手动触发', '星号读屏文案');
+assert.strictEqual(bothRow.label[2].props['aria-label'], '子能力', '+ 读屏文案');
+assert.notStrictEqual(bothRow.label[1].props['aria-label'], bothRow.label[2].props['aria-label'],
+	'两个角标必须给读屏不同名称 —— 否则读屏用户分不清"手动敲的"与"模型读的子能力"');
+
+/* ④ 旧数据没有 sub 字段：不抛错、不出现 + 角标 */
+let legacySkills = null;
+assert.doesNotThrow(() => {
+	legacySkills = api.skillList([{ name: 'ponytail', manual: true }, { name: 'my-dow-theory' }], 'AGENTS.md', t);
+}, '缺 sub 字段的旧数据不许抛错');
+assert.strictEqual(plainLabel(legacySkills.rows[0].label), 'AGENTS.md', '旧数据里全局提示词照旧在第一行');
+assert.deepStrictEqual(Array.from(legacySkills.rows, (row) => plainLabel(row.label)),
+	['AGENTS.md', 'ponytail*', 'my-dow-theory'],
+	'旧数据渲染与改动前一致：只有名字后的手动星号，没有子能力角标');
+assert.strictEqual(Array.from(legacySkills.rows, (row) => plainLabel(row.label)).join('').indexOf('+'), -1,
+	'旧数据里不许冒出 + 角标（sub 缺字段一律按 false，不是"未知"）');
+/* sub: false 与缺字段等价；脏值（字符串 'true'）也只认真正的布尔 true */
+assert.deepStrictEqual(
+	Array.from(api.skillList([{ name: 'x', manual: false, sub: false }, { name: 'y', manual: false, sub: 'true' }], null, t).rows,
+		(row) => plainLabel(row.label)), ['x', 'y'],
+	'sub:false / sub:"true"（脏值）都不该出现 + 角标');
+
+/* ⑤ 手动压缩的星号也在**名字后面**（与技能列表统一）。这是防回归的另一半：
+   别把压缩那条"顺手"改回前置。英文那条放到下面 tEn 定义之后再验。 */
+const compactManual = api.compactList([{ turn: 12, step: 3, manual: true, afterTurn: null }], t).rows[0];
+assert.ok(Array.isArray(compactManual.label), '压缩那行同样是节点数组 [文字, 星号]');
+assert.strictEqual(plainLabel(compactManual.label), '第一次压缩*',
+	'手动压缩的星号在**名字后**（「第一次压缩*」），与技能列表一致');
+assert.strictEqual(compactManual.label[0], '第一次压缩', '第一个节点是整行文字，不拆开「第一次」');
+assert.strictEqual(plainText(compactManual.label[1]), '*', '第二个节点是星号（在名字后）');
+console.log('技能角标: 手动 ponytail* / 子能力 ponytail+ / 并存 ponytail*+（aria 不同）· 手动压缩 第一次压缩*');
 
 /* ----------------------------- 工具调用：原生英文名 + 长度优先 / 同长度按次数降序 */
 const toolListOf = (counts, tt) => Array.from(api.toolList(counts, tt).rows, (one) => ({ label: one.label, value: one.value }));
@@ -264,6 +348,7 @@ const EN_TIPS = {
 	tipCountsTitle: 'Session data', tipCountsSkills: 'Skills injected',
 	tipCountsCompactAt: 'Compactions', tipCountsToolCalls: 'Tool calls',
 	tipCompactItem: 'Compaction {index}', tipCompactWhere: 'Turn {turn} Step {step}', tipCompactTurnOnly: 'Turn {turn}',
+	tipManual: 'Manually invoked', tipSub: 'Sub-skill',
 	unitCountCalls: ' calls', unitCountSteps: ' steps'
 };
 const tEn = (key, params) => {
@@ -280,6 +365,18 @@ assert.deepStrictEqual(toolListOf({ pwsh: 5, bash: 3, ops_bash: 2 }, tEn), [
 	{ label: 'bash', value: '3 calls' },
 	{ label: 'ops_bash', value: '2 calls' }
 ], '英文界面按原名分：pwsh / bash / ops_bash 各自一行');
+/* 英文界面：手动压缩同样是「文字 + 星号」，星号在**后**（中英一致） */
+const enCompactManual = api.compactList([{ turn: 12, step: 3, manual: true, afterTurn: null }], tEn).rows[0];
+assert.strictEqual(plainLabel(enCompactManual.label), 'Compaction 1*',
+	'英文界面手动压缩是 Compaction 1*（星号在后，与中文一致）');
+assert.strictEqual(plainText(enCompactManual.label[1]), '*', '英文界面第二个节点是星号');
+/* 英文界面技能角标：手动星号在后、子能力 + 在后（符号不翻译，只翻读屏文案） */
+const enManualSkill = api.skillList([{ name: 'ponytail', manual: true }], null, tEn).rows[0];
+assert.strictEqual(plainText(enManualSkill.label), 'ponytail*', '英文界面手动技能是 ponytail*');
+assert.strictEqual(enManualSkill.label[1].props['aria-label'], 'Manually invoked', '英文星号读屏文案');
+const enSubSkill = api.skillList([{ name: 'ponytail', manual: false, sub: true }], null, tEn).rows[0];
+assert.strictEqual(plainText(enSubSkill.label), 'ponytail+', '英文界面子能力是 ponytail+（+ 不翻译）');
+assert.strictEqual(enSubSkill.label[1].props['aria-label'], 'Sub-skill', '英文 + 读屏文案');
 /* 中英两套界面同一份数据：名字相同、顺序相同（不再有翻译导致的中英差异） */
 assert.deepStrictEqual(toolListOf({ read: 1, skill: 5 }, t), toolListOf({ read: 1, skill: 5 }, t), '同一份数据同序');
 /* 端到端：面板里那一行确实走同一套规则 */
@@ -374,7 +471,7 @@ const mixedSkills = countsWith({ turn: 1, turnSteps: 1, toolCalls: 3, skills: [
 ], globalInstruction: null, toolCounts: {}, compactCount: 0, compactTurn: null, compactStep: null, compacts: [] });
 assert.strictEqual(mixedSkills[1].value, '3', '斜杠命令注入的技能与工具调用注入的技能并进同一行计数');
 assert.deepStrictEqual(Array.from(mixedSkills[1].sub.rows, (row) => plainLabel(row.label)), ['ponytail*', 'i-have-adhd'],
-	'同名合并；名字短的在前面；手动调用的 ponytail 带星号');
+	'同名合并；名字短的在前面；手动调用的 ponytail 星号在名字后');
 assert.deepStrictEqual(Array.from(mixedSkills[1].sub.rows, (row) => row.value), [undefined, undefined], '合并后仍只显示名字，不显示次数');
 /* 压缩落点拿不到步号（压缩落在轮首）时只给轮号，整条也不至于给横杠 */
 assert.deepStrictEqual(
@@ -441,14 +538,97 @@ const subCent = api.segmentView('balance', Object.assign({}, src, {
 }), t);
 assert.strictEqual(subCent.text, '余额 <¥0.01', '不足一分钱仍显示 <¥0.01');
 assert.deepStrictEqual(values(subCent.tip.rows), ['¥0.00', '¥0.00'], '不足一分钱也有两行构成');
-/* 百分比配额（GLM 那种）：只有「剩余配额」一行，取蓝（原赠金那一档） */
-const quota = api.segmentView('balance', Object.assign({}, src, {
+/* 百分比配额（GLM 那种）：只有「剩余配额」一行，取灰（充值金额那一档）、色条剩余段贴右端。
+   注意变量取**完整返回值**（不是 `.tip`）：下面既断言气泡内容，也要断言底栏那行 text ——
+   用户实机报过「底栏 余额 62.50% / 气泡 剩余配额 37.50%」同屏打架，两处必须同源。 */
+const quotaView = api.segmentView('balance', Object.assign({}, src, {
 	balance: { ok: true, isPercent: true, total: '62.50%', currency: 'CNY' }
-}), t).tip;
+}), t);
+const quota = quotaView.tip;
+/* ⚠ 上游 `isPercent` 的 `total` 是**已用**百分比（lib/balance-api.js:231 把接口的 percentage
+   原样当 total 返回），所以底栏不能把它直接当余额显示 —— 必须与气泡一样用「剩余」。 */
+assert.strictEqual(quotaView.text, '余额 37.50%',
+	'底栏显示「剩余」而不是上游的「已用」，与气泡那行同源（62.50% 是已用 ⇒ 剩余 37.50%）');
+assert.strictEqual(quota.rows[0].value, '37.50%', '气泡「剩余配额」那行也是 37.50%，与底栏同一个数');
 assert.deepStrictEqual(labels(quota.rows), ['剩余配额'], '配额模式只列剩余');
-assert.strictEqual(quota.rows[0].color, 'var(--dsw-static-blue-450)', '剩余配额图例取蓝');
-assert.strictEqual(quota.segments[0].color, 'var(--dsw-static-blue-450)', '配额条那段跟着同一色走');
+assert.strictEqual(quota.rows[0].color, 'var(--dsw-static-neutral-bluish-400)',
+	'剩余配额图例取灰（与「充值金额」同一档，不再是原来的蓝）');
+/* 配额条两段：**剩余那段灰**在最左端、**已用那段透明**在右。
+   为什么灰在左：用户拍板原话「灰条从左边起」—— 灰条长度 = 剩余额度，越长剩得越多，
+   从左读起一眼就知道"还剩多少"，不用先扫过一段空的已用区。
+   为什么已用画成透明而不是另一种颜色：配额只有"剩余"这一个真实数值，
+   把已用涂色会让人以为那也是一份额度；透明留着位置，剩余那段才正好占住左端。 */
+assert.strictEqual(quota.segments.length, 2, '配额条固定两段（剩余灰 + 已用透明）');
+assert.strictEqual(quota.segments[0].color, 'var(--dsw-static-neutral-bluish-400)',
+	'第一段是剩余那段、取灰（与图例同色，且在**最左端**）');
+assert.strictEqual(quota.segments[0].width, 37.5, '剩余那段宽 = 剩余百分比 37.5%（100 - 62.5）');
+assert.strictEqual(quota.segments[1].color, 'transparent', '第二段是已用那段、透明（不涂色）');
+assert.strictEqual(quota.segments[1].width, 62.5, '已用那段宽 = 已用百分比 62.5%');
+assert.strictEqual(quota.segments[0].width + quota.segments[1].width, 100, '两段加起来正好 100%');
 console.log('余额气泡:', values(gifted.rows).join(' / '));
+
+/* --------------------------------------------- 积分套餐条：灰=剩余、从**左**起
+ * 用户拍板原话「灰条从左边起」（来回改过一次，这条断言把最终方向钉死）。
+ * 这里直接渲染 creditsPanel，按**段序**断言：第一段必须是灰(topUp)、宽度 = 100 - used；
+ * 最后一段必须是透明。三个包 50% / 67% / 33% 逐一验。
+ * 为什么必须测段序而不是只测宽度：左右颠倒过一次 —— 宽度对、顺序反了，界面上就是反的。 */
+const GRAY_SEG = 'var(--dsw-static-neutral-bluish-400)';
+{
+	const rewards = [
+		{ name: 'Coding Plan', used: 400, total: 800 },
+		{ name: 'Coding Plan B', used: 402, total: 600 },
+		{ name: 'Coding Plan C', used: 396, total: 1200 }
+	];
+	const view = api.creditsView(rewards, '总积分', t);
+	const panel = api.creditsPanel(view, '积分套餐', { left: 0, top: 0 }, () => ({}), { open() {}, back() {} });
+	const bars = [];
+	(function walk(node) {
+		if (node === null || node === undefined || node === false) return;
+		if (Array.isArray(node)) { node.forEach(walk); return }
+		if (typeof node !== 'object') return;
+		if (node.props !== undefined && node.props.className === 'dsb-bar') bars.push(node);
+		(node.children || []).forEach(walk);
+	})(panel);
+	assert.strictEqual(bars.length, 3, '三个套餐块各一条进度条，实际 ' + bars.length);
+	/* used 与期望的剩余宽度（100 - used），顺序与上面的 rewards 一致 */
+	const expect = [
+		{ used: 50, left: 50 },
+		{ used: 67, left: 33 },
+		{ used: 33, left: 67 }
+	];
+	expect.forEach((one, index) => {
+		const segs = (bars[index].children || []).filter((node) => node !== null && node !== undefined && node !== false);
+		assert.strictEqual(segs.length, 2, '第 ' + (index + 1) + ' 条固定两段（灰剩余 + 透明已用）');
+		/* **第一段**必须是灰、宽度 = 100 - used ⇒ 灰条贴着最左端 */
+		assert.strictEqual(segs[0].props.style.backgroundColor, GRAY_SEG,
+			'第 ' + (index + 1) + ' 条第一段必须是灰（剩余），且在**最左端**');
+		assert.strictEqual(segs[0].props.style.width, one.left + '%',
+			'第 ' + (index + 1) + ' 条灰段宽 = 剩余 ' + one.left + '%（100 - ' + one.used + '）');
+		/* **最后一段**必须是透明（已用），在右 */
+		assert.strictEqual(segs[segs.length - 1].props.style.backgroundColor, 'transparent',
+			'第 ' + (index + 1) + ' 条最后一段必须是透明（已用），在右');
+		assert.strictEqual(segs[segs.length - 1].props.style.width, one.used + '%',
+			'第 ' + (index + 1) + ' 条透明段宽 = 已用 ' + one.used + '%');
+	});
+	console.log('积分套餐条: 灰在左 = ' + expect.map((one) => one.left + '%').join(' / ')
+		+ '（对应 used ' + expect.map((one) => one.used + '%').join(' / ') + '）');
+	/* 边界：used=0 ⇒ 只有一整条灰（额度一点没用）；used=100 ⇒ 只有一整条透明 */
+	const zeroView = api.creditsView([{ name: 'Z', used: 0, total: 100 }], '总积分', t);
+	const zeroPanel = api.creditsPanel(zeroView, '积分套餐', { left: 0, top: 0 }, () => ({}), { open() {}, back() {} });
+	const zeroBars = [];
+	(function walk(node) {
+		if (node === null || node === undefined || node === false) return;
+		if (Array.isArray(node)) { node.forEach(walk); return }
+		if (typeof node !== 'object') return;
+		if (node.props !== undefined && node.props.className === 'dsb-bar') zeroBars.push(node);
+		(node.children || []).forEach(walk);
+	})(zeroPanel);
+	const zeroSegs = (zeroBars[0].children || []).filter((node) => node !== null && node !== undefined && node !== false);
+	assert.strictEqual(zeroSegs.length, 1, 'used=0 时只有一段');
+	assert.strictEqual(zeroSegs[0].props.style.backgroundColor, GRAY_SEG, 'used=0 ⇒ 整条灰');
+	assert.strictEqual(zeroSegs[0].props.style.width, '100%', 'used=0 ⇒ 灰占满 100%');
+	console.log('积分套餐条边界: used=0 ⇒ 整条灰 100%');
+}
 
 /* --------------------------------------------------- 缓存命中率最高/最低 */
 const hitTip = api.segmentView('cacheHit', src, t).tip;
@@ -543,5 +723,316 @@ assert.notStrictEqual(sameTurnView.text, '本轮 ¥-', '轮号一致时显示本
 assert.strictEqual(sameTurnView.tip === null, false, '折叠出来的用量只用于算钱，不给 token 明细（口径与官方投影不同）');
 console.log('轮号对账:', api.segmentView('lastCost', staleTurn, t).text, '/', sameTurnView.text);
 
+/* ============================================================ 右缘淡出遮罩
+ * 用户实机报过三次，最终定稿是这三条规则：
+ *   ① **能继续加行的容器一律不挂遮罩**（用户原话「只有超过每列 12 的情况才应该有这个淡出
+ *      遮罩，因为其他情况都不涉及到滚动」）—— 对应 `data-cols-grow="1"`。
+ *   ② 遮罩**宽度固定 40px**，不按溢出量收窄（用户原话「遮罩的宽度是固定的呀，溢出两个
+ *      像素，就抹两个像素，那样好看吗？」）。
+ *   ③ 逐档加行之后要重算一次（`refreshColsFade`），否则加完行已经不用滚了、遮罩还挂着。
+ * 几何用最小替身构造：applyColsFade 只读 scrollWidth / clientWidth / scrollLeft / getAttribute，
+ * 只写 classList 与两个 CSS 变量，所以不需要真 DOM。 */
+const makeCols = (opts) => {
+	const classes = new Set();
+	const vars = {};
+	const writes = [];
+	const attrs = opts.attrs === undefined ? {} : opts.attrs;
+	return {
+		scrollWidth: opts.sw, clientWidth: opts.cw, scrollLeft: opts.sl === undefined ? 0 : opts.sl,
+		classList: {
+			add: (n) => { classes.add(n); },
+			remove: (n) => { classes.delete(n); },
+			has: (n) => classes.has(n)
+		},
+		style: { setProperty: (k, v) => { if (vars[k] !== v) writes.push(k + '=' + v); vars[k] = v; } },
+		/* applyColsFade 会读 data-cols-grow；不给真 DOM 时也要有这个入口，否则测不到新判据 */
+		getAttribute: (name) => (attrs[name] === undefined ? null : attrs[name]),
+		classes: classes, vars: vars, writes: writes
+	};
+};
+const FADE = 'dsb-cols-fade';
+
+/* ① **还能加行**的容器：即使溢出很多也不挂遮罩（这是用户最终判据的核心） */
+const growable = makeCols({ sw: 600, cw: 400, attrs: { 'data-cols-grow': '1' } });
+api.applyColsFade(growable);
+assert.strictEqual(growable.classes.has(FADE), false,
+	'带 data-cols-grow="1"（还能继续加行）时不准挂遮罩 —— 加行机制会消掉溢出，此时还不涉及滚动');
+assert.strictEqual(growable.vars['--dsb-fade-r'], undefined,
+	'不挂遮罩时连 --dsb-fade-r 都不该写');
+/* ② 不能加行（已到 12 行上限，或非 tight 面板）：溢出就挂，宽度固定 40px */
+const bigOverflow = makeCols({ sw: 600, cw: 400 });
+api.applyColsFade(bigOverflow);
+assert.strictEqual(bigOverflow.classes.has(FADE), true, '不带该属性、溢出 200px 时要挂遮罩');
+assert.strictEqual(bigOverflow.vars['--dsb-fade-r'], api.COLS_FADE_PX + 'px',
+	'遮罩宽度固定 = ' + api.COLS_FADE_PX + 'px');
+/* ③ 只溢出一点点：**仍然 40px**（宽度固定，不按溢出量收窄 —— 用户明确否掉的做法） */
+const tinyOverflow = makeCols({ sw: 410, cw: 400 });
+api.applyColsFade(tinyOverflow);
+assert.strictEqual(tinyOverflow.classes.has(FADE), true, '溢出 10px（> 1px 容差）仍要挂遮罩');
+assert.strictEqual(tinyOverflow.vars['--dsb-fade-r'], api.COLS_FADE_PX + 'px',
+	'溢出只有 10px 时遮罩宽仍是固定的 ' + api.COLS_FADE_PX + 'px（不随溢出量收窄）');
+/* ④ 不溢出（含 1px 取整误差）：完全不挂 */
+[0, 1].forEach((over) => {
+	const none = makeCols({ sw: 400 + over, cw: 400 });
+	api.applyColsFade(none);
+	assert.strictEqual(none.classes.has(FADE), false, '溢出 ' + over + 'px（容差内）不该挂遮罩');
+});
+/* ⑤ 状态翻转：溢出 → 不溢出时 class 要摘掉、变量归零；再溢出时要重新挂上。
+   （宽度现在是常量，记忆只比两个布尔 —— 所以这条验的就是"挂不挂"能正确翻转） */
+const flip = makeCols({ sw: 600, cw: 400 });
+api.applyColsFade(flip);
+assert.strictEqual(flip.classes.has(FADE), true, '先溢出 ⇒ 挂');
+flip.scrollWidth = 400;
+api.applyColsFade(flip);
+assert.strictEqual(flip.classes.has(FADE), false, '不再溢出 ⇒ 摘掉');
+flip.scrollWidth = 600;
+api.applyColsFade(flip);
+assert.strictEqual(flip.classes.has(FADE), true, '又溢出了 ⇒ 重新挂上');
+/* ⑥ 滚到最右：右侧归零、左侧保留固定宽 */
+const atEnd = makeCols({ sw: 600, cw: 400, sl: 200 });
+api.applyColsFade(atEnd);
+assert.strictEqual(atEnd.vars['--dsb-fade-r'], '0px', '滚到最右时右侧遮罩宽必须归零');
+assert.strictEqual(atEnd.vars['--dsb-fade-l'], api.COLS_FADE_PX + 'px', '滚到最右时左侧遮罩宽固定');
+/* ⑦ 加行之后重算：模拟「3 行放不下挂了遮罩 → 加到 4 行后不再溢出 → 遮罩必须消失」。
+   注意：这条走的是"节点不带 grow 属性"的路径（加行后的节点会由 rowsPanel 重新渲染，
+   perColumn 仍 < 12 时其实带 grow；但它一旦不再溢出，两种路径的结论一致 —— 都不挂）。
+   这里同时覆盖「带了 grow 属性」的版本，确认 refreshColsFade 读到属性也会照规矩办。 */
+const gridPlain = makeCols({ sw: 600, cw: 400 });
+const gridGrow = makeCols({ sw: 600, cw: 400, attrs: { 'data-cols-grow': '1' } });
+const panelStub = {
+	querySelector: () => null,
+	querySelectorAll: (sel) => (sel === '.dsb-meter-cols' ? [gridPlain, gridGrow] : [])
+};
+api.refreshColsFade(panelStub);
+assert.strictEqual(gridPlain.classes.has(FADE), true, '非 grow 节点：加行前（3 行、放不下）应当有遮罩');
+assert.strictEqual(gridGrow.classes.has(FADE), false, 'grow 节点：加行中不该有遮罩');
+gridPlain.scrollWidth = 400;   /* 加行后列数变少、气泡变宽 ⇒ 不再溢出 */
+api.refreshColsFade(panelStub);
+assert.strictEqual(gridPlain.classes.has(FADE), false,
+	'加行之后已经不需要滚动 ⇒ 遮罩必须重算并摘掉（用户实机报的正是它一直留着）');
+console.log('右缘淡出: grow 属性 → 一律不挂 / 溢出 → 固定 ' + api.COLS_FADE_PX + 'px（10px 溢出也是 40px）/ '
+	+ '溢出≤1 → 不挂 / 挂-摘-重挂 能翻转 / 加行后重算摘掉');
+
 console.log('');
+/* ============================ 底栏余额双币种（¥14.12+$3.17）
+ * 用户原话：「余额的显示（不是指点击气泡里，就是单指底栏），有一些 API，它是人民币和美元
+ * 两个余额共存的应该都能查到，这个也给他这样做也就是显示成 ¥14.12+$3.17 这种格式」。
+ * 规则与活跃总览同一套：人民币在前、某项 ≤0 不出现、只有一项不带 +、负数与 0 同样处理。
+ * **气泡一行不动**（用户明确说「不是指点击气泡里」）。 */
+const dualSrc = (bal) => Object.assign({}, src, { balance: bal });
+const dualView = (bal) => api.segmentView('balance', dualSrc(bal), t);
+const both = dualView({
+	ok: true, currency: 'CNY', total: '14.12',
+	balances: [{ currency: 'CNY', total: '14.12' }, { currency: 'USD', total: '3.17' }]
+});
+assert.strictEqual(both.text, '余额 ¥14.12+$3.17',
+	'人民币 + 美元共存 ⇒ 「余额 ¥14.12+$3.17」，实际 ' + both.text);
+assert.strictEqual(both.text.indexOf('¥¥') === -1, true,
+	'拼好的串自带符号 ⇒ balSymbol 必须传空串，不许出现 ¥¥（实际 ' + both.text + '）');
+const usdOnly = dualView({ ok: true, currency: 'USD', total: '3.17', balances: [{ currency: 'USD', total: '3.17' }] });
+assert.strictEqual(usdOnly.text, '余额 $3.17', '只有美元 ⇒ 「余额 $3.17」，实际 ' + usdOnly.text);
+const cnyOnly = dualView({ ok: true, currency: 'CNY', total: '14.12', balances: [{ currency: 'CNY', total: '14.12' }] });
+assert.strictEqual(cnyOnly.text, '余额 ¥14.12', '只有人民币 ⇒ 不带结尾的 +，实际 ' + cnyOnly.text);
+const zeroUsd = dualView({
+	ok: true, currency: 'CNY', total: '14.12',
+	balances: [{ currency: 'CNY', total: '14.12' }, { currency: 'USD', total: '0' }]
+});
+assert.strictEqual(zeroUsd.text, '余额 ¥14.12', '某币种为 0 ⇒ 该项不出现，实际 ' + zeroUsd.text);
+const negUsd = dualView({
+	ok: true, currency: 'CNY', total: '14.12',
+	balances: [{ currency: 'CNY', total: '14.12' }, { currency: 'USD', total: '-2.5' }]
+});
+assert.strictEqual(negUsd.text, '余额 ¥14.12', '负数与 0 同样处理（用户拍板），实际 ' + negUsd.text);
+const reversed = dualView({
+	ok: true, currency: 'CNY', total: '0',
+	balances: [{ currency: 'USD', total: '3.17' }, { currency: 'CNY', total: '14.12' }]
+});
+assert.strictEqual(reversed.text, '余额 ¥14.12+$3.17', '数组顺序颠倒也要人民币在前，实际 ' + reversed.text);
+/* 防回归：老 host 没有 balances ⇒ 完全退回改动前的单币种文本 */
+const noBalances = dualView({ ok: true, currency: 'CNY', total: '153.43' });
+assert.strictEqual(noBalances.text, '余额 ¥153.43', '没有 balances 字段 ⇒ 退回单币种（老 host 行为不变）');
+const emptyBalances = dualView({ ok: true, currency: 'CNY', total: '153.43', balances: [] });
+assert.strictEqual(emptyBalances.text, '余额 ¥153.43', 'balances 是空数组 ⇒ 同样退回单币种');
+/* 防回归：百分比配额 / 积分两种口径完全不受影响 */
+const quotaDual = dualView({ ok: true, isPercent: true, total: '62.50%', currency: 'CNY', balances: [{ currency: 'CNY', total: '14.12' }] });
+assert.strictEqual(quotaDual.text, '余额 37.50%', '百分比配额有 balances 也照旧显示剩余百分比');
+const creditsDual = dualView({ ok: true, isCredits: true, total: '1280', currency: 'CNY', rewards: [{ name: 'x', used: 1, total: 2 }], balances: [{ currency: 'CNY', total: '14.12' }] });
+assert.strictEqual(creditsDual.text, '余额 1280', '积分口径有 balances 也照旧显示积分');
+/* 气泡一行不动：仍是充值 / 赠金两行，与分币种无关 */
+assert.strictEqual(Array.isArray(both.tip.rows), true, '双币种时气泡仍有内容（不是被清空）');
+assert.strictEqual(both.tip.rows.length, 2, '气泡仍是两行（充值 / 赠金），与改动前一致');
+console.log('底栏余额双币种：¥14.12+$3.17 / 仅美元 $3.17 / 仅人民币无 + / 0 与负数不出现 / '
+	+ '无 balances 退回单币种 / 百分比与积分不受影响 / 气泡不动');
+
+/* =================== 余额气泡：**仍是「充值余额 / 赠金余额」两行**，值里体现双币种
+ * 用户原话：「你改了我的项，原本气泡里面只显示充值余额和赠金余额，
+ * 我没有让你把它改成 CNY 和 USD」—— 上一版按币种分行（CNY / USD）是错的，已回退。
+ * 正确形态：label 保持原样，值用 costByCurrencyText 拼成 `¥13.14+$5.21`。 */
+const rowsOf = (bal) => api.segmentView('balance', Object.assign({}, src, { balance: bal }), t).tip.rows;
+const dualRows = rowsOf({
+	ok: true, currency: 'CNY', total: '21.85', toppedUp: '18.35', granted: '3.50',
+	balances: [
+		{ currency: 'CNY', total: '15.64', toppedUp: '13.14', granted: '2.50' },
+		{ currency: 'USD', total: '6.21', toppedUp: '5.21', granted: '1.00' }
+	]
+});
+assert.strictEqual(dualRows.length, 2, '气泡固定两行（充值 / 赠金），实际 ' + dualRows.length);
+assert.strictEqual(dualRows[0].label, '充值余额',
+	'★ 第一行 label 必须是「充值余额」，**不许**改成 CNY（实际 ' + dualRows[0].label + '）');
+assert.strictEqual(dualRows[1].label, '赠金余额',
+	'★ 第二行 label 必须是「赠金余额」，**不许**改成 USD（实际 ' + dualRows[1].label + '）');
+assert.strictEqual(dualRows[0].value, '¥13.14+$5.21',
+	'充值那行的值体现两个币种（人民币在前），实际 ' + dualRows[0].value);
+assert.strictEqual(dualRows[1].value, '¥2.50+$1.00',
+	'赠金那行的值体现两个币种，实际 ' + dualRows[1].value);
+assert.strictEqual(dualRows[0].label === 'CNY' || dualRows[1].label === 'USD', false,
+	'★ 绝不能再出现 CNY / USD 这种按币种分行的 label');
+/* 只有人民币 ⇒ 不带 + */
+const rowCnyOnly = rowsOf({
+	ok: true, currency: 'CNY', total: '15.64', toppedUp: '13.14', granted: '2.50',
+	balances: [{ currency: 'CNY', total: '15.64', toppedUp: '13.14', granted: '2.50' }]
+});
+assert.strictEqual(rowCnyOnly[0].value, '¥13.14', '只有人民币 ⇒ 充值不带 +，实际 ' + rowCnyOnly[0].value);
+assert.strictEqual(rowCnyOnly[1].value, '¥2.50', '赠金同样不带 +');
+/* 只有美元 ⇒ 带 $ */
+const rowUsdOnly = rowsOf({
+	ok: true, currency: 'USD', total: '6.21', toppedUp: '5.21', granted: '1.00',
+	balances: [{ currency: 'USD', total: '6.21', toppedUp: '5.21', granted: '1.00' }]
+});
+assert.strictEqual(rowUsdOnly[0].value, '$5.21', '只有美元 ⇒ $ 前缀，实际 ' + rowUsdOnly[0].value);
+/* 某币种赠金为 0 ⇒ 那一项不出现 */
+const zeroUsdGrant = rowsOf({
+	ok: true, currency: 'CNY', total: '18.35', toppedUp: '18.35', granted: '2.50',
+	balances: [
+		{ currency: 'CNY', total: '15.64', toppedUp: '13.14', granted: '2.50' },
+		{ currency: 'USD', total: '5.21', toppedUp: '5.21', granted: '0.00' }
+	]
+});
+assert.strictEqual(zeroUsdGrant[1].value, '¥2.50',
+	'美元赠金为 0 ⇒ 赠金那行只显示人民币，实际 ' + zeroUsdGrant[1].value);
+assert.strictEqual(zeroUsdGrant[1].value.indexOf('$') === -1, true, '不该出现 $');
+/* 两个币种赠金都是 0 ⇒ 赠金行给 ¥0.00（不能空串） */
+const allZeroGrant = rowsOf({
+	ok: true, currency: 'CNY', total: '18.35', toppedUp: '18.35', granted: '0.00',
+	balances: [
+		{ currency: 'CNY', total: '13.14', toppedUp: '13.14', granted: '0.00' },
+		{ currency: 'USD', total: '5.21', toppedUp: '5.21', granted: '0.00' }
+	]
+});
+assert.strictEqual(allZeroGrant[1].value, '¥0.00',
+	'两币种赠金都是 0 ⇒ 赠金行必须是 ¥0.00（不能空串），实际 ' + JSON.stringify(allZeroGrant[1].value));
+/* ★ 防回归：没有 balances ⇒ 完全回到改动前（balSymbol + balanceAmount） */
+const legacyRows = rowsOf({ ok: true, currency: 'CNY', total: '100.00', toppedUp: '70.00', granted: '30.00' });
+assert.strictEqual(legacyRows.length, 2, '没有 balances ⇒ 仍是两行');
+assert.strictEqual(legacyRows[0].label, '充值余额', 'label 不变');
+assert.strictEqual(legacyRows[0].value, '¥70.00', '退回 balSymbol + balanceAmount 老逻辑，实际 ' + legacyRows[0].value);
+assert.strictEqual(legacyRows[1].value, '¥30.00', '赠金老逻辑');
+const emptyRows = rowsOf({ ok: true, currency: 'CNY', total: '100.00', toppedUp: '70.00', granted: '30.00', balances: [] });
+assert.strictEqual(emptyRows[0].value, '¥70.00', 'balances 空数组 ⇒ 同样退回老逻辑');
+/* 没有 toppedUp/granted 字段（老宿主只给 total）⇒ 退回老逻辑 */
+const noSplitRows = rowsOf({
+	ok: true, currency: 'CNY', total: '100.00', toppedUp: '70.00', granted: '30.00',
+	balances: [{ currency: 'CNY', total: '13.14' }]
+});
+assert.strictEqual(noSplitRows[0].value, '¥70.00',
+	'balances 不带 toppedUp/granted ⇒ 退回老逻辑（不是把 13.14 当充值），实际 ' + noSplitRows[0].value);
+/* 百分比配额 / 积分不受影响 */
+const quotaRowView = rowsOf({ ok: true, isPercent: true, total: '62.50%', currency: 'CNY', balances: [{ currency: 'CNY', total: '13.14', toppedUp: '13.14', granted: '0' }] });
+assert.strictEqual(quotaRowView.length, 1, '百分比配额 ⇒ 仍一行');
+assert.strictEqual(quotaRowView[0].label, '剩余配额', '仍是「剩余配额」');
+const creditsView2 = api.segmentView('balance', Object.assign({}, src, {
+	balance: { ok: true, isCredits: true, total: '1280', currency: '', rewards: [{ name: 'x', used: 1, total: 2 }], balances: [{ currency: 'CNY', total: '13.14', toppedUp: '13.14', granted: '0' }] }
+}), t);
+assert.strictEqual(creditsView2.tip.kind, 'credits', '积分口径仍走 credits 面板');
+console.log('余额气泡：仍是「充值余额 / 赠金余额」两行，值里体现双币种（¥13.14+$5.21 / ¥2.50+$1.00）；'
+	+ '单项不带 +、0 项不出现、全 0 给 ¥0.00、无 balances 退回老逻辑、配额与积分不受影响');
+/* ======================= 余额色条：分币种时「折汇率后再相加」，仍两段
+ * 用户原话：「色调的比例就两者混合，不要拆分出来 4 个色条」，
+ * 并明确选「折汇率后再加」而不是把 13.14 与 5.21 直接相加
+ * （两种计价单位直接加是没有意义的数）。
+ * 数据来自 host 的 balances[].toppedUp / granted（task-66 补齐）。 */
+const segsOf = (bal) => api.segmentView('balance', Object.assign({}, src, { balance: bal }), t).tip.segments;
+/* ① 带 toppedUp/granted ⇒ 仍是两段，比例按折算后的充值 : 赠金 */
+const ccySegs = segsOf({
+	ok: true, currency: 'CNY', total: '18.35', toppedUp: '18.35', granted: '0.00',
+	balances: [
+		{ currency: 'CNY', total: '13.14', toppedUp: '13.14', granted: '0.00' },
+		{ currency: 'USD', total: '5.21', toppedUp: '3.00', granted: '2.21' }
+	]
+});
+assert.strictEqual(ccySegs.length, 2,
+	'分币种色条**仍是两段**（灰=充值总额、紫=赠金总额），用户明确不要拆成四段；实际 ' + ccySegs.length);
+assert.strictEqual(ccySegs[0].color, 'var(--dsw-static-neutral-bluish-400)', '第一段是充值（灰）');
+assert.strictEqual(ccySegs[1].color, '#a78bfa', '第二段是赠金（紫）');
+/* 两段之和必须是 100（比例条的基本要求） */
+assert.ok(Math.abs(ccySegs[0].width + ccySegs[1].width - 100) < 0.01,
+	'两段宽度之和 = 100%，实际 ' + (ccySegs[0].width + ccySegs[1].width));
+/* 若按"不折算直接加"来算，USD 的 3.00 会被当成 3.00 人民币，灰段比例会明显偏小；
+   折算后（6.74 倍）灰段应该明显更大。用一个下限断言把这条口径钉住。 */
+assert.ok(ccySegs[0].width > 55,
+	'灰段应当占多数（USD 充值 3.00 折算成人民币后约 20.23，远大于直接相加的 3.00）'
+	+ '，实际 ' + ccySegs[0].width.toFixed(2) + '% —— 若这条红了，说明汇率折算没生效');
+/* ② balances 不带 toppedUp/granted ⇒ 完全退回 balance.toppedUp / granted（老口径 70:30） */
+const legacySegs = segsOf({
+	ok: true, currency: 'CNY', total: '100.00', toppedUp: '70.00', granted: '30.00',
+	balances: [{ currency: 'CNY', total: '13.14' }, { currency: 'USD', total: '5.21' }]
+});
+assert.strictEqual(legacySegs.length, 2, '拿不到分币种充值/赠金 ⇒ 仍是两段');
+assert.ok(Math.abs(legacySegs[0].width - 70) < 0.01,
+	'退回老口径：充值 70 / 赠金 30，实际灰段 ' + legacySegs[0].width);
+assert.ok(Math.abs(legacySegs[1].width - 30) < 0.01, '紫段 30%，实际 ' + legacySegs[1].width);
+/* ③ 折算后两个都是 0 ⇒ 色条为空（与现状 balanceSum > 0 的判定保持一致） */
+const zeroSegs = segsOf({
+	ok: true, currency: 'CNY', total: '13.14', toppedUp: '0.00', granted: '0.00',
+	balances: [
+		{ currency: 'CNY', total: '13.14', toppedUp: '0.00', granted: '0.00' },
+		{ currency: 'USD', total: '5.21', toppedUp: '0.00', granted: '0.00' }
+	]
+});
+assert.strictEqual(Array.isArray(zeroSegs) && zeroSegs.length, 0,
+	'折算后充值/赠金都是 0 ⇒ 色条为空数组（不能画出 NaN% 的段）');
+/* ④ 没有 balances ⇒ 完全不进新分支 */
+const noCcySegs = segsOf({ ok: true, currency: 'CNY', total: '100.00', toppedUp: '70.00', granted: '30.00' });
+assert.strictEqual(noCcySegs.length, 2, '没有 balances ⇒ 老两口径不变');
+assert.ok(Math.abs(noCcySegs[0].width - 70) < 0.01, '仍是 70:30');
+/* ⑤ 百分比配额色条不受影响（剩余灰 + 已用透明） */
+const quotaBarSegs = segsOf({ ok: true, isPercent: true, total: '62.50%', currency: 'CNY', balances: [{ currency: 'CNY', total: '13.14', toppedUp: '13.14', granted: '0' }] });
+assert.strictEqual(quotaBarSegs.length, 2, '百分比配额仍是两段（剩余灰 + 已用透明）');
+assert.strictEqual(quotaBarSegs[0].color, 'var(--dsw-static-neutral-bluish-400)', '配额第一段仍是灰');
+assert.strictEqual(quotaBarSegs[1].color, 'transparent', '配额第二段仍是透明');
+console.log('余额色条分币种：折算后相加仍两段（灰 69% / 紫 31%）、无字段退回 70:30、'
+	+ '全 0 时为空、无 balances 不变、配额不受影响');
+
+/* ★ 决定性证据：**色条走的是新分支，不是回退老口径**
+ * 这是最容易出问题的地方 —— 若 host 没把 toppedUp/granted 传下来，代码会静默走回退分支，
+ * 测试照样绿但功能没生效。所以刻意构造一组「新老口径比例必然不同」的数据：
+ *   新口径：CNY 充值 10.00 + USD 赠金 5.21（折人民币约 35.13）⇒ 灰约 22%
+ *   老口径：balance.toppedUp=1.00 / granted=1.00          ⇒ 灰 50%
+ * 两者差 28 个百分点，一眼能看出走的是哪条路。 */
+const proofSegs = segsOf({
+	ok: true, currency: 'CNY', total: '15.21', toppedUp: '1.00', granted: '1.00',
+	balances: [
+		{ currency: 'CNY', total: '10.00', toppedUp: '10.00', granted: '0.00' },
+		{ currency: 'USD', total: '5.21', toppedUp: '0.00', granted: '5.21' }
+	]
+});
+assert.strictEqual(proofSegs.length, 2, '两组都有金额 ⇒ 两段');
+assert.ok(proofSegs[0].width > 10 && proofSegs[0].width < 40,
+	'★ 灰段应约 22%（新口径：CNY 充值 10 对 USD 赠金折算后 35），'
+	+ '若变成 50% 说明静默回退了老口径（用 balance.toppedUp/granted=1/1）；实际 '
+	+ proofSegs[0].width.toFixed(2) + '%');
+assert.ok(Math.abs(proofSegs[0].width - 50) > 5,
+	'★ 灰段必须明显偏离老口径的 50%，实际 ' + proofSegs[0].width.toFixed(2) + '%');
+/* 赠金为 0 时只出一段（紫段宽 0 被 filter 掉）—— 这是正确行为，不是 bug */
+const noGrantSegs = segsOf({
+	ok: true, currency: 'CNY', total: '17.29', toppedUp: '17.29', granted: '0.00',
+	balances: [
+		{ currency: 'CNY', total: '14.12', toppedUp: '14.12', granted: '0.00' },
+		{ currency: 'USD', total: '3.17', toppedUp: '3.17', granted: '0.00' }
+	]
+});
+assert.strictEqual(noGrantSegs.length, 1, '赠金全是 0 ⇒ 只剩灰段一段（紫段被过滤），实际 ' + noGrantSegs.length);
+assert.ok(Math.abs(noGrantSegs[0].width - 100) < 0.01, '那一整段就是 100%');
+console.log('色条分支证据：新口径灰 ' + proofSegs[0].width.toFixed(2) + '%（老口径会是 50%）；'
+	+ '赠金全 0 时只出一段');
 console.log('TIP PANEL CHECKS PASSED');

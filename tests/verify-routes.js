@@ -133,6 +133,16 @@ globalThis.setInterval = () => 0;
 	assert.strictEqual(refAgain.models['Deepseek-V4.1-Flash'], undefined, 'GET 不混入用户价格库');
 	console.log('GET 参考价与用户价格库分离 OK');
 
+	/* 9. 开发模式那条路由已经随「合并回主插件」一起删掉了。
+	   这里反转成一条**防回归守卫**：`/api/dev-mode` 必须回到 404。
+	   为什么值得留：它曾经存在过，客户端也因此有过"点版本号前先探测"的路径。
+	   若哪天有人又把探测加回来（哪怕只加路由、不加客户端），这条会立刻红，
+	   逼着重新讨论"单包单客户端入口、组件开关管不住客户端代码"这个前提。 */
+	const devModeRoute = await hit('/dsh-desktop-statusbar/api/dev-mode');
+	assert.strictEqual(devModeRoute.status, 404, '开发模式探测路由必须已删除（回到 404），实际 ' + String(devModeRoute.status));
+	assert.strictEqual(devModeRoute.thrown, null, '未知路径不得抛错');
+	console.log('开发模式探测路由已删除（404）OK');
+
 	console.log('\nHOST ROUTE CHECKS PASSED');
 })().catch((error) => {
 	console.error('HOST ROUTE CHECKS FAILED:', error && error.message ? error.message : error);

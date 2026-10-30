@@ -202,7 +202,8 @@ BOOK_TRIPLED['Deepseek-V4.1-Flash'] = {
   /* ---------- 6. 台账里记下了价格指纹，供迁移回扫还原旧价目表（契约 H） ---------- */
   const ledger = readLedgerFile();
   assert.ok(typeof ledger.priceFingerprint === 'string' && ledger.priceFingerprint.length > 0, '台账带上价格指纹');
-  assert.strictEqual(ledger.version, 3, '台账版本是 3，实际 ' + ledger.version);
+  /* v4（task-52）：台账版本升到 4，日桶开始写 costByCurrency 分币种金额 */
+  assert.strictEqual(ledger.version, 4, '台账版本是 4（按币种分桶），实际 ' + ledger.version);
   assert.strictEqual(ledger.days[DAY].cost, 22, '台账里的 cost 已固化 ¥22，实际 ' + ledger.days[DAY].cost);
   console.log('台账指纹已落盘：' + ledger.priceFingerprint.slice(0, 60) + '…');
 

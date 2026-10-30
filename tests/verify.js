@@ -55,14 +55,25 @@ const fakeWindow = {
 };
 
 let captured = null;
+/* document 上的事件监听：行为断言要拿到组件**真正挂上去**的那个回调（不是去源码里找字符串），
+   所以这里既记下来、也支持注销（removeEventListener 从同一份表里删）。
+   按事件类型分桶，别的类型（resize / pointer 之类）不受影响。 */
+const docListeners = {};
 const sandbox = {
 	window: fakeWindow,
 	document: {
 		querySelector: () => null,
 		createElement: () => ({ dataset: {}, style: {}, appendChild() {} }),
 		head: { appendChild() {} },
-		addEventListener: () => {},
-		removeEventListener: () => {}
+		addEventListener: (type, fn) => {
+			if (docListeners[type] === undefined) docListeners[type] = [];
+			docListeners[type].push(fn);
+		},
+		removeEventListener: (type, fn) => {
+			const list = docListeners[type] === undefined ? [] : docListeners[type];
+			const at = list.indexOf(fn);
+			if (at !== -1) list.splice(at, 1);
+		}
 	},
 	console, Promise, Date, Math, JSON, Object, Array, Number, String, Boolean, Symbol, Set, Map, Error,
 	/* 悬停浮层的收起是延后 110ms 的（防相邻格子之间闪断）：这里给空壳，不让真定时器吊住进程 */
@@ -146,6 +157,16 @@ function countClass(node, cls) {
 	(node.children || []).forEach((one) => { count += countClass(one, cls); });
 	return count;
 }
+/** 树里某个属性出现了几次（给气泡的假 querySelector 用，如 [data-cols-growable]） */
+function countAttr(node, attr) {
+	if (node === null || node === undefined) return 0;
+	if (Array.isArray(node)) return node.reduce((sum, one) => sum + countAttr(one, attr), 0);
+	if (typeof node !== 'object') return 0;
+	const props = node.props === undefined || node.props === null ? {} : node.props;
+	let count = props[attr] === undefined || props[attr] === null ? 0 : 1;
+	(node.children || []).forEach((one) => { count += countAttr(one, attr); });
+	return count;
+}
 const reactStub = {
 	createElement(type, props, ...children) {
 		const node = {
@@ -169,7 +190,10 @@ const reactStub = {
 		if (cls.indexOf('dsb-tip') !== -1) {
 			node.getBoundingClientRect = () => stubRect(0, stubTipWidth);
 			node.querySelector = (selector) => {
-				if (selector === '.dsb-meter-tight') return countClass(node, 'dsb-meter-tight') > 0 ? {} : null;
+				/* 判据从 `.dsb-meter-tight`（视觉样式）换成 `[data-cols-growable]`（能力标记）：
+				   技能注入 / 上下文压缩也支持逐档加行了，但它们不能套 tight（长名字会挤在一起），
+				   所以「要不要量溢出」不能再靠 tight 判。 */
+				if (selector === '[data-cols-growable]') return countAttr(node, 'data-cols-growable') > 0 ? {} : null;
 				/* 悬停纯文字提示的定位 effect 要量标题行与色条：
 				   分别给一个盒子，才能算出 top（标题行居中）与水平区间（标题右 → 色条右）。 */
 				if (selector === '.dsb-meter-head') return { getBoundingClientRect: () => stubRect(0, stubHeadWidth) };
@@ -302,10 +326,10 @@ const zh = {
 	f_speed: '综合速度 {throughput}t/s', f_sessionTime: '总用时 {duration}',
 	f_cost: '总计 {symbol}{cost}', f_lastCost: '本轮 {symbol}{cost}',
 	f_balance: '余额 {symbol}{amount}', f_balanceLoading: '余额 查询中', f_balanceFailed: '余额 失败({reason})',
-	/* 积分口径的套餐气泡（WorkBuddy）：标题 / 月度备注 / 刷新与到期备注 / 已用数值 */
+	/* 积分口径的套餐气泡（WorkBuddy）：标题 / 月度备注 / 刷新与到期备注 / 剩余数值 */
 	tipCreditsTitle: '积分套餐', tipCreditsMonthly: '（每月刷新）', tipCreditsRefresh: ' · {date} 刷新',
 	tipCreditsExpire: ' · {date} 到期', tipCreditsRefreshLatest: ' · {date} 刷新(最近)',
-	tipCreditsExpireLatest: ' · {date} 到期(最近)', tipCreditsUsed: '已用 {used} / {total}',
+	tipCreditsExpireLatest: ' · {date} 到期(最近)', tipCreditsLeft: '剩余 {left} / {total}',
 	unitCountTurns: ' 轮', unitCountSteps: ' 步',
 	unitCountCalls: ' 次',
 	tipCountsTitle: '会话数据', tipCountsSkills: '技能注入', tipCountsToolCalls: '工具调用',
@@ -488,10 +512,10 @@ assert.strictEqual(wbRewardView.tip.kind, 'credits', '积分套餐用 credits �
 assert.strictEqual(wbRewardView.tip.title, '积分套餐', '气泡标题走 tipCreditsTitle（中性词）');
 assert.strictEqual(wbRewardView.tip.panel.totalText, '177', '面板右侧显示总积分');
 assert.deepStrictEqual(Array.from(wbRewardView.tip.panel.rewards, (one) => ({ label: one.label, valueText: one.valueText })), [
-	{ label: '个人体验版 · 11-01 刷新', valueText: '已用 500 / 500' },
-	{ label: 'Free Plan Subscription · 11-01 刷新', valueText: '已用 0 / 100' },
-	{ label: 'Bonus Pack · 10-26 到期', valueText: '已用 12.39 / 250' },
-	{ label: '拉新权益包 · 11-07 到期', valueText: '已用 552.43 / 1500' }
+	{ label: '个人体验版 · 11-01 刷新', valueText: '剩余 0 / 500' },
+	{ label: 'Free Plan Subscription · 11-01 刷新', valueText: '剩余 100 / 100' },
+	{ label: 'Bonus Pack · 10-26 到期', valueText: '剩余 237.61 / 250' },
+	{ label: '拉新权益包 · 11-07 到期', valueText: '剩余 947.57 / 1500' }
 ], '月度包显「· MM-DD 刷新」、一次性包显「· MM-DD 到期」；值两位小数去尾零；**月度包置顶、其余按到期升序**；包名保持上游原名（不翻译）');
 /* 进度条比例 = used / total，夹在 0-100；0/100 的套餐不画进度段。
    索引跟着上面三档排序后的顺序走：0 个人体验版 / 1 Free Plan / 2 Bonus Pack / 3 拉新权益包 */
@@ -515,29 +539,45 @@ assert.deepStrictEqual(Array.from(creditRowNodes, (row) => textOf(collectByClass
 	['个人体验版 · 11-01 刷新', 'Free Plan Subscription · 11-01 刷新', 'Bonus Pack · 10-26 到期', '拉新权益包 · 11-07 到期'],
 	'行首是包名 + 备注；月度包置顶、其余按到期升序；包名保持上游原名（不翻译）');
 assert.deepStrictEqual(Array.from(creditRowNodes, (row) => textOf(collectByClass(row, 'dsb-meter-value')[0])),
-	['已用 500 / 500', '已用 0 / 100', '已用 12.39 / 250', '已用 552.43 / 1500'], '行尾是已用 / 总量');
-/* 进度方向：已用从**左边**起 —— 前段灰（已用宽）、后段透明（剩余宽）；
-   100% 只画整条灰；0% 仍渲染空轨道（有 .dsb-bar、没有填充段） */
-assert.strictEqual(collectByClass(creditsTree, 'dsb-bar').length, 4, '每个套餐都有进度条（0% 也画空轨道）');
+	['剩余 0 / 500', '剩余 100 / 100', '剩余 237.61 / 250', '剩余 947.57 / 1500'], '行尾是剩余 / 总量');
+/* 进度方向：**灰 = 剩余、从左边起；透明 = 已用、在右**（与余额配额条同一套语义）。
+   用户拍板原话「灰条从左边起」—— 灰条长度 = 剩余额度，越长剩得越多，从左读起一眼就看到。
+   实现只推「宽 > 0」的段（`if (used < 100)` 推灰、`if (used > 0)` 推透明），所以：
+     used=0     → 1 段（整条灰 100%，灰代表"剩余"）
+     0<used<100 → 2 段（灰剩余 + 透明已用）
+     used=100   → 1 段（整条透明，只剩轨道底色）
+   注意 used=100 是**1 段透明**、不是 0 段。 */
+assert.strictEqual(collectByClass(creditsTree, 'dsb-bar').length, 4, '每个套餐都有进度条（0% 也画轨道）');
 const creditSegs = collectByClass(creditsTree, 'dsb-bar-seg');
 const usedPct = (value, total) => (value / total) * 100;
 const pct1000 = (n) => Math.round(n * 1000) / 1000;
+/* 段序跟着上面三档排序后的顺序走：0 个人体验版(100%) / 1 Free Plan(0%) / 2 Bonus / 3 拉新 */
 const expectSegs = [
-	{ width: 100, color: api.BALANCE_COLORS.topUp },
-	{ width: usedPct(12.389999979999999, 250), color: api.BALANCE_COLORS.topUp },
-	{ width: 100 - usedPct(12.389999979999999, 250), color: 'transparent' },
-	{ width: usedPct(552.42999936, 1500), color: api.BALANCE_COLORS.topUp },
-	{ width: 100 - usedPct(552.42999936, 1500), color: 'transparent' }
+	{ width: 100, color: 'transparent' },                                     /* 100%：整条透明 */
+	{ width: 100, color: api.BALANCE_COLORS.topUp },                           /* 0%：整条灰 */
+	{ width: 100 - usedPct(12.389999979999999, 250), color: api.BALANCE_COLORS.topUp },  /* Bonus：剩余（左、灰） */
+	{ width: usedPct(12.389999979999999, 250), color: 'transparent' },         /* Bonus：已用（右、透明） */
+	{ width: 100 - usedPct(552.42999936, 1500), color: api.BALANCE_COLORS.topUp },       /* 拉新：剩余（左、灰） */
+	{ width: usedPct(552.42999936, 1500), color: 'transparent' }               /* 拉新：已用（右、透明） */
 ];
-assert.strictEqual(creditSegs.length, expectSegs.length, '100% 段 1 段 + 两个部分套餐各 2 段（灰已用 + 透明剩余）；0% 无段');
+assert.strictEqual(creditSegs.length, expectSegs.length,
+	'100% 段 1 段（透明）+ 0% 段 1 段（灰）+ 两个部分套餐各 2 段（灰剩余 + 透明已用）= 6 段');
 assert.deepStrictEqual(Array.from(creditSegs, (one) => one.props.style.backgroundColor),
-	expectSegs.map((one) => one.color), '已用段用余额灰（BALANCE_COLORS.topUp），剩余段透明');
+	expectSegs.map((one) => one.color), '剩余段用余额灰（BALANCE_COLORS.topUp）、已用段透明');
 assert.deepStrictEqual(Array.from(creditSegs, (one) => pct1000(parseFloat(one.props.style.width))),
-	expectSegs.map((one) => pct1000(one.width)), '前段宽 = used%、后段宽 = 100 - used%（已用从左起）');
-/* 0% 的套餐：有轨道、无填充段（排序后它在第 2 位） */
+	expectSegs.map((one) => pct1000(one.width)), '前段宽 = 100 - used%（灰、在最左端）、后段宽 = used%（透明、在右）');
+/* 0% 的套餐（排序后在第 2 位）：有轨道、**一段整条灰**（用掉 0 ⇒ 剩余 100%） */
 const zeroCredit = collectByClass(creditsTree, 'dsb-credit')[1];
 assert.strictEqual(collectByClass(zeroCredit, 'dsb-bar').length, 1, '0% 套餐有进度条轨道');
-assert.strictEqual(collectByClass(zeroCredit, 'dsb-bar-seg').length, 0, '0% 套餐没有填充段（只有空轨道）');
+const zeroSegs = collectByClass(zeroCredit, 'dsb-bar-seg');
+assert.strictEqual(zeroSegs.length, 1, '0% 套餐有 1 段填充（整条灰 = 剩余 100%），不再是空轨道');
+assert.strictEqual(zeroSegs[0].props.style.backgroundColor, api.BALANCE_COLORS.topUp, '那一段是灰');
+assert.strictEqual(pct1000(parseFloat(zeroSegs[0].props.style.width)), 100, '那一段占满整条');
+/* 100% 的套餐（第 1 位）：1 段透明 —— 全用完了，没有"剩余"可涂色 */
+const fullCredit = collectByClass(creditsTree, 'dsb-credit')[0];
+const fullSegs = collectByClass(fullCredit, 'dsb-bar-seg');
+assert.strictEqual(fullSegs.length, 1, '100% 套餐有 1 段（透明）：实现只推宽 > 0 的段');
+assert.strictEqual(fullSegs[0].props.style.backgroundColor, 'transparent', '那一段透明（整条只剩轨道底色）');
 /* 14 条套餐：列表容器仍是同一个滚动类（CSS 有半屏高度上限），条数照常 */
 const manyRewards = [];
 for (let i = 0; i < 14; i += 1) manyRewards.push({ name: '套餐' + (i + 1), used: i, total: 100, monthly: false });
@@ -581,7 +621,7 @@ assert.deepStrictEqual(realRows.map((one) => one.count), [1, 1, 1, 11], '聚合�
 assert.ok(realRows[0].label.indexOf('×') === -1 && realRows[0].label.indexOf('(最近)') === -1, '非聚合行不带 ×N / (最近)');
 assert.ok(realRows[1].label.indexOf('×') === -1 && realRows[1].label.indexOf('(最近)') === -1, '非聚合行不带 ×N / (最近)');
 assert.deepStrictEqual(realRows.map((one) => one.valueText), [
-	'已用 500 / 500', '已用 12.39 / 250', '已用 552.43 / 1500', '已用 0 / 1100'
+	'剩余 0 / 500', '剩余 237.61 / 250', '剩余 947.57 / 1500', '剩余 1100 / 1100'
 ], '相邻同名裂变包 used/total 相加（0/1100）');
 assert.strictEqual(realRows[3].percent, 0, '裂变包合计已用 0 → percent 0（画空轨道）');
 assert.deepStrictEqual(realRows.map((one) => one.name), ['个人体验版', 'Bonus Pack', '拉新权益包', '运营裂变包'],
@@ -614,7 +654,7 @@ assert.deepStrictEqual(creditRowsOf([
 	{ name: '月度包', used: 1, total: 10, monthly: true, refreshAt: '2026-12-01' },
 	{ name: '月度包', used: 2, total: 10, monthly: true, refreshAt: '2026-11-01' }
 ]).map((one) => ({ label: one.label, valueText: one.valueText })), [
-	{ label: '月度包×2 · 11-01 刷新(最近)', valueText: '已用 3 / 20' }
+	{ label: '月度包×2 · 11-01 刷新(最近)', valueText: '剩余 17 / 20' }
 ], '月度聚合：刷新日期取最近、带 (最近)、数值合计');
 /* 聚合行下钻：×N 行可点 → 子视图用同样的套餐块（一行 + 进度条）竖排列出原始包，点标题返回 */
 const realTree = api.creditsPanel(wbReal.tip.panel, wbReal.tip.title, null, { current: null }, { id: null, open: () => {}, back: () => {} });
@@ -662,11 +702,16 @@ assert.strictEqual(collectByClass(subRows[0], 'dsb-meter-row-plain').length, 0, 
 assert.strictEqual(textOf(collectByClass(subRows[0], 'dsb-meter-name')[0]), '运营裂变包 · 12-01 到期', '明细行显示该包自己的日期');
 assert.strictEqual(textOf(collectByClass(subRows[1], 'dsb-meter-name')[0]), '运营裂变包 · 11-07 到期', '不同到期日的包各显各的');
 assert.deepStrictEqual(Array.from(subRows, (row) => textOf(collectByClass(row, 'dsb-meter-value')[0])),
-	new Array(11).fill('已用 0 / 100'), '明细值是该包真实值，不合计');
-/* 0% 的明细块：有轨道、无填充段 */
+	new Array(11).fill('剩余 100 / 100'), '明细值是该包真实值，不合计');
+/* 0% 的明细块：有轨道 + **一段整条灰**（灰 = 剩余；用掉 0 ⇒ 剩余 100%）。
+   与主面板那套语义一致（见上面「灰 = 剩余、贴右」那段）。 */
 const subZero = collectByClass(openTree, 'dsb-credit')[0];
 assert.strictEqual(collectByClass(subZero, 'dsb-bar').length, 1, '明细块有进度条轨道');
-assert.strictEqual(collectByClass(subZero, 'dsb-bar-seg').length, 0, '0% 明细块没有填充段');
+const subZeroSegs = collectByClass(subZero, 'dsb-bar-seg');
+assert.strictEqual(subZeroSegs.length, 1, '0% 明细块有 1 段填充（整条灰 = 剩余 100%），不再是空轨道');
+assert.strictEqual(subZeroSegs[0].props.style.backgroundColor, api.BALANCE_COLORS.topUp,
+	'那一段是灰（BALANCE_COLORS.topUp，与余额配额条同色）');
+assert.strictEqual(pct1000(parseFloat(subZeroSegs[0].props.style.width)), 100, '那一段占满整条');
 /* 分组保留原始成员明细：raw 名、自己的日期备注、真实 used/total */
 const mergedItems = wbReal.tip.panel.rewards[3].items;
 assert.strictEqual(mergedItems.length, 11, '聚合组保留 11 个原始成员');
@@ -691,14 +736,14 @@ assert.strictEqual(usedGroup.used, 3, '已用合计 3');
 assert.strictEqual(usedGroup.total, 600, '总容量合计 600');
 assert.strictEqual(usedGroup.remaining, 597, '剩余 = 600 - 3');
 assert.strictEqual(usedGroup.remainingText, '597', '剩余文本用 formatCredits');
-assert.strictEqual(usedGroup.valueText, '已用 3 / 600', '行上仍是已用 / 总量');
+assert.strictEqual(usedGroup.valueText, '剩余 597 / 600', '行上显示剩余 / 总量（用户要求：不显示已用）');
 const usedOpen = api.creditsPanel(usedWrap.tip.panel, usedWrap.tip.title, null, { current: null }, {
 	id: 0, open: () => {}, back: () => {}
 });
 assert.strictEqual(textOf(collectByClass(usedOpen, 'dsb-meter-figures')[0]), '597',
 	'下钻标题右侧 = 该组剩余 597（不显示总容量 600、也不是全局 177）');
 assert.deepStrictEqual(Array.from(collectByClass(usedOpen, 'dsb-meter-value'), (one) => textOf(one)),
-	['已用 1 / 100', '已用 2 / 500'], '明细仍是各自真实值');
+	['剩余 99 / 100', '剩余 498 / 500'], '明细仍是各自真实值');
 /* 月度包缺 refreshAt：退回「（每月刷新）」；非月度包没有 expireAt 就不加备注 */
 const wbMonthly = api.segmentView('balance', {
 	...wbSrc,
@@ -721,7 +766,7 @@ const wbPartial = api.segmentView('balance', {
 	}
 }, t);
 assert.deepStrictEqual(Array.from(wbPartial.tip.panel.rewards, (one) => one.label), ['只写名字的包', '缺数字的包'], '无名字的包跳过，其余保留');
-assert.deepStrictEqual(Array.from(wbPartial.tip.panel.rewards, (one) => one.valueText), ['已用 0 / 0', '已用 5 / 0'], '缺 used/total 按 0 显示');
+assert.deepStrictEqual(Array.from(wbPartial.tip.panel.rewards, (one) => one.valueText), ['剩余 0 / 0', '剩余 0 / 0'], '缺 used/total 按 0 显示；used=5 但 total=0 时剩余夹到 0（不出负数）');
 assert.deepStrictEqual(Array.from(wbPartial.tip.panel.rewards, (one) => one.percent), [0, 0], 'total 为 0 时进度比例 0');
 /* rewards 空数组：等同于没有 → 不给 tip（不弹空气泡） */
 assert.strictEqual(api.segmentView('balance', {
@@ -794,7 +839,7 @@ const enBalance = {
 	f_balanceDash: 'Balance {symbol}-',
 	tipCreditsTitle: 'Points packages', tipCreditsMonthly: ' (monthly)', tipCreditsRefresh: ' · refreshes {date}',
 	tipCreditsExpire: ' · expires {date}', tipCreditsRefreshLatest: ' · refreshes {date} (nearest)',
-	tipCreditsExpireLatest: ' · expires {date} (nearest)', tipCreditsUsed: 'Used {used} / {total}'
+	tipCreditsExpireLatest: ' · expires {date} (nearest)', tipCreditsLeft: '{left} / {total} left'
 };
 const tEnBalance = (key, params) => {
 	let out = enBalance[key] !== undefined ? enBalance[key] : key;
@@ -817,8 +862,8 @@ assert.deepStrictEqual(Array.from(wbEn.tip.panel.rewards, (one) => one.label), [
 	'拉新权益包 · expires 11-07'
 ], '英文月度「· refreshes MM-DD」/ 一次性「· expires MM-DD」；**月度包置顶、其余按到期升序**；包名保持上游原名（不翻译）');
 assert.deepStrictEqual(Array.from(wbEn.tip.panel.rewards, (one) => one.valueText), [
-	'Used 500 / 500', 'Used 0 / 100', 'Used 12.39 / 250', 'Used 552.43 / 1500'
-], '英文「Used X / Y」，数字同样两位小数去尾零');
+	'0 / 500 left', '100 / 100 left', '237.61 / 250 left', '947.57 / 1500 left'
+], '英文「{left} / {total} left」，数字同样两位小数去尾零');
 /* 英文聚合行：×11 + (nearest) */
 const wbEnReal = api.segmentView('balance', {
 	...wbSrc,
@@ -1622,7 +1667,7 @@ const progressView = {
 	globalInstruction: 'AGENTS.md',
 	compactCount: 2, compactTurn: 32, compactStep: 2,
 	/* 只给成功的压缩；第二条是用户手动压缩：轮间压缩没有 turn，by afterTurn 记「第20轮后」，
-	   行尾带上标星号 */
+	   名字后带上标星号（星号后置） */
 	compacts: [
 		{ turn: 12, step: 3, manual: false, afterTurn: null },
 		{ turn: null, step: null, manual: true, afterTurn: 20 }
@@ -1680,7 +1725,7 @@ assert.ok(collectByClass(tree, 'dsb-meter-back').length > 0, '子视图标题可
 assert.ok(textOf(collectByClass(tree, 'dsb-meter-back')[0]).indexOf('‹') === -1, '返回入口不带箭头');
 assert.strictEqual(collectByClass(tree, 'dsb-hovercard').length, 0, '不再出现二次气泡');
 assert.deepStrictEqual(listRows(tree).map((one) => one.name), ['AGENTS.md', 'ponytail*', 'my-dow-theory'],
-	'全局提示词 AGENTS.md 固定第一、不参与技能排序；其余按名字长短（ponytail 8 < my-dow-theory 13）；手动调用的 ponytail 带上标星号，实际 ' + JSON.stringify(listRows(tree)));
+	'全局提示词 AGENTS.md 固定第一、不参与技能排序；其余按名字长短（ponytail 8 < my-dow-theory 13）；手动调用的 ponytail 星号在**名字后面**，实际 ' + JSON.stringify(listRows(tree)));
 assert.deepStrictEqual(listRows(tree).map((one) => one.value), ['', '', ''],
 	'技能注入只列名字、不显示次数（次数只在排序里用到；AGENTS.md 同样不显示）');
 /* 星号是上标节点：给读屏一个「手动触发」名称（role=img + aria-label），视觉仍只有 * */
@@ -1744,10 +1789,10 @@ assert.strictEqual(panelTitle(tree), '上下文压缩', '上下文压缩子视�
 assert.strictEqual(collectByClass(tree, 'dsb-meter-tight').length, 0, '上下文压缩子视图不收紧间隙');
 assert.deepStrictEqual(listRows(tree), [
 	{ name: '第一次压缩', value: '第12轮3步' },
-	/* 手动压缩：星号在行尾（「第二次压缩*」），上标挂在最后、不拆开「第二次」；
+	/* 手动压缩的星号在**名字后面**（「第二次压缩*」），与技能列表统一；
 	   轮间压缩没有 turn，落点用 afterTurn 显示「第20轮后」而不是横杠 */
 	{ name: '第二次压缩*', value: '第20轮后' }
-], '压缩明细按发生顺序逐条列，实际 ' + JSON.stringify(listRows(tree)));
+], '压缩明细按发生顺序逐条列（手动压缩星号后置），实际 ' + JSON.stringify(listRows(tree)));
 assert.strictEqual(collectByClass(tree, 'dsb-sup').length, 1, '手动压缩那条带一个上标星号');
 console.log('上下文压缩子视图:', listRows(tree).map((one) => one.name + ' ' + one.value).join(' / '));
 
@@ -1898,6 +1943,93 @@ try {
 	stubWrapOn = false;
 	stubWrapCap = 3;
 	barHooks.values.length = 0;
+}
+
+/* ---------------------------- 气泡 Portal 到 body 之后：点气泡内部不能把气泡关掉 */
+/* **行为断言**（不是源码字面量检查）：气泡经 createPortal 挂到 body 后就不在 rootRef 里了，
+   「点别处收起」的那个 document click 处理器必须同时判 tipRef，否则点气泡内部会被当成
+   "点在外面"、气泡立刻消失（现有用例全绿也抓不到，因为谁都没真的点过 document）。
+   做法分三步，全部落在真实渲染路径上：
+     ① 给 react-dom 一个**等价就地渲染**的 createPortal（node => node），让代码真的走
+        portal 分支 —— 而不是因为拿不到 react-dom 退回就地渲染、把这条路径绕过去；
+     ② 给「底栏根节点」和「气泡节点」两个真实替身节点各打一个 contains 桩：两个返回值
+        分别可控（根节点一律不认、气泡只认"内部节点"），以此模拟 portal 之后的 DOM 事实；
+     ③ 从 document 上取到**组件自己注册的** click 回调并直接触发，再看状态：
+        点气泡内部 → 气泡仍在；点真正的外面 → 气泡被关（对照组，证明 close 路径真的会跑）。 */
+{
+	const portalHooks = makeHooks();
+	const modPortal = captured.factory((name) => {
+		if (name === 'react') return reactStub;
+		/* 等价就地渲染：节点原样返回，Portal 分支照样被走到 */
+		if (name === 'react-dom') return { createPortal: (node) => node };
+		throw new Error('unexpected require: ' + name);
+	});
+	const apiPortal = modPortal.__test;
+	/* 状态一变就渲染两遍：第一遍挂节点、第二遍才量得到宽度（与其它定位用例同一习惯） */
+	const paintPortal = () => {
+		withHooks(portalHooks, () => apiPortal.StatusBar(skillProps));
+		return withHooks(portalHooks, () => apiPortal.StatusBar(skillProps));
+	};
+	const clickBefore = (docListeners.click === undefined ? [] : docListeners.click).slice();
+	runEffects = true;
+	try {
+		/* ① 照现有用例的写法点开「会话数据」气泡 */
+		withHooks(portalHooks, () => apiPortal.StatusBar(skillProps));
+		collectByClass(withHooks(portalHooks, () => apiPortal.StatusBar(skillProps)), 'dsb-seg-click')
+			.filter((one) => one.props.key === '__segcounts')[0].props.onClick(clickEvent());
+		let portalTree = paintPortal();
+		assert.strictEqual(collectByClass(portalTree, 'dsb-tip').length, 1, '前提：气泡已展开');
+
+		/* ② 气泡开着时，组件应当把 click 处理器挂到 document 上。这里拿到的就是它注册的
+		      那个函数本体 —— 断言的是"有没有挂、挂着的行为对不对"，不是源码里有没有那行字。 */
+		const added = (docListeners.click === undefined ? [] : docListeners.click)
+			.filter((fn) => clickBefore.indexOf(fn) === -1);
+		assert.strictEqual(added.length, 1,
+			'气泡展开后 document 上应挂且只挂一个 click 监听，实际 ' + added.length + ' 个');
+		const onDocClick = added[0];
+
+		/* ③ 两个 contains 分开打桩：根节点永远不认这个目标，气泡节点认"内部节点" */
+		const rootNode = collectByClass(portalTree, 'dsb-root')[0];
+		const panelNode = collectByClass(portalTree, 'dsb-tip')[0];
+		const tipInner = { what: '气泡内部的节点' };
+		const farAway = { what: '真正的外面' };
+		const asked = [];
+		rootNode.contains = (target) => { asked.push('root'); return target === null; };
+		panelNode.contains = (target) => { asked.push('panel'); return target === tipInner; };
+		assert.strictEqual(rootNode.contains(tipInner), false, '前提：目标不在底栏根节点里');
+		assert.strictEqual(panelNode.contains(tipInner), true, '前提：目标在气泡节点里');
+		asked.length = 0;
+
+		/* 点气泡内部：不能被当成点在外面 */
+		onDocClick({ target: tipInner });
+		portalTree = paintPortal();
+		assert.strictEqual(collectByClass(portalTree, 'dsb-tip').length, 1,
+			'点气泡内部不该关闭气泡（tipRef 判定被删后会立刻消失）');
+		assert.strictEqual(panelTitle(portalTree), '会话数据', '点气泡内部后气泡仍停在原视图');
+		assert.deepStrictEqual(asked, ['root', 'panel'],
+			'onDocClick 要先判底栏根、再判气泡（两个 contains 都被问到），实际问过 ' + JSON.stringify(asked));
+
+		/* 对照组：点在真正的外面（两个 contains 都不认）⇒ 气泡必须关掉。
+		   这一条保证上面那条不是"回调压根没跑"的恒真断言。 */
+		assert.ok((docListeners.click === undefined ? [] : docListeners.click).indexOf(onDocClick) !== -1,
+			'前提：触发的仍是组件注册在 document 上的那个监听');
+		const rootNode2 = collectByClass(portalTree, 'dsb-root')[0];
+		const panelNode2 = collectByClass(portalTree, 'dsb-tip')[0];
+		rootNode2.contains = () => false;
+		panelNode2.contains = () => false;
+		onDocClick({ target: farAway });
+		const closedTree = paintPortal();
+		assert.strictEqual(collectByClass(closedTree, 'dsb-tip').length, 0,
+			'对照组：点在气泡外面要关闭气泡（close 路径真的会被触发）');
+		console.log('气泡 Portal：点气泡内部不关；点外面关（对照组）');
+	} finally {
+		runEffects = false;
+		/* 摘掉这段自己挂上去的监听，别让后面的用例受它影响 */
+		(docListeners.click === undefined ? [] : docListeners.click.slice()).forEach((fn) => {
+			if (clickBefore.indexOf(fn) === -1) sandbox.document.removeEventListener('click', fn);
+		});
+		portalHooks.values.length = 0;
+	}
 }
 
 /* 工具调用彩条的悬停提示：**没有气泡**，只显示一行文字（工具名 + 占比），跟鼠标。

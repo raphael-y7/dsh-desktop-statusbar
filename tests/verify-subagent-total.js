@@ -120,6 +120,46 @@ function writeSession(id, parentSession, events, headerId) {
 function turnStartEvent(time) {
 	return { type: 'turn/start', seq: 1, time: time, data: { turn: 1 } };
 }
+/** 一轮收尾事件：`running` 的判据就是"最后一条事件是不是它"（见 runningBreakdownOf）。 */
+function turnEndEvent(time) {
+	return { type: 'turn/end', seq: 2, time: time, data: { turn: 1 } };
+}
+/** `request/context` 事件：`data.contextWindow` 是模型上下文窗口（算占用百分比的分母）。 */
+function contextEvent(time, contextWindow) {
+	return { type: 'request/context', seq: 3, time: time, data: { contextWindow: contextWindow } };
+}
+/**
+ * 一条只带 usage 的 `assistant/message`（服务上下文占用百分比的分子）。
+ * `totalTokens` 与真实上游一致：**已经是 input + cacheRead + output 的和**，
+ * 所以夹具里直接给总数，不再由分项相加（否则会掩盖"实现又加了一遍"这个错误）。
+ */
+function usageTotalEvent(seq, time, totalTokens) {
+	return {
+		type: 'assistant/message', seq: seq, time: time,
+		data: {
+			turn: 1, step: 1,
+			message: { source: { kind: 'model', provider: 'test', model: 'kid-model' } },
+			usage: { inputTokens: 1, cacheReadTokens: 1, outputTokens: 1, totalTokens: totalTokens }
+		}
+	};
+}
+/**
+ * 父会话日志里一次 `subagent` 工具调用的两条事件：call + result。
+ * 返回文本 `started subagent <uuid>` 就是"这次起的是**团队外**独立子智能体"的唯一凭据
+ * （团队成员的 spawn_teammate 不写这句话）。
+ */
+function spawnedCallEvents(seq, callId, spawnedId) {
+	return [
+		{ type: 'tool/call', seq: seq, time: 0, data: { name: 'subagent', callId: callId } },
+		{
+			type: 'tool/result', seq: seq + 1, time: 0,
+			data: {
+				toolCallId: callId,
+				message: { content: [{ type: 'text', text: 'started subagent ' + spawnedId }] }
+			}
+		}
+	];
+}
 /** 一条用量事件（与真实会话日志同形：`data.usage` + `data.turn/step`）。 */
 function usageEvent(seq, turn, step, time, model, parts) {
 	return {
@@ -531,6 +571,332 @@ const zeroTokens = () => ({ input: 0, cacheRead: 0, cacheWrite: 0, output: 0 });
 	assert.strictEqual(badSecond.body.children.length, 1, '文件修好后必须重试成功（失败结果不许被永久缓存）');
 	assert.strictEqual(badSecond.body.total.cost, 3, '重试成功后按 ¥3 计入');
 	console.log('一 14 头部读失败不缓存：坏文件先漏掉、修好后下一问就补上（¥0 → ¥3）');
+
+	/* ============================ 一 15〜18：新增字段 running / turnStartMs（task-7） */
+	/* 这两个字段是给客户端用的：
+	   · running：还有几个队友在跑 —— 客户端据此决定"队友没跑完就别停每秒刷新"；
+	   · turnStartMs：host 推出来的本轮起点 —— 客户端折叠不出起点时用它兜底。
+	   既有字段一个都不能变，所以下面每处都同时复查 total/children 的口径。 */
+
+	/* 15. running 的判据：子会话日志**最后一条事件**是不是 turn/end。
+	   造两个队友：r-live 还在跑（最后一笔是 assistant/message）、r-done 已收尾（turn/end）。 */
+	writeSession('p-run', null, [turnStartEvent(ROUND_AT)]);
+	writeSession('r-live', 'p-run', [
+		turnStartEvent(ROUND_AT),
+		usageEvent(1, 1, 1, ROUND_AT + 1000, 'kid-model', { input: M })
+	]);
+	writeSession('r-done', 'p-run', [
+		turnStartEvent(ROUND_AT),
+		usageEvent(1, 1, 1, ROUND_AT + 2000, 'kid-model', { input: M }),
+		turnEndEvent(ROUND_AT + 3000)
+	]);
+	const halfRun = await get('sessionId=p-run&since=0');
+	assert.strictEqual(halfRun.status, 200, 'running 用例 HTTP 200');
+	assert.strictEqual(halfRun.body.children.length, 2, '两个队友都在（形状不变）');
+	assert.strictEqual(halfRun.body.running, 1,
+		'还有一个子会话没写 turn/end ⇒ running=1（实际 ' + halfRun.body.running + '）');
+	assert.strictEqual(halfRun.body.total.calls, 2, '既有字段不受影响：仍有 2 次调用');
+	assert.strictEqual(halfRun.body.total.cost, 6, '既有字段不受影响：仍 ¥6（2 × ¥3）');
+	assert.strictEqual(typeof halfRun.body.running, 'number', 'running 必须是数字（客户端做 >0 判断）');
+	console.log('一 15 running：1 个已 turn/end、1 个还在跑 ⇒ running=' + halfRun.body.running + '（总计仍 ¥6 / 2 次调用）');
+
+	/* 16. 全部收尾 ⇒ running === 0。这条是"队友跑完后客户端该停掉每秒刷新"的直接依据，
+	   也钉住"不许用 mtime 时间窗猜"——刚写完 turn/end 的文件 mtime 就是此刻。 */
+	writeSession('r-live', 'p-run', [
+		turnStartEvent(ROUND_AT),
+		usageEvent(1, 1, 1, ROUND_AT + 1000, 'kid-model', { input: M }),
+		turnEndEvent(ROUND_AT + 4000)
+	]);
+	const allDone = await get('sessionId=p-run&since=0');
+	assert.strictEqual(allDone.body.running, 0,
+		'两个队友都写了 turn/end ⇒ running=0（实际 ' + allDone.body.running + '；用 mtime 时间窗会误判成还在跑）');
+	assert.strictEqual(allDone.body.children.length, 2, '队友仍列出来（running 不改变 children）');
+	assert.strictEqual(allDone.body.total.cost, 6, '收尾后金额不变：¥6');
+	/* 边界：没有任何队友时 running 恒为 0（不是 undefined，客户端会直接用它做算术） */
+	const noneKids = await get('sessionId=lonely-session');
+	assert.strictEqual(noneKids.body.running, 0, '没有队友 ⇒ running=0，实际 ' + noneKids.body.running);
+	console.log('一 16 running：全部 turn/end ⇒ running=0（不靠 mtime 猜）· 没有队友也是 0');
+
+	/* 17. turnStartMs：正常情况等于父会话日志里**最后一条 turn/start** 的时间。
+	   三条路都要给同一个值（整会话 / 客户端起点 / host 代推），因为它只取决于父日志，
+	   与这一次请求用哪个窗口无关。 */
+	assert.strictEqual(all.body.turnStartMs, ROUND_AT,
+		'since=0（整会话）：turnStartMs = 父日志最后一条 turn/start（实际 ' + all.body.turnStartMs + '）');
+	assert.strictEqual(win.body.turnStartMs, ROUND_AT, '客户端给起点：turnStartMs 仍是父日志推的起点');
+	assert.strictEqual(inferred.body.turnStartMs, ROUND_AT,
+		'host 代推：turnStartMs 与实际用的窗口起点一致（实际 ' + inferred.body.turnStartMs + '）');
+	assert.strictEqual(typeof all.body.turnStartMs, 'number', 'turnStartMs 是数字（毫秒）');
+	/* 父会话有多条 turn/start 时取**最后一条**（要能让客户端跟上新一轮） */
+	const clampStart = await get('sessionId=p-clamp&since=0');
+	assert.strictEqual(clampStart.body.turnStartMs, T2,
+		'父会话有两条 turn/start ⇒ 取最后一条 T2（实际 ' + clampStart.body.turnStartMs + '）');
+	console.log('一 17 turnStartMs：父日志最后一条 turn/start = ' + all.body.turnStartMs
+		+ '（整会话/客户端/host 三条路一致）· 多条 turn/start 时取最后一条 = ' + clampStart.body.turnStartMs);
+
+	/* 18. 推不出来 ⇒ turnStartMs === null，且必须与 sinceSource 对齐（none 时没有"起点"可给）。
+	   p-none：父日志存在但没有任何 turn/start / user/message；p-ghost：父会话日志不存在。
+	   这两种正是客户端"折叠不出起点"时要靠它判断"host 也没法兜底"的场景。 */
+	assert.strictEqual(noStart.body.sinceSource, 'none', '前置：p-none 推不出窗口');
+	assert.strictEqual(noStart.body.turnStartMs, null,
+		'父会话推不出起点 ⇒ turnStartMs=null（实际 ' + String(noStart.body.turnStartMs) + '）');
+	assert.strictEqual(ghost.body.sinceSource, 'none', '前置：p-ghost 父会话日志不存在');
+	assert.strictEqual(ghost.body.turnStartMs, null,
+		'父会话日志不存在 ⇒ turnStartMs=null（实际 ' + String(ghost.body.turnStartMs) + '）');
+	/* 反面对照：p-quiet 有 turn/start，但起点事后没有证据 ⇒ sinceSource 掉成 none，
+	   此时 turnStartMs 也必须是 null（语义对齐，不能把"没被采纳的起点"当成可用值给出去）。 */
+	assert.strictEqual(quiet.body.sinceSource, 'none', '前置：p-quiet 起点无从验证');
+	assert.strictEqual(quiet.body.turnStartMs, null,
+		'起点没被采纳（sinceSource=none）⇒ turnStartMs 也是 null（实际 ' + String(quiet.body.turnStartMs) + '）');
+	console.log('一 18 turnStartMs：推不出 / 父日志不存在 / 起点没被采纳 ⇒ 一律 null（与 sinceSource 对齐）');
+
+	/* =============== 一 19〜24：分层计数 teamRunning / deepRunning + 分层上下文占用（task-46） */
+	/* 用户需求：圆环**颜色**看"谁在跑"（Lead 绿 / 成员蓝 / 更深紫），
+	   圆环**弧长**看"那一级的上下文占用"；多个成员同时跑取**最大**占用，
+	   更深那一级取**最小**占用（用户明确要求）。这里锁字段契约 + 分类规则 + 两个方向。 */
+	const SPAWNED_A = 'c847de23-1543-4bdf-9d2e-8d930ac6cbba';
+	const SPAWNED_B = '11112222-3333-4444-5555-666677778888';
+
+	/* 19. 团队成员在跑 ⇒ teamRunning>0、deepRunning===0、teamContextPercent 是数字。
+	   父会话日志里**没有**任何 subagent 调用 ⇒ 所有直接后代都算团队成员（兜底）。 */
+	writeSession('p-team', null, [turnStartEvent(ROUND_AT)]);
+	writeSession('t-1', 'p-team', [
+		turnStartEvent(ROUND_AT),
+		contextEvent(ROUND_AT + 100, 1000000),
+		usageTotalEvent(2, ROUND_AT + 200, 100000)   /* 100000/1000000 = 10% */
+	]);
+	const teamOne = await get('sessionId=p-team&since=0');
+	assert.strictEqual(teamOne.body.teamRunning, 1, '团队成员在跑 ⇒ teamRunning=1（实际 ' + teamOne.body.teamRunning + '）');
+	assert.strictEqual(teamOne.body.deepRunning, 0, '没有更深的在跑 ⇒ deepRunning=0（实际 ' + teamOne.body.deepRunning + '）');
+	assert.strictEqual(teamOne.body.running, 1, '总数不变（既有字段语义不动）');
+	assert.strictEqual(teamOne.body.teamContextPercent, 10, '占用 100000/1000000 = 10%（实际 ' + String(teamOne.body.teamContextPercent) + '）');
+	assert.strictEqual(teamOne.body.deepContextPercent, null, '没有深层在跑 ⇒ deepContextPercent=null（实际 ' + String(teamOne.body.deepContextPercent) + '）');
+	console.log('一 19 团队成员在跑：teamRunning=' + teamOne.body.teamRunning + ' deepRunning=' + teamOne.body.deepRunning
+		+ ' teamContextPercent=' + teamOne.body.teamContextPercent);
+
+	/* 20. 团队外独立子智能体在跑 ⇒ deepRunning>0、teamRunning===0。
+	   判定靠父日志里 `started subagent <uuid>` 的返回文本 —— 那个 uuid 就是它的会话 id。 */
+	writeSession('p-solo', null, [turnStartEvent(ROUND_AT)].concat(spawnedCallEvents(10, 'call-a', SPAWNED_A)));
+	writeSession(SPAWNED_A, 'p-solo', [
+		turnStartEvent(ROUND_AT),
+		contextEvent(ROUND_AT + 100, 1000000),
+		usageTotalEvent(2, ROUND_AT + 200, 250000)   /* 25% */
+	]);
+	const soloOne = await get('sessionId=p-solo&since=0');
+	assert.strictEqual(soloOne.body.deepRunning, 1, '团队外独立子智能体在跑 ⇒ deepRunning=1（实际 ' + soloOne.body.deepRunning + '）');
+	assert.strictEqual(soloOne.body.teamRunning, 0, '它不是团队成员 ⇒ teamRunning=0（实际 ' + soloOne.body.teamRunning + '）');
+	assert.strictEqual(soloOne.body.deepContextPercent, 25, '深层占用 25%（实际 ' + String(soloOne.body.deepContextPercent) + '）');
+	assert.strictEqual(soloOne.body.teamContextPercent, null, '没有团队成员在跑 ⇒ null');
+	console.log('一 20 独立子智能体在跑：deepRunning=' + soloOne.body.deepRunning + ' teamRunning=' + soloOne.body.teamRunning
+		+ ' deepContextPercent=' + soloOne.body.deepContextPercent);
+
+	/* 21. 成员下派的孙会话在跑、成员本身已结束 ⇒ 那个孙会话算进 deepRunning。
+	   这是分级最容易漏的形态：`reading` 只含直接后代，孙会话得靠 children 邻接表补。 */
+	writeSession('p-grand', null, [turnStartEvent(ROUND_AT)]);
+	writeSession('t-done', 'p-grand', [turnStartEvent(ROUND_AT), turnEndEvent(ROUND_AT + 500)]);
+	writeSession('g-live', 't-done', [
+		turnStartEvent(ROUND_AT),
+		contextEvent(ROUND_AT + 100, 1000000),
+		usageTotalEvent(2, ROUND_AT + 200, 400000)   /* 40% */
+	]);
+	const grandOne = await get('sessionId=p-grand&since=0');
+	assert.strictEqual(grandOne.body.teamRunning, 0, '成员自己已 turn/end ⇒ 不算在跑');
+	assert.strictEqual(grandOne.body.deepRunning, 1, '成员下派的孙会话在跑 ⇒ deepRunning=1（实际 ' + grandOne.body.deepRunning + '）');
+	assert.strictEqual(grandOne.body.running, 1, 'running 仍为 1（合计口径不变）');
+	assert.strictEqual(grandOne.body.deepContextPercent, 40, '深层占用取孙会话的 40%（实际 ' + String(grandOne.body.deepContextPercent) + '）');
+	console.log('一 21 成员已结束、孙会话在跑：deepRunning=' + grandOne.body.deepRunning + ' deepContextPercent=' + grandOne.body.deepContextPercent);
+
+	/* 22. 全部结束 ⇒ 三个数都是 0、两个 percent 都是 null（且字段必须**存在**，不能省略）。 */
+	const teamAllDone = await get('sessionId=p-run&since=0');
+	assert.strictEqual(teamAllDone.body.running, 0, '全部 turn/end ⇒ running=0');
+	assert.strictEqual(teamAllDone.body.teamRunning, 0, 'teamRunning=0（实际 ' + String(teamAllDone.body.teamRunning) + '）');
+	assert.strictEqual(teamAllDone.body.deepRunning, 0, 'deepRunning=0（实际 ' + String(teamAllDone.body.deepRunning) + '）');
+	assert.strictEqual(teamAllDone.body.teamContextPercent, null, 'teamContextPercent=null');
+	assert.strictEqual(teamAllDone.body.deepContextPercent, null, 'deepContextPercent=null');
+	['teamRunning', 'deepRunning', 'teamContextPercent', 'deepContextPercent'].forEach((field) => {
+		assert.ok(Object.prototype.hasOwnProperty.call(teamAllDone.body, field),
+			'字段必须始终存在（client 按「缺失当 0」处理，但 host 这边不要省）：' + field);
+	});
+	console.log('一 22 全部结束：running=teamRunning=deepRunning=0 · 两个 percent 都是 null · 四个字段都在');
+
+	/* 23. 多个成员在跑，占用 10% / 55% / 30% ⇒ teamContextPercent 取**最大** 55。
+	   同时锁住「多个成员」这条路径：不能只算第一个。 */
+	writeSession('p-max', null, [turnStartEvent(ROUND_AT)]);
+	[['mx-1', 10], ['mx-2', 55], ['mx-3', 30]].forEach(([id, pct]) => {
+		writeSession(id, 'p-max', [
+			turnStartEvent(ROUND_AT),
+			contextEvent(ROUND_AT + 100, 1000000),
+			usageTotalEvent(2, ROUND_AT + 200, pct * 10000)
+		]);
+	});
+	const maxThree = await get('sessionId=p-max&since=0');
+	assert.strictEqual(maxThree.body.teamRunning, 3, '三个成员都在跑（实际 ' + maxThree.body.teamRunning + '）');
+	assert.strictEqual(maxThree.body.teamContextPercent, 55,
+		'成员占用 10/55/30 ⇒ 取最大 55（实际 ' + String(maxThree.body.teamContextPercent) + '）');
+	assert.strictEqual(maxThree.body.deepRunning, 0, '没有深层在跑');
+	console.log('一 23 三个成员占用 10/55/30 ⇒ teamContextPercent=' + maxThree.body.teamContextPercent + '（取最大）');
+
+	/* 24. 多个更深会话在跑，占用 10% / 55% / 30% ⇒ deepContextPercent 取**最大** 55。
+	   用户先要求取最小（「上下文占用要显示最少的那个」），后来改口：
+	   「紫色旋转也要占用最高的那个。」⇒ 现在与团队层**同向**都取最大。
+	   「更深」= parentSession **不是**当前会话的那些后代（成员下派的孙会话）——
+	   所以这里要挂一层中间成员，不能把三个会话直接挂在 p-min 下面。
+	   顺带覆盖断言 8：其中一个在跑会话**没有** request/context（算不出窗口）⇒ 跳过它，
+	   不能把它当 0 参与比较（那种会话压根算不出来，不该拉低结果）。 */
+	writeSession('p-min', null, [turnStartEvent(ROUND_AT)]);
+	/* 中间成员：自己已结束（turn/end），三个孙会话还活着 */
+	writeSession('mn-mid', 'p-min', [turnStartEvent(ROUND_AT), turnEndEvent(ROUND_AT + 500)]);
+	[['mn-1', 10], ['mn-2', 55], ['mn-3', 30]].forEach(([id, pct]) => {
+		writeSession(id, 'mn-mid', [
+			turnStartEvent(ROUND_AT),
+			contextEvent(ROUND_AT + 100, 1000000),
+			usageTotalEvent(2, ROUND_AT + 200, pct * 10000)
+		]);
+	});
+	/* 第四个：有 usage 但没有 request/context ⇒ 算不出百分比，必须被跳过 */
+	writeSession('mn-now', 'mn-mid', [
+		turnStartEvent(ROUND_AT),
+		usageTotalEvent(2, ROUND_AT + 200, 900000)
+	]);
+	const minFour = await get('sessionId=p-min&since=0');
+	assert.strictEqual(minFour.body.teamRunning, 0, '中间成员已结束 ⇒ 没有团队成员在跑（实际 ' + minFour.body.teamRunning + '）');
+	assert.strictEqual(minFour.body.deepRunning, 4, '四个更深的会话在跑（实际 ' + minFour.body.deepRunning + '）');
+	assert.strictEqual(minFour.body.deepContextPercent, 55,
+		'深层占用 10/55/30（+ 一个算不出的被跳过）⇒ 取最大 55（实际 ' + String(minFour.body.deepContextPercent) + '）');
+	/* 反面：若实现还停留在"取最小"，这里会得到 10 —— 单独钉一句，让失败信息直接指向口径 */
+	assert.notStrictEqual(minFour.body.deepContextPercent, 10,
+		'深层不许再取最小（那是上一版口径，用户已改口「也要占用最高的那个」）');
+	console.log('一 24 四个更深会话占用 10/55/30/算不出 ⇒ deepContextPercent=' + minFour.body.deepContextPercent
+		+ '（取最大 55；算不出的那个被跳过，没被当成 0）');
+
+	/* 25. 自洽 + 「最大/最小」方向的交叉校验，并对所有已查过的夹具统一复查
+	   `running === teamRunning + deepRunning`（用户契约的硬要求）。 */
+	[[teamOne.body, 'p-team'], [soloOne.body, 'p-solo'], [grandOne.body, 'p-grand'],
+		[teamAllDone.body, 'p-run'], [maxThree.body, 'p-max'], [minFour.body, 'p-min']].forEach(([body, name]) => {
+		assert.strictEqual(body.running, body.teamRunning + body.deepRunning,
+			name + ' 必须自洽：running === teamRunning + deepRunning（' + body.running + ' vs '
+			+ body.teamRunning + '+' + body.deepRunning + '）');
+	});
+	/* 混合形态：3 个成员在跑（10/55/30）+ 1 个独立子智能体在跑（20）⇒ 用户要求的自测数字 */
+	writeSession('p-mix', null, [turnStartEvent(ROUND_AT)].concat(spawnedCallEvents(30, 'call-b', SPAWNED_B)));
+	[['mix-t1', 10], ['mix-t2', 55], ['mix-t3', 30]].forEach(([id, pct]) => {
+		writeSession(id, 'p-mix', [
+			turnStartEvent(ROUND_AT),
+			contextEvent(ROUND_AT + 100, 1000000),
+			usageTotalEvent(2, ROUND_AT + 200, pct * 10000)
+		]);
+	});
+	writeSession(SPAWNED_B, 'p-mix', [
+		turnStartEvent(ROUND_AT),
+		contextEvent(ROUND_AT + 100, 1000000),
+		usageTotalEvent(2, ROUND_AT + 200, 200000)   /* 20% */
+	]);
+	const mixedTeam = await get('sessionId=p-mix&since=0');
+	assert.strictEqual(mixedTeam.body.teamRunning, 3, '3 个团队成员在跑（实际 ' + mixedTeam.body.teamRunning + '）');
+	assert.strictEqual(mixedTeam.body.deepRunning, 1, '1 个独立子智能体在跑（实际 ' + mixedTeam.body.deepRunning + '）');
+	assert.strictEqual(mixedTeam.body.running, 4, '合计 4（实际 ' + mixedTeam.body.running + '）');
+	assert.strictEqual(mixedTeam.body.teamContextPercent, 55, '团队层取最大 55（实际 ' + String(mixedTeam.body.teamContextPercent) + '）');
+	assert.strictEqual(mixedTeam.body.deepContextPercent, 20, '深层只有一个 ⇒ 20（实际 ' + String(mixedTeam.body.deepContextPercent) + '）');
+	console.log('一 25 混合夹具：running=' + mixedTeam.body.running + ' = teamRunning(' + mixedTeam.body.teamRunning
+		+ ') + deepRunning(' + mixedTeam.body.deepRunning + ') · teamContextPercent=' + mixedTeam.body.teamContextPercent
+		+ ' · deepContextPercent=' + mixedTeam.body.deepContextPercent);
+
+	/* ============ 一 26：在跑判定「IDLE 白名单为主，其余默认活着」（task-59） ============
+	   用户实机报「没有任何东西在运行，圆环还在蓝色转圈」。根因：会话结束后系统还会在
+	   `turn/end` 之后写 `session/end-seed` / `session/title`，旧判据只认 `=== 'turn/end'`
+	   一个值，于是末事件是 `session/title` 的会话被永久判成在跑（直到 mtime 超过 10 分钟）。
+
+	   最终口径（走过两次弯路才定下来）：
+	     · 末事件在 IDLE 白名单里 ⇒ **结束**（这是唯一"判死"的入口）
+	     · 其余任何类型（含 job/registered、user/message、以及上游将来新增的未知类型）
+	       ⇒ **在跑**，只由 10 分钟年龄门槛兜底
+	   为什么默认活着：误判成在跑的代价是多转几分钟（数据仍是对的）；
+	   误判成结束的代价是总计冻结、队友花费不再更新（数据是错的，正是用户报过的缺陷）。 */
+	const RUN_CASES = [
+		/* [末事件类型, mtime 距现在多少秒, 期望在跑?, 说明] */
+		['session/title', 300, false, '末事件 session/title ⇒ 结束（这正是用户报的那个形态）'],
+		['session/end-seed', 300, false, '末事件 session/end-seed ⇒ 结束'],
+		['model/selection', 300, false, '末事件 model/selection ⇒ 结束（切模型不代表在干活）'],
+		['session/title-llm-request', 300, false, '末事件 session/title-llm-request ⇒ 结束'],
+		['turn/end', 300, false, '末事件 turn/end ⇒ 结束（防回归）'],
+		['turn/start', 60, true, '末事件 turn/start（1 分钟前）⇒ 在跑（轮次已开始，刚 spawn 未出字就是这个形态）'],
+		['tool/call', 60, true, '末事件 tool/call（1 分钟前）⇒ 在跑'],
+		['step/start', 60, true, '末事件 step/start（1 分钟前）⇒ 在跑'],
+		['assistant/message', 60, true, '末事件 assistant/message（1 分钟前）⇒ 在跑'],
+		['request/header', 60, true, '末事件 request/header（1 分钟前）⇒ 在跑'],
+		/* 白名单之外全部默认活着 —— 这三条是踩过的坑，必须钉住 */
+		['job/registered', 7, true, '末事件 job/registered（7 秒前）⇒ 在跑（实测：工具执行中注册后台任务，会话还活着）'],
+		['user/message', 5, true, '末事件 user/message（5 秒前）⇒ 在跑（用户刚发话、模型还没响应）'],
+		['some/future-event', 60, true, '末事件是未知新类型 ⇒ 在跑（白名单之外的默认值，不用维护名单）'],
+		/* 年龄门槛：上面三种"默认活着"的，超过 10 分钟一律结束（兜住陈旧的尾巴） */
+		['job/registered', 700, false, '末事件 job/registered 但 mtime 超过 10 分钟 ⇒ 结束（年龄门槛兜住）'],
+		['user/message', 700, false, '末事件 user/message 但 mtime 超过 10 分钟 ⇒ 结束（同上）'],
+		['some/future-event', 700, false, '末事件未知类型 + 超龄 ⇒ 结束（同上）'],
+		['tool/call', 700, false, '末事件 tool/call 但 mtime 超过 10 分钟 ⇒ 结束（年龄门槛）'],
+	]
+	writeSession('p-idle', null, [turnStartEvent(ROUND_AT)]);
+	RUN_CASES.forEach(([type, secondsAgo, expected, why], index) => {
+		const id = 'idle-' + index;
+		writeSession(id, 'p-idle', [turnStartEvent(ROUND_AT), { type: type, seq: 9, time: ROUND_AT + 1000, data: {} }]);
+		/* 把文件 mtime 拨到指定秒数前：判定用的是索引里 stat 到的 mtime */
+		const stamp = new Date(Date.now() - secondsAgo * 1000);
+		fs.utimesSync(path.join(HOME, 'sessions', id, 'usage.jsonl.zstd'), stamp, stamp);
+	});
+	const idleRun = await get('sessionId=p-idle&since=0');
+	assert.strictEqual(idleRun.status, 200, '在跑判定用例 HTTP 200');
+	const runningIds = idleRun.body.children.filter((one) => {
+		/* children 里只有 id/cost/tokens/calls，判定结果要看 running 总数与逐项对照 */
+		return true;
+	}).map((one) => one.id);
+	assert.strictEqual(runningIds.length, RUN_CASES.length, '所有直接后代都列出来（不受判定影响）');
+	const expectRunning = RUN_CASES.filter((one) => one[2] === true).length;
+	assert.strictEqual(idleRun.body.running, expectRunning,
+		'在跑的应该正好 ' + expectRunning + ' 个（' + RUN_CASES.filter((one) => one[2] === true).map((one) => one[0]).join('/')
+		+ '），实际 ' + idleRun.body.running);
+	/* 逐项验证：把每个用例单独放一个父会话，逐个断言 running 0/1，失败信息能直接指向是哪一行 */
+	for (let i = 0; i < RUN_CASES.length; i += 1) {
+		const [type, secondsAgo, expected, why] = RUN_CASES[i];
+		const soloParent = 'p-one-' + i;
+		const soloKid = 'one-' + i;
+		writeSession(soloParent, null, [turnStartEvent(ROUND_AT)]);
+		writeSession(soloKid, soloParent, [turnStartEvent(ROUND_AT), { type: type, seq: 9, time: ROUND_AT + 1000, data: {} }]);
+		const stamp = new Date(Date.now() - secondsAgo * 1000);
+		fs.utimesSync(path.join(HOME, 'sessions', soloKid, 'usage.jsonl.zstd'), stamp, stamp);
+		const one = await get('sessionId=' + soloParent + '&since=0');
+		assert.strictEqual(one.body.running, expected === true ? 1 : 0,
+			why + '（实际 running=' + one.body.running + '）');
+	}
+	console.log('一 26 在跑判定：' + RUN_CASES.length + ' 种末事件逐个验证，其中 '
+		+ expectRunning + ' 种判在跑、' + (RUN_CASES.length - expectRunning) + ' 种判结束（IDLE 白名单 + 年龄门槛）');
+
+	/* 一 26b：`turn/start` 救回「刚 spawn、还没出字」那个场景。
+	   这是用户最想看到蓝色转圈的时间窗：会话刚建、turn/start 已写、首字还没来，
+	   日志里**没有** step/start / assistant/message，末事件只有 turn/start。 */
+	writeSession('p-spawn', null, [turnStartEvent(ROUND_AT)]);
+	writeSession('spawn-kid', 'p-spawn', [turnStartEvent(ROUND_AT)]);
+	const spawnRun = await get('sessionId=p-spawn&since=0');
+	assert.strictEqual(spawnRun.body.children.length, 1, '刚 spawn 的子会话已列出来');
+	assert.strictEqual(spawnRun.body.running, 1,
+		'只有 header + turn/start（还没出字）⇒ 必须判在跑（turn/start 在 BUSY 名单里），实际 ' + spawnRun.body.running);
+	console.log('一 26b 刚 spawn 未出字（末事件 turn/start）⇒ 判在跑，running=' + spawnRun.body.running);
+
+	/* 一 26c：末事件**读不出来**（null）时仍按「在跑」—— 这是有意保留的旧语义。
+	   反向判据若写成 `BUSY.has(null) !== true ⇒ 结束`，方向会被悄悄反转。
+	   这里直接调导出的 `isRunningEntry`，传一个**不存在的文件路径**：
+	     · readFileTail 失败 ⇒ null
+	     · 降级 readFileSync 抛错 ⇒ null
+	   精确命中那条分支（用真实文件夹具构造不出来 —— header 与首个 turn/start 压在同一帧里）。 */
+	const { isRunningEntry, IDLE_EVENT_TYPES: idleSet } = mod;
+	assert.strictEqual(typeof isRunningEntry, 'function', 'isRunningEntry 已导出（供这条行为断言用）');
+	const ghostFresh = { id: 'ghost', file: path.join(HOME, 'sessions', 'no-such-file.zstd'), mtimeMs: Date.now(), size: 0 };
+	assert.strictEqual(isRunningEntry(ghostFresh, Date.now()), true,
+		'末事件读不出来（文件不存在）⇒ 按「在跑」处理（宁可多刷一秒，保持旧语义）');
+	const ghostStale = { id: 'ghost', file: path.join(HOME, 'sessions', 'no-such-file.zstd'), mtimeMs: Date.now() - 20 * 60 * 1000, size: 0 };
+	assert.strictEqual(isRunningEntry(ghostStale, Date.now()), false,
+		'读不出来 + mtime 超过 10 分钟 ⇒ 仍算结束（年龄门槛对 null 分支也生效）');
+	assert.strictEqual(idleSet.has('session/title'), true, 'session/title 必须在 IDLE 白名单里');
+	assert.strictEqual(idleSet.has('job/registered'), false,
+		'job/registered **不**在 IDLE 里（它是"还在干活"，判成结束就是误杀）');
+	console.log('一 26c 末事件读不出 ⇒ 在跑（ghost 条目）；读不出 + 超龄 ⇒ 结束');
 
 	/* ============================================================ 二、client：并入 + 撤拆分块 + 1s */
 	const api = loadClient({

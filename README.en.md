@@ -22,7 +22,7 @@ Replaces the stats line under the message input in the DSH desktop app with a co
 
 ## Features
 
-- **10 optional fields**: context occupancy (the ring at the head of the bar), peak / off-peak check, turns & steps, cache hit rate, output speed, TTFT, run time, this turn cost, session cost, balance
+- **9 optional fields plus the context ring**: context occupancy (the ring at the head of the bar), peak / off-peak check, turns & steps, cache hit rate, output speed, TTFT, run time, this turn cost, session cost, balance
 - **Click a field for details**:
 
   | Field | Content |
@@ -78,10 +78,10 @@ npm view dsh-desktop-statusbar version
 The one-click update button inside the plugin can fail on some desktop builds — it either does nothing or reports a failure. Do not keep clicking it. Use the official install entry instead and **append `@version` to the package name** to pin the exact version:
 
 ```powershell
-dsh plugin --profile desktop add dsh-desktop-statusbar@2.2.2
+dsh plugin --profile desktop add dsh-desktop-statusbar@3.0.0
 ```
 
-The same string works in the plugin panel — type `dsh-desktop-statusbar@2.2.2` into the **Add plugin** field.
+The same string works in the plugin panel — type `dsh-desktop-statusbar@3.0.0` into the **Add plugin** field.
 
 Use whatever version you see (the version on the release page, or the output of the `npm view` command above). Pinning the version has a second benefit: **you get exactly the build you asked for**, with no chance of a stale cached package.
 

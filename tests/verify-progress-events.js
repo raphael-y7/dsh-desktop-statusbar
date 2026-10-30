@@ -79,8 +79,8 @@ const applyAll = (proj, state, events) => events.reduce((one, event) => proj.app
 	const proj = registered.filter((p) => p.key === 'desktopStatusbarProgress')[0];
 	assert.ok(proj !== undefined, '进度投影已注册');
 
-	/* 0. 版本必须升到 7：旧持久化状态（skills 是字符串数组）会被重建 */
-	assert.strictEqual(proj.stateVersion, 8, 'stateVersion 升到 8（compacts 新增 afterTurn）');
+	/* 0. 版本必须升到 9：旧持久化状态（skills 是字符串数组）会被重建 */
+	assert.strictEqual(proj.stateVersion, 9, 'stateVersion 升到 9（skills 新增 sub 子能力标记）');
 	let state = proj.init();
 	proj.stateSchema.parse(state);
 	assert.deepStrictEqual(state.skills, [], 'skills 初始为空数组');

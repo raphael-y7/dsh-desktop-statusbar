@@ -56,6 +56,31 @@ if (zh !== null && en !== null) {
 		'中英键一致' + (onlyZh.length + onlyEn.length === 0 ? '' : '（仅中文 ' + onlyZh.join(',') + '；仅英文 ' + onlyEn.join(',') + '）'));
 }
 
+/* 引用面：函数名要在**整个实现 + 整个测试**里数，不能只看它自己所在的那个文件。
+   反例（2026-10 实测）：client.js 里的 `isDevMode` 只有定义那 1 次，真正调用全在
+   tests/verify-dev-mode.js（5 处，通过测试注入拿到的合法导出）。只看 client.js
+   就会把它误判成死代码。所以函数这一项的语料 = lib/*.js + tests/*.js。
+   i18n 键和 CSS 类**不跟着放宽**：它们本来就只在 lib 里出现，拉进 tests 反而会误放行。
+
+   排除检查器自身（__filename）：本文件的注释里成段列着函数名（上面 7 个三 tab 嵌套函数、
+   13 个 async 函数），把自己算进引用面等于给真死代码白送 +1 次出现，会造成"绿了但没看全"。
+   只读目录下平铺的 *.js；`tests/.dsh-test-home*`、`tests/fixtures` 不是调用方，不进语料。 */
+const TESTS = __dirname;
+function readJs(dir) {
+	let names;
+	try {
+		names = fs.readdirSync(dir);
+	} catch (err) {
+		return [];
+	}
+	return names
+		.filter((name) => /\.js$/.test(name))
+		.map((name) => path.join(dir, name))
+		.filter((file) => path.resolve(file) !== path.resolve(__filename))
+		.map((file) => fs.readFileSync(file, 'utf8'));
+}
+const refCorpus = readJs(LIB).concat(readJs(TESTS)).join('\n');
+
 /* 2. 函数：定义之外还要被调用。
    判据 `^[ \t]*(?:export\s+)?(?:async\s+)?function <name>(` —— 缩进用 [ \t]* 而不是写死 tab 数、
    前缀吃下 export/async，覆盖**任意缩进层级 + 嵌套 + 具名导出 + 异步**的实际写法，
@@ -64,7 +89,9 @@ const fnRe = /^[ \t]*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9
 const fns = [];
 let hit = null;
 while ((hit = fnRe.exec(client)) !== null) fns.push(hit[1]);
-const deadFns = fns.filter((fn) => (client.match(new RegExp('\\b' + fn + '\\b', 'g')) || []).length <= 1);
+/* 判据改在 refCorpus（lib/*.js + tests/*.js）里数出现次数：定义 1 次 + 测试里调用 N 次
+   ⇒ 1 + N ≥ 2 ⇒ 不算死。仍然只留 1 次（就是它自己的定义）的才算死代码。 */
+const deadFns = fns.filter((fn) => (refCorpus.match(new RegExp('\\b' + fn + '\\b', 'g')) || []).length <= 1);
 report(deadFns.length === 0, 'client 函数 ' + fns.length + ' 个，没人调用的：' + (deadFns.length === 0 ? '无' : deadFns.join(', ')));
 
 /* 同一套判据用在新文件上：必须重新 new 一个 RegExp 实例，不能共用上面那个带 `g` 的对象
@@ -72,7 +99,7 @@ report(deadFns.length === 0, 'client 函数 ' + fns.length + ' 个，没人调�
 const hostFns = [];
 const hostRe = new RegExp(fnRe.source, fnRe.flags);
 while ((hit = hostRe.exec(host)) !== null) hostFns.push(hit[1]);
-const deadHost = hostFns.filter((fn) => (host.match(new RegExp('\\b' + fn + '\\b', 'g')) || []).length <= 1);
+const deadHost = hostFns.filter((fn) => (refCorpus.match(new RegExp('\\b' + fn + '\\b', 'g')) || []).length <= 1);
 report(deadHost.length === 0, 'host 函数 ' + hostFns.length + ' 个，没人调用的：' + (deadHost.length === 0 ? '无' : deadHost.join(', ')));
 
 /* 3. CSS：每个类都要在 JSX 里出现，JSX 用到的每个类也都要有样式 */

@@ -226,8 +226,11 @@ function settingsShot(locale) {
 /** 只要价格区：前两块隐藏、展开第一张卡，并把币种下拉收起（展开会压住右边那列输入框） */
 function pricingShot(locale) {
   /* SettingsSection 里 useState 的顺序（组件加了 hook 就要回来重数一遍）：
-     0 devOn / 1 drag / 2 newModel / 3 hostModel / 4 editing / 5 draft /
-     6 holidayBusy / 7 holidayNote / 8 currencyOpen。
+     0 drag / 1 newModel / 2 hostModel / 3 editing / 4 draft /
+     5 holidayBusy / 6 holidayNote / 7 currencyOpen。
+     **2026-10-22 起前移了一位**：开发模式的状态改从模块级快照读（`useDevState` 的 const），
+     组件里不再有 `devOn` 那个 useState，于是它后面所有 hook 整体前移一位 ——
+     editing 4→3、draft 5→4、currencyOpen 8→7。不改的话第一张卡展不开（探针 dsb-edit-pop=0）。
      2026-10-05 之前按下标写的是旧顺序（把 editing 当第 5 个、holidayNote 当第 6 个），
      结果第一张卡展不开、还把草稿对象塞进了 holidayNote，卡片里冒出一句「抓取失败（undefined）」。
      2026-10-13 又踩了一次同类的坑：新增 devOn（开发模式胶囊）插在最前面，
@@ -235,11 +238,11 @@ function pricingShot(locale) {
      presets[4] 从 draft 变成 editing、presets[7] 从 currencyOpen 变成 holidayNote。
      教训：**下标是脆的**，加 hook 必须回来重数，并用 `node tools/shot.cjs` 实际生成一次确认。 */
   const presets = [];
-  presets[4] = 'deepseek-flash';
+  presets[3] = 'deepseek-flash';
   /* 浮层里的数字也要跟着币种走：预设草稿按语言挑人民币或美元那套。
      **`currency` 必须一起写**：下拉按钮显示的正是 `draft.currency`（不是 config.currency），
      漏了它英文截图就会退回默认的 CNY —— 与整页英文界面自相矛盾（2026-10 实际踩过）。 */
-  presets[5] = locale === 'en'
+  presets[4] = locale === 'en'
     ? {
       tiered: true,
       currency: 'USD',
@@ -252,7 +255,7 @@ function pricingShot(locale) {
       peak: { input: '2', cacheRead: '0.04', cacheWrite: '0', output: '8' },
       offPeak: { input: '1', cacheRead: '0.02', cacheWrite: '0', output: '4' }
     };
-  presets[8] = false;   /* 币种下拉收起：展开会压住右边那列输入框 */
+  presets[7] = false;   /* 币种下拉收起：展开会压住右边那列输入框 */
   const loaded = loadPlugin(locale, locale === 'en' ? SETTINGS_USD : SETTINGS_CONFIG, presets);
   const t = translator(loaded.shot, locale);
   const tree = loaded.shot.SettingsSection({
@@ -270,7 +273,14 @@ function statusbarShot(locale) {
   /* StatusBar 里 useState 的顺序：now → balance → tipId → tipPos → tipTick。
      余额平时靠 effect 轮询拿，静态渲染要直接喂进去。 */
   const presets = [];
-  presets[1] = { ok: true, total: '10.32', toppedUp: '8.00', granted: '2.32', currency: 'CNY', at: Date.now() };
+  /* 余额故意给**双币种**（3.0.0 起底栏支持 `¥13.14+$5.21` 这种并列显示）：
+     README 的图要能体现这个能力，只给单币种会让"支持双币种"的说法与图对不上。
+     数值是用户挑的吉祥数（13.14 一生一世 / 5.21 我爱你），纯为截图好看。
+     `total` 保持两个币种之和（18.35），与 balances 自洽、不制造假数据。 */
+  presets[1] = {
+    ok: true, total: '18.35', toppedUp: '18.35', granted: '0.00', currency: 'CNY', at: Date.now(),
+    balances: [{ currency: 'CNY', total: '13.14' }, { currency: 'USD', total: '5.21' }]
+  };
   const loaded = loadPlugin(locale, SETTINGS_CONFIG, presets);
   const t = translator(loaded.shot, locale);
   const calls = SAMPLE.calls;
@@ -287,7 +297,13 @@ function statusbarShot(locale) {
       }
       if (name === 'desktopStatusbarTiming') return SAMPLE.timing;
       if (name === 'desktopStatusbarActiveTime') return { turns: 12, steps: 268, since: Date.now() - 3152000, stepSince: null };
-      if (name === 'desktopStatusbarBalance') return { ok: true, total: '10.32', toppedUp: '8.00', granted: '2.32', currency: 'CNY', at: Date.now() };
+      if (name === 'desktopStatusbarBalance') {
+        /* 与上面 presets[1] 必须是**同一份**双币种数据（两处都喂给底栏，不一致会截出前后矛盾的两版） */
+        return {
+          ok: true, total: '18.35', toppedUp: '18.35', granted: '0.00', currency: 'CNY', at: Date.now(),
+          balances: [{ currency: 'CNY', total: '13.14' }, { currency: 'USD', total: '5.21' }]
+        };
+      }
       if (name === 'desktopStatusbarModel') return { provider: 'deepseek', model: 'deepseek-v4-pro', at: Date.now() };
       return undefined;
     },
@@ -308,9 +324,11 @@ function statusbarShot(locale) {
 }
 
 /* status 场景生成的底栏是**合成**的（自己摆的示例数据 + 假对话区背景）。
-   2026-10-05 起 README 里的 docs/statusbar*.png 换成了真机截图（用户自己在 DSH 里截的），
-   所以**跑全量会把它覆盖掉** —— 只想更新设置页/价格区就单跑那两张：
-     node tools/shot.cjs zh settings && node tools/shot.cjs zh pricing（en 同理）。 */
+   **2026-10-29 更正**：这里原先写着"2026-10-05 起 docs/statusbar*.png 换成了真机截图，
+   跑全量会覆盖掉"，但实际不是 —— 旧图尺寸 2360x460 正好等于 SIZES.status（1180,230）× 2 倍
+   缩放，一直是本工具生成的合成图。那条警告是错的，会让下一个人不敢重跑 status 场景。
+   现在三张场景图**全部**由本工具生成，`node tools/shot.cjs` 可以放心跑全量。
+   只想更新其中一张就单跑：node tools/shot.cjs zh settings（scene ∈ status/settings/pricing）。 */
 const SCENES = { settings: settingsShot, pricing: pricingShot, status: statusbarShot };
 /* 窗口高度按内容量出来的（上下留白对齐到页面自己的 30px 内边距）：
    settings 内容底 1050、pricing 内容底 315.5。改了场景内容要重量一遍再调这里。 */

@@ -76,6 +76,8 @@ const ZH = {
 	tipCompactTurnOnly: '第{turn}轮',
 	tipCompactAfter: '第{turn}轮后',
 	tipManual: '手动触发',
+	/* 子能力角标（`sub: true`）的读屏名称，与手动的「手动触发」分开 */
+	tipSub: '子能力',
 	unitCountCalls: ' 次'
 };
 const EN = {
@@ -89,6 +91,8 @@ const EN = {
 	tipCompactTurnOnly: 'Turn {turn}',
 	tipCompactAfter: 'After turn {turn}',
 	tipManual: 'Manually invoked',
+	/* 子能力角标（`sub: true`）的英文读屏名称 */
+	tipSub: 'Sub-skill',
 	unitCountCalls: ' calls'
 };
 const translator = (table) => (key, params) => {
@@ -122,6 +126,11 @@ function collectByClass(node, cls, out) {
 }
 const esc = (text) => String(text)
 	.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+/** 行 label 可能是字符串，也可能是「角标节点 + 名字」的数组：统一拍成纯文本。 */
+function plainTextOf(label) {
+	if (Array.isArray(label)) return label.map((one) => textOf(one)).join('');
+	return textOf(label);
+}
 /** 序列化成 HTML：只留渲染意义上的属性，够验 aria-hidden / title / class 的落点 */
 function toHtml(node) {
 	if (node === null || node === undefined || node === false || node === true || node === '') return '';
@@ -180,13 +189,13 @@ const listRows = (tree) => collectByClass(tree, 'dsb-meter-row').map((row) => ({
 	value: textOf(collectByClass(row, 'dsb-meter-value')[0])
 }));
 
-/* --------------------------- 技能注入：排序 / 合并 / 上标星号（只列名字，不显示次数） */
+/* --------------------------- 技能注入：排序 / 合并 / 上标角标（只列名字，不显示次数） */
 const skillPanel = subPanel(countsTip, 1, 3);
 const skillRows = listRows(skillPanel);
 assert.deepStrictEqual(skillRows.map((one) => one.name), [
 	/* 全局提示词 AGENTS.md 固定第一、不参与技能排序；其余按 名字短→次数多→字典序（次数只用于排序） */
 	'AGENTS.md', 'b', 'aa', 'ab', 'ponytail*', 'my-dow-theory'
-], '技能列表：AGENTS.md 固定第一；其余名字短的在前 → 次数降序 → 字典序；手动调用的 ponytail 名字后跟上标星号，实际 ' + JSON.stringify(skillRows));
+], '技能列表：AGENTS.md 固定第一；其余名字短的在前 → 次数降序 → 字典序；手动调用的 ponytail 星号在**名字后面**，实际 ' + JSON.stringify(skillRows));
 /* 用户明确要求：技能注入只列名字、不显示统计次数（AGENTS.md 也不显示） */
 assert.deepStrictEqual(skillRows.map((one) => one.value), ['', '', '', '', '', ''],
 	'技能注入的行只有名字，没有次数');
@@ -198,10 +207,76 @@ assert.strictEqual(skillStars[0].props['aria-hidden'], undefined, '不再用 ari
 /* 不挂 title：星号只有 11px，鼠标几乎落不到上面，原生悬停气泡是"偶尔冒一下"的意外行为 */
 assert.strictEqual(skillStars[0].props.title, undefined, '星号**没有**原生悬停气泡（用户明确不要）');
 assert.strictEqual(textOf(skillStars[0]), '*', '视觉内容仍是 *');
+
+/* 角标位置：手动星号在**名字后面**（用户第三次拍板，最终形态）。
+   演变史：星号原在名字后 → 曾改成前置（靠前后位置区分手动/子能力）→ 又改回后置，
+   因为用户指出**子能力不可能由他手动调用**，两者不会落在同一个名字上，不需要位置区分；
+   而"星号在后"读起来更像脚注标注，也与压缩列表保持同一种写法。
+   这里按**节点顺序**断言（不是只拼文本），实现换写法也不会漏。 */
+const starRow = api.skillList(src.progress.skills, 'AGENTS.md', t).rows
+	.filter((row) => Array.isArray(row.label))[0];
+assert.ok(starRow !== undefined, '手动调用的技能行 label 是节点数组');
+assert.strictEqual(starRow.label.length, 2, '只有手动星号时 label 是 [名字, 星号] 两个节点，实际 ' + starRow.label.length);
+const starIndex = starRow.label.findIndex((one) => typeof one === 'object' && one !== null);
+const nameIndex = starRow.label.findIndex((one) => typeof one === 'string');
+assert.ok(starIndex !== -1 && nameIndex !== -1, 'label 里既有角标节点也有名字字符串');
+assert.ok(nameIndex < starIndex,
+	'手动星号必须在名字**后**（下标 ' + nameIndex + ' < ' + starIndex + '），实际顺序 ' + JSON.stringify(starRow.label.map((one) => (typeof one === 'string' ? one : textOf(one)))));
+assert.strictEqual(starRow.label[nameIndex], 'ponytail', '名字节点就是 ponytail');
+
+/* 子能力（`sub: true`）：角标 `+` 也在名字**后**（两种角标都后置）。
+   符号与手动星号不同（+ vs *）：用户看完实机后把 `†` 换成了 `+`（+ 笔画细、体量小），
+   并用 .dsb-sup-strong 把字重提到 600 补回体量 —— 只加粗，不改字号与抬高量。 */
+const subOnly = api.skillList([{ name: 'ponytail', manual: false, sub: true }], null, t).rows[0];
+assert.ok(Array.isArray(subOnly.label), '只有子能力时 label 也是节点数组');
+assert.strictEqual(subOnly.label.length, 2, '子能力只有名字 + 名字后的 +，共两个节点');
+assert.strictEqual(subOnly.label[0], 'ponytail', '名字在**前**');
+assert.strictEqual(typeof subOnly.label[1], 'object', '第二个节点是 + 角标');
+assert.strictEqual(textOf(subOnly.label[1]), '+', '子能力角标符号是 +（不是 *，也不是旧版的 †）');
+assert.strictEqual(subOnly.label[1].props['aria-label'], '子能力', '子能力角标的读屏名称是「子能力」');
+assert.strictEqual(subOnly.label[1].props.role, 'img', '+ 同样带 img 角色，aria-label 才生效');
+assert.ok(String(subOnly.label[1].props.className).split(' ').indexOf('dsb-sup') !== -1,
+	'+ 复用手动星号那套 .dsb-sup 上标样式（同一列表里字号/抬高量必须一致）');
+assert.ok(String(subOnly.label[1].props.className).split(' ').indexOf('dsb-sup-strong') !== -1,
+	'+ 还要挂 .dsb-sup-strong 把字重提到 600 —— + 笔画细，同字号下会比星号轻一档');
+assert.strictEqual(textOf(subOnly.label[0]).indexOf('*'), -1, '子能力条目不该带手动星号');
+
+/* 两种角标同时出现（用户说实际不会发生，但代码仍兼容）：名字 + 星号 + +
+   顺序固定为「名字 → * → +」，两个角标的 aria-label 必须不同。 */
+const both = api.skillList([{ name: 'ponytail', manual: true, sub: true }], null, t).rows[0];
+assert.ok(Array.isArray(both.label), '两种角标并存时 label 是节点数组');
+assert.strictEqual(both.label.length, 3, '名字 + 星号 + + 共三个节点，实际 ' + both.label.length);
+assert.strictEqual(both.label[0], 'ponytail', '第一个节点是名字（角标都后置）');
+assert.strictEqual(textOf(both.label[1]), '*', '第二个节点是手动星号');
+assert.strictEqual(textOf(both.label[2]), '+', '最后一个节点是子能力角标');
+assert.strictEqual(both.label[1].props['aria-label'], '手动触发', '星号读屏文案');
+assert.strictEqual(both.label[2].props['aria-label'], '子能力', '+ 读屏文案');
+assert.notStrictEqual(both.label[1].props['aria-label'], both.label[2].props['aria-label'],
+	'两个角标必须给读屏**不同**的名称 —— 否则读屏用户分不清"手动敲的"与"模型读的子能力"');
+assert.strictEqual(plainTextOf(both.label), 'ponytail*+', '拼起来的文本是 名字*+，实际 ' + plainTextOf(both.label));
+
+/* 旧数据没有 sub 字段：不抛错、也绝不出现 +（老宿主 / 旧 state 里根本没这个字段） */
+let legacy = null;
+assert.doesNotThrow(() => {
+	legacy = api.skillList([
+		{ name: 'ponytail', manual: true },      /* 旧形状：只有 name/manual */
+		{ name: 'my-dow-theory' }                 /* 更旧：连 manual 都没有 */
+	], 'AGENTS.md', t);
+}, '缺 sub 字段的旧数据不许抛错');
+assert.strictEqual(toHtml(legacy).indexOf('dsb-sup-strong'), -1, '旧数据里不该冒出子能力角标，实际 ' + toHtml(legacy));
+/* 跨 realm 的数组原型不同，deepStrictEqual 会判不等 ⇒ 一律用 Array.from 摊回本 realm 再比 */
+assert.deepStrictEqual(Array.from(legacy.rows, (row) => plainTextOf(row.label)), ['AGENTS.md', 'ponytail*', 'my-dow-theory'],
+	'旧数据渲染与改动前一致：只有名字后的手动星号，没有子能力角标');
+/* sub: false 与缺字段等价；sub 是字符串 'true' 这类脏值也按 false（只认真正的布尔 true） */
+assert.deepStrictEqual(
+	Array.from(api.skillList([{ name: 'x', manual: false, sub: false }, { name: 'y', manual: false, sub: 'true' }], null, t).rows,
+		(row) => plainTextOf(row.label)), ['x', 'y'],
+	'sub:false / sub:"true"（脏值）都不该出现 +，只认布尔 true');
+
 /* HTML 落点：星号在名字后面、同一个 name 节点里，且是上标类 */
 const skillHtml = toHtml(skillPanel);
 assert.ok(skillHtml.indexOf('ponytail<span class="dsb-sup" role="img" aria-label="手动触发">*</span>') !== -1,
-	'上标星号紧跟技能名之后且不带 title，实际 ' + skillHtml);
+	'上标星号排在技能名**之后**且不带 title，实际 ' + skillHtml);
 console.log('技能注入：' + skillRows.map((one) => one.name + ' ' + one.value).join(' / '));
 
 /* 英文界面：同一套排序，星号的读屏文案走英文 t */
@@ -210,18 +285,25 @@ const enStarRow = enSkills.rows.filter((row) => Array.isArray(row.label))[0];
 assert.ok(enStarRow !== undefined, '英文界面手动调用的技能同样带星号');
 assert.strictEqual(enStarRow.label[1].props['aria-label'], 'Manually invoked', '英文界面星号读屏文案走英文词表');
 assert.strictEqual(enStarRow.label[1].props['aria-hidden'], undefined, '英文界面也不用 aria-hidden');
-console.log('技能注入（英文）：星号读屏文案 ' + enStarRow.label[1].props['aria-label']);
+assert.strictEqual(enStarRow.label[0], 'ponytail', '英文界面星号同样在名字**后**');
+/* 英文界面的子能力角标：同样是 +，读屏文案走英文词表 */
+const enSubStar = api.skillList([{ name: 'ponytail', manual: false, sub: true }], null, tEn).rows[0];
+assert.strictEqual(textOf(enSubStar.label[1]), '+', '英文界面子能力角标符号不变（+ 是符号，不翻译）');
+assert.strictEqual(enSubStar.label[1].props['aria-label'], 'Sub-skill', '英文界面子能力读屏文案走英文词表');
+console.log('技能注入（英文）：星号读屏文案 ' + enStarRow.label[1].props['aria-label']
+	+ ' / 子能力 ' + enSubStar.label[1].props['aria-label']);
 
-/* ------------------------------------------- 上下文压缩：手动那条行尾加上标星号 */
+/* ------------------------------------------- 上下文压缩：手动那条名字后加上标星号 */
 const compactRows = listRows(subPanel(countsTip, 0, 3));
 assert.deepStrictEqual(compactRows, [
 	{ name: '第一次压缩', value: '第12轮3步' },
-	/* 星号在行尾（第二次压缩*）：上标挂在最后；轮间压缩没有 turn，用 afterTurn 显示「第20轮后」 */
+	/* 星号在**名字后面**（第二次压缩*）：与技能列表同一种写法；
+	   轮间压缩没有 turn，用 afterTurn 显示「第20轮后」 */
 	{ name: '第二次压缩*', value: '第20轮后' }
-], '自动压缩给第X轮Y步；手动/轮间压缩用 afterTurn 给「第X轮后」+ 行尾上标星号，实际 ' + JSON.stringify(compactRows));
+], '自动压缩给第X轮Y步；手动/轮间压缩用 afterTurn 给「第X轮后」+ 名字后的上标星号，实际 ' + JSON.stringify(compactRows));
 const compactHtml = toHtml(subPanel(countsTip, 0, 3));
 assert.ok(compactHtml.indexOf('第二次压缩<span class="dsb-sup" role="img" aria-label="手动触发">*</span>') !== -1,
-	'压缩星号落在整行末尾（同样不挂 title），实际 ' + compactHtml);
+	'压缩星号落在名字**之后**（同样不挂 title），实际 ' + compactHtml);
 /* afterTurn 也拿不到（老日志 / 宿主没给）时仍给横杠；英文界面用 After turn */
 const bareCompact = api.compactList([{ turn: null, step: null, manual: true, afterTurn: null }], t);
 assert.strictEqual(bareCompact.rows[0].value, '-', 'turn 与 afterTurn 都没有 → 横杠');
@@ -421,30 +503,33 @@ console.log('理解 B：宽度随行数收窄（20 个工具 1190px → 680px；
    在 nowrap 下恒为 false —— 那会让逐档加行彻底失效（工具一多就一直横向溢出、不升行数）。
    现在改成量列网格自身的内容宽 vs 容器宽。 */
 const fakeGrid = (scrollWidth, clientWidth) => ({ scrollWidth: scrollWidth, clientWidth: clientWidth });
+/* 判据从 `.dsb-meter-tight`（视觉样式）换成了 `[data-cols-growable]`（能力标记）：
+   技能注入 / 上下文压缩也支持加行了，但它们**不能**套 tight（长名字会挤在一起），
+   所以"要不要量溢出"不能再靠 tight 判。替身里 `growable` 对应那个属性。 */
 const fakePanel = (options) => ({
-	querySelector: (selector) => (selector === '.dsb-meter-tight' ? (options.tight === true ? {} : null) : null),
+	querySelector: (selector) => (selector === '[data-cols-growable]' ? (options.growable === true ? {} : null) : null),
 	querySelectorAll: (selector) => (selector === '.dsb-meter-cols' ? options.grids : [])
 });
-assert.strictEqual(api.toolColumnsOverflow(fakePanel({ tight: true, grids: [fakeGrid(680, 680)] })),
+assert.strictEqual(api.toolColumnsOverflow(fakePanel({ growable: true, grids: [fakeGrid(680, 680)] })),
 	false, '内容宽 = 容器宽 → 放得下（不用加行）');
-assert.strictEqual(api.toolColumnsOverflow(fakePanel({ tight: true, grids: [fakeGrid(1020, 680)] })),
+assert.strictEqual(api.toolColumnsOverflow(fakePanel({ growable: true, grids: [fakeGrid(1020, 680)] })),
 	true, '内容 1020 > 容器 680 → 放不下，继续加行数');
 /* 1px 容差：scrollWidth / clientWidth 都是整数，亚像素取整可能差 1px，不该被当成溢出而白加一档 */
-assert.strictEqual(api.toolColumnsOverflow(fakePanel({ tight: true, grids: [fakeGrid(681, 680)] })),
+assert.strictEqual(api.toolColumnsOverflow(fakePanel({ growable: true, grids: [fakeGrid(681, 680)] })),
 	false, '只差 1px（取整误差）不算溢出');
-assert.strictEqual(api.toolColumnsOverflow(fakePanel({ tight: true, grids: [fakeGrid(682, 680)] })),
+assert.strictEqual(api.toolColumnsOverflow(fakePanel({ growable: true, grids: [fakeGrid(682, 680)] })),
 	true, '差 2px 才算溢出');
-assert.strictEqual(api.toolColumnsOverflow(fakePanel({ tight: false, grids: [fakeGrid(1020, 680)] })),
-	false, '只有工具调用子视图（tight）才做这个量测');
-assert.strictEqual(api.toolColumnsOverflow(fakePanel({ tight: true, grids: [fakeGrid(400, 400), fakeGrid(900, 680)] })),
+assert.strictEqual(api.toolColumnsOverflow(fakePanel({ growable: false, grids: [fakeGrid(1020, 680)] })),
+	false, '只有支持加行的子视图（data-cols-growable）才做这个量测');
+assert.strictEqual(api.toolColumnsOverflow(fakePanel({ growable: true, grids: [fakeGrid(400, 400), fakeGrid(900, 680)] })),
 	true, '多个网格时任一溢出即算放不下');
-assert.strictEqual(api.toolColumnsOverflow(fakePanel({ tight: true, grids: [fakeGrid(400, 400), fakeGrid(680, 680)] })),
+assert.strictEqual(api.toolColumnsOverflow(fakePanel({ growable: true, grids: [fakeGrid(400, 400), fakeGrid(680, 680)] })),
 	false, '多个网格全放得下才算放得下');
-assert.strictEqual(api.toolColumnsOverflow(fakePanel({ tight: true, grids: [fakeGrid(900, 0)] })),
+assert.strictEqual(api.toolColumnsOverflow(fakePanel({ growable: true, grids: [fakeGrid(900, 0)] })),
 	false, '容器宽 0（还没布局完）不算溢出，避免首帧误加行');
 assert.strictEqual(api.toolColumnsOverflow({}), false, '拿不到 DOM（测试替身 / 没挂载）时不误判');
 assert.strictEqual(api.toolColumnsOverflow(null), false, '气泡还没挂上时给 false');
-console.log('横向溢出量测：scrollWidth > clientWidth 即"放不下"；1px 取整容差；tight 之外不量');
+console.log('横向溢出量测：scrollWidth > clientWidth 即"放不下"；1px 取整容差；data-cols-growable 之外不量');
 
 /* 空列表：气泡照样打得开，不出现空白（count 为 0 时行不带 sub，这里手工搭一层只为验子视图本身） */
 const emptyTip = {
@@ -464,6 +549,62 @@ const stringSkills = api.skillList(['ponytail', 'ponytail'], null, t);
 assert.deepStrictEqual(Array.from(stringSkills.rows, (row) => ({ label: row.label, value: row.value })),
 	[{ label: 'ponytail', value: undefined }], '字符串形式的旧契约也能聚合排序，但行上只有名字');
 console.log('空列表：技能 / 工具 / 压缩都退回一行横杠；旧字符串契约兼容');
+
+/* =============== 三个列表都支持逐档加行（用户要求：技能注入 / 上下文压缩 与工具调用同理）=====
+   用户原话：「技能注入也和工具调用同理呀，如果超过每列 3 个依然排不下，就是加每列的个数啊，
+   而不是直接可滚动啊，上下文压缩也同理啊」。
+   关键：`growable`（能力：这类列表支持加行）与 `tight`（视觉：间距收到 1ch）是**两件事** ——
+   技能名与「第二次压缩*」都很长，套 tight 会挤在一起，所以只有工具调用带 tight。 */
+const manySkills = (n) => Array.from({ length: n }, (_, i) => ({ name: 'skill-' + i, manual: i % 3 === 0 }));
+const manyCompacts = (n) => Array.from({ length: n }, (_, i) => ({ turn: i + 1, step: 2, afterTurn: null, manual: i % 3 === 0 }));
+const skillsTip30 = api.segmentView('counts', Object.assign({}, src, { progress: Object.assign({}, src.progress, { skills: manySkills(30) }) }), t).tip;
+const compactsTip20 = api.segmentView('counts', Object.assign({}, src, { progress: Object.assign({}, src.progress, { compacts: manyCompacts(20) }) }), t).tip;
+
+assert.strictEqual(api.skillList(manySkills(30), 'AGENTS.md', t).growable, true,
+	'技能注入必须带 growable（才参与逐档加行）');
+assert.strictEqual(api.compactList(manyCompacts(20), t).growable, true,
+	'上下文压缩必须带 growable');
+assert.strictEqual(api.skillList(manySkills(30), 'AGENTS.md', t).tight, undefined,
+	'技能注入**不许**带 tight（长技能名会被挤在一起）');
+assert.strictEqual(api.compactList(manyCompacts(20), t).tight, undefined,
+	'上下文压缩**不许**带 tight');
+
+/* 行数真的会逐档加：rowsPerColumn 传不同的值，列数随之减少 */
+const colsOf = (tree) => collectByClass(tree, 'dsb-meter-cols').length;
+/* 注意：全局提示词 AGENTS.md 固定排第一，所以这里实际是 31 行 */
+[[3, 11], [4, 8], [5, 7], [6, 6], [8, 4], [10, 4], [12, 3]].forEach((pair) => {
+	const perColumn = pair[0];
+	const want = pair[1];
+	const panel = subPanel(skillsTip30, 1, perColumn);
+	const cols = collectByClass(panel, 'dsb-meter-col').length;
+	assert.strictEqual(cols, want,
+		'30 条技能+AGENTS.md（共 31 行）在每列 ' + perColumn + ' 行时应排成 ' + want + ' 列，实际 ' + cols);
+	/* 每列不超过 perColumn 行 —— 这是"加行"的直接证据 */
+	assert.ok(collectByClass(panel, 'dsb-meter-row').length / cols <= perColumn,
+		'每列行数不超过 ' + perColumn);
+});
+/* 压缩列表同理 */
+[[3, 7], [5, 4], [10, 2]].forEach((pair) => {
+	const panel = subPanel(compactsTip20, 0, pair[0]);
+	const cols = collectByClass(panel, 'dsb-meter-col').length;
+	assert.strictEqual(cols, pair[1],
+		'20 条压缩在每列 ' + pair[0] + ' 行时应排成 ' + pair[1] + ' 列，实际 ' + cols);
+});
+/* 12 行封顶：31 行 / 12 = 3 列，再加行也不会变 */
+assert.strictEqual(collectByClass(subPanel(skillsTip30, 1, 12), 'dsb-meter-col').length, 3,
+	'12 行封顶时 31 行排成 3 列');
+/* 技能/压缩子视图的多列容器**不带** dsb-meter-tight（视觉口径不变） */
+assert.strictEqual(collectByClass(subPanel(skillsTip30, 1, 4), 'dsb-meter-tight').length, 0,
+	'技能注入子视图不带 dsb-meter-tight');
+assert.strictEqual(collectByClass(subPanel(compactsTip20, 0, 4), 'dsb-meter-tight').length, 0,
+	'上下文压缩子视图不带 dsb-meter-tight');
+/* 工具调用仍然带 tight（防回归） */
+const toolGrid = collectByClass(subPanel(countsTip, 2, 4), 'dsb-meter-cols')[0];
+assert.ok(String(toolGrid.props.className).indexOf('dsb-meter-tight') !== -1,
+	'工具调用子视图仍带 dsb-meter-tight（视觉口径不变）');
+
+console.log('三列表加行：技能31行 3行11列→12行3列；压缩20条 3行7列→10行2列；'
+	+ 'growable 三者都有，tight 只有工具调用有');
 
 console.log('');
 console.log('LIST LAYOUT CHECKS PASSED');

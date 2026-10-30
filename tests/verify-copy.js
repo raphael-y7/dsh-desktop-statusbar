@@ -76,7 +76,7 @@ const ZH = {
 	tipCreditsExpire: ' · {date} 到期',
 	tipCreditsRefreshLatest: ' · {date} 刷新(最近)',
 	tipCreditsExpireLatest: ' · {date} 到期(最近)',
-	tipCreditsUsed: '已用 {used} / {total}',
+	tipCreditsLeft: '剩余 {left} / {total}',
 	priceNewModel: '自定义模型',
 	/* task-24：提示行不再带币种（用户要求删掉那半句）。 */
 	secPricesHint: '填写你使用的模型单价（每百万 tokens）。',
@@ -150,7 +150,7 @@ const EN = {
 	tipCreditsExpire: ' · expires {date}',
 	tipCreditsRefreshLatest: ' · refreshes {date} (nearest)',
 	tipCreditsExpireLatest: ' · expires {date} (nearest)',
-	tipCreditsUsed: 'Used {used} / {total}',
+	tipCreditsLeft: '{left} / {total} left',
 	priceNewModel: 'Custom model'
 };
 
@@ -176,7 +176,7 @@ const STYLES = [
 	['工具彩条悬停段：轻微纵向放大（1.45 倍）+ 沿用胶囊圆头', '.dsb-bar-hoverable .dsb-bar-seg:hover{transform:scaleY(1.45);z-index:2}'],
 	['工具彩条放开 overflow，让凸起的段不被上下裁平', '.dsb-bar-hoverable{overflow:visible}'],
 	['工具彩条每段的上下判定区各外扩 7px（悬停放大更容易触发）', 'dsb-bar-hoverable .dsb-bar-seg::before{content:\\"\\";position:absolute;left:0;right:0;top:-7px;bottom:-7px}'],
-	['工具彩条悬停提示：无气泡、无阴影、纯文字 11px（比标题 12px 小）', '.dsb-hover-plain{position:fixed;z-index:41;pointer-events:none;white-space:nowrap;font-size:11px;line-height:15px;font-weight:500;color:var(--dsw-alias-label-primary);font-variant-numeric:tabular-nums}'],
+	['工具彩条悬停提示：无气泡、无阴影、纯文字 11px（比标题 12px 小）；z-index 106 跟着气泡（105）一起上移、始终高它一层', '.dsb-hover-plain{position:fixed;z-index:106;pointer-events:none;white-space:nowrap;font-size:11px;line-height:15px;font-weight:500;color:var(--dsw-alias-label-primary);font-variant-numeric:tabular-nums}'],
 	['只有工具调用子视图把间隙收到 1ch', '.dsb-meter-tight .dsb-meter-value{padding-left:1ch}'],
 	['手动调用 / 手动压缩的星号是上标（像 X² 的 ²），且不把行盒撑高', '.dsb-sup{font-size:.7em;line-height:0;vertical-align:super'],
 	['积分套餐列表一屏正好 5 块（单块 37px × 5）且可滚动', '.dsb-credits-list{max-height:calc(5 * 37px);overflow-y:auto;overscroll-behavior:contain'],
