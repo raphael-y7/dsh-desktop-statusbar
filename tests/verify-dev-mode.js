@@ -34,7 +34,7 @@ assert.ok(code.includes(marker), 'exports.apply marker not found');
    （最后一项用来真挂载/卸载设置页，验证「卸载不关开发模式」）。
    注意 `devRoundOf` 在 client.js 自带那份里是**内联箭头函数**（不是具名函数），这里照写一份
    —— `devRound` 是同一作用域里的 `let`，闭包读得到当前值。 */
-code = code.replace(marker, '\t\texports.__test = { startPluginUpdate, snapshotUpdate, setUpdateState, setDevMode, runDevPreview, isDevMode, onVersionClick, DEV_VERSION, DEV_FAIL_REASON, DEV_CLICKS, DEV_CLICK_WINDOW_MS, DEV_UNLOCK_KEY, devRoundOf: () => devRound, SettingsSection: SettingsSection, StatusBar: StatusBar, devFieldScenesOf: () => Object.assign({}, devFieldScenes) };\n' + marker);
+code = code.replace(marker, '\t\texports.__test = { startPluginUpdate, updateErrorText, updateErrorCss, setLastUpdateFailure, snapshotUpdate, setUpdateState, setDevMode, runDevPreview, isDevMode, onVersionClick, DEV_VERSION, DEV_FAIL_REASON, DEV_UPDATE_FAILURE_REASONS, DEV_CLICKS, DEV_CLICK_WINDOW_MS, DEV_UNLOCK_KEY, devRoundOf: () => devRound, SettingsSection: SettingsSection, StatusBar: StatusBar, devFieldScenesOf: () => Object.assign({}, devFieldScenes) };\n' + marker);
 
 /* ------------------------------------------------------------ 最小替身 */
 /* localStorage 替身必须是**真实可读写**的 Map（原来是 getItem 恒返回 null 的空壳）：
@@ -331,8 +331,57 @@ function collectByClass(node, name) {
 
 	api.runDevPreview();
 	assert.strictEqual(api.snapshotUpdate().note, 'failed', '第二次点击进入「更新失败」');
-	assert.strictEqual(api.snapshotUpdate().reason, api.DEV_FAIL_REASON, '带出失败原因（走真实失败显示路径）');
-	console.log('⑤ 点击 2 → 更新失败（reason=' + api.DEV_FAIL_REASON + '）');
+	assert.strictEqual(
+		api.snapshotUpdate().reason,
+		api.DEV_UPDATE_FAILURE_REASONS[0],
+		'带出失败原因（走真实失败显示路径，取分类列表第一个）'
+	);
+	assert.strictEqual(api.snapshotUpdate().failedTarget, api.DEV_VERSION, '失败态记下目标版本，重试文案不会跳版本');
+	console.log('⑤ 点击 2 → 更新失败（reason=' + api.DEV_UPDATE_FAILURE_REASONS[0] + '）');
+
+	/* ⑤b 连点把**每一种**失败原因都看一遍：分类新增时这里自动覆盖到。
+	   状态机是 null → busy →（等 DEV_BUSY_MS）→ done → failed → null，
+	   所以每一轮要等忙碌态结束，否则 busy 期间的点击会被直接挡掉。 */
+	for (let i = 1; i < api.DEV_UPDATE_FAILURE_REASONS.length; i += 1) {
+		api.runDevPreview(); // 失败态 → 回空闲
+		assert.strictEqual(api.snapshotUpdate().note, null, '第 ' + (i + 1) + ' 轮：回到空闲');
+		api.runDevPreview(); // 空闲 → 更新中
+		assert.strictEqual(api.snapshotUpdate().busy, true, '第 ' + (i + 1) + ' 轮：进入更新中');
+		await waitFor(2600);
+		assert.strictEqual(api.snapshotUpdate().note, 'done', '第 ' + (i + 1) + ' 轮：已更新');
+		api.runDevPreview(); // 已更新 → 失败
+		assert.strictEqual(
+			api.snapshotUpdate().reason,
+			api.DEV_UPDATE_FAILURE_REASONS[i],
+			'第 ' + (i + 1) + ' 种失败原因应轮换到 ' + api.DEV_UPDATE_FAILURE_REASONS[i]
+		);
+	}
+	console.log('⑤b 连点轮换 → ' + api.DEV_UPDATE_FAILURE_REASONS.length + ' 种失败原因全部可达');
+
+	/* ⑤d 失败原文必须常驻显示，且**不能靠滚动**。
+	   用户原话：「可以常驻显示，但是不需要我滚动，直接就是滑倒最下面展示全文」。
+	   这条只能靠断言 CSS 字符串守住 —— 测试环境没有真实浏览器，拿不到计算样式。 */
+	const failText = api.updateErrorText();
+	assert.ok(failText.length > 0, '失败态下必须有可显示的原文，实际长度 ' + failText.length);
+	assert.ok(
+		failText.includes('ERR_PNPM_') || failText.includes('EPERM') || failText.includes('ELIFECYCLE') || failText.includes('ENOSPC'),
+		'原文应含 pnpm 的错误码，实际：' + failText.slice(0, 120)
+	);
+	const errCss = api.updateErrorCss();
+	assert.ok(errCss.includes('white-space:pre-wrap'), '.dsb-update-error 必须保留换行，实际：' + errCss);
+	assert.strictEqual(/max-height/.test(errCss), false, '不得给报错块设 max-height（会变成滚动框）。实际 CSS: ' + JSON.stringify(errCss.slice(0, 300)));
+	assert.strictEqual(/overflow\s*:\s*(auto|scroll)/.test(errCss), false, '不得给报错块设 overflow 滚动');
+	console.log('⑤d 失败原文常驻显示：' + failText.length + ' 字符，无 max-height / 无 overflow');
+
+	/* ⑤e 超长输出要截断而不是滚动，且截断要带提示 */
+	const longText = 'X'.repeat(9000);
+	api.setLastUpdateFailure({ stdout: '', stderr: longText, summary: '', exitCode: 1 });
+	const cut = api.updateErrorText();
+	assert.ok(cut.length <= 3100, '超长输出应被截到约 3000 字符，实际 ' + cut.length);
+	assert.ok(cut.includes('3000'), '截断时必须带「只显示最后 N 个字符」的提示，实际开头：' + cut.slice(0, 80));
+	api.setLastUpdateFailure(null);
+	assert.strictEqual(api.updateErrorText(), '', '没有失败记录时不应有内容（整块不渲染）');
+	console.log('⑤e 超长截断 → ' + cut.length + ' 字符并带提示；无记录时为空');
 
 	api.runDevPreview();
 	assert.strictEqual(api.snapshotUpdate().note, null, '第三次点击回到空闲');
