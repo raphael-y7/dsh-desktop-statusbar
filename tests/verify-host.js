@@ -5,12 +5,14 @@
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
+const os = require('os');
 
 const INDEX = path.join(__dirname, '..', 'lib', 'index.js');
 
 /* apply() 会预热扫一次台账（读会话日志、必要时落盘）。把 DSH_HOME 指到 tests/ 下的
    隔离目录，别让测试读写这台机器上的真实台账 ~/.dsh/dsh-status-bar/ 。 */
-process.env.DSH_HOME = path.join(__dirname, '.dsh-test-home');
+const TEMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-test-home-'));
+process.env.DSH_HOME = TEMP_HOME;
 
 /* 假 ctx 不会跑 effect 的 cleanup，插件的用量刷新定时器会把进程吊住不退出：让它别真的起定时器 */
 globalThis.setInterval = () => 0;
@@ -22,13 +24,29 @@ globalThis.setInterval = () => 0;
 
 	const registered = [];
 	const logs = [];
+	const effectCleanups = [];
+	const disposed = [];
 	mod.apply({
 		logger: { info: (m) => logs.push(m) },
-		effect: (fn) => fn(),
-		sessionProjections: { register: (p) => { registered.push(p); return () => {}; } },
+		effect: (fn) => {
+			const cleanup = fn();
+			if (typeof cleanup === 'function') effectCleanups.push(cleanup);
+		},
+		sessionProjections: {
+			register: (p) => {
+				registered.push(p);
+				/* 模拟真实宿主：register 返回 Promise<ProjectionHandle>；卸载时必须 dispose。 */
+				return Promise.resolve({ dispose: async () => { disposed.push(p.key); } });
+			}
+		},
 		webServer: { register: () => () => {} },
 		credentials: undefined
 	});
+	/* 卸载路径：effect 的同步 cleanup 必须能在 handle ready 之前/之后都走到 dispose。 */
+	for (const cleanup of effectCleanups) cleanup();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepStrictEqual(disposed.slice().sort(), registered.map((p) => p.key).sort(),
+		'每个 projection handle 都在卸载时被 dispose（实际 ' + disposed.join(', ') + '）');
 
 	const usageProj = registered.filter((p) => p.key === 'desktopStatusbarUsage')[0];
 	assert.ok(usageProj !== undefined, 'usage projection registered');
@@ -65,10 +83,13 @@ globalThis.setInterval = () => 0;
 	   实测会话里这项曾因多减一次 cacheRead 从 1.80M 掉到 1.22M，总计因此少算。 */
 	assert.strictEqual(state.calls.length, 2, 'two calls recorded');
 	assert.deepStrictEqual(state.calls[0], {
-		at: state.calls[0].at, model: 'deepseek-flash',
+		at: state.calls[0].at, provider: 'deepseek-official', model: 'deepseek-flash',
 		input: 375000, cacheRead: 1900000, cacheWrite: 0, output: 41000
-	}, 'stream usage keeps inputTokens as the uncached input');
+	}, 'stream usage keeps inputTokens as the uncached input and records provider');
+	assert.strictEqual(Object.prototype.hasOwnProperty.call(state.calls[0], 'feeMultiplier'), false,
+		'session usage stores provider, not a fee multiplier snapshot');
 	assert.ok(state.calls[0].at > 0, 'call carries a timestamp');
+	assert.strictEqual(state.calls[1].provider, 'deepseek-official', 'data.usage call keeps its source provider');
 	assert.strictEqual(state.calls[1].input, 5000, 'data.usage path keeps inputTokens as-is');
 	assert.strictEqual(state.calls[1].cacheRead, 3000, 'data.usage path records cacheRead');
 
@@ -125,6 +146,7 @@ globalThis.setInterval = () => 0;
 	usageProj.stateSchema.parse(routed);
 	assert.strictEqual(routed.calls.length, 1, 'attempt 的用量照记，不再抛错');
 	assert.strictEqual(routed.calls[0].model, 'deepseek-flash', '型号取自前面那条请求记录');
+	assert.strictEqual(routed.calls[0].provider, 'deepseek-official', 'attempt provider 取自此前 route');
 	assert.strictEqual(routed.calls[0].input, 120, 'attempt 的用量分量按 stream 里的 usage 记');
 	assert.strictEqual(routed.current.provider, 'deepseek-official', 'provider 也从前面的请求记录补');
 
@@ -143,6 +165,20 @@ globalThis.setInterval = () => 0;
 	usageProj.stateSchema.parse(selected);
 	assert.strictEqual(selected.calls.length, 1, 'model/selection 之后 attempt 也照记');
 	assert.strictEqual(selected.calls[0].model, 'deepseek-v4-pro', '型号取自 model/selection');
+	assert.strictEqual(selected.calls[0].provider, 'deepseek-official', 'provider 取自同期 model/selection');
+
+	/* 可见消息没有 provider 时，保持空键而不从 model 名推断厂商。 */
+	let missingProvider = usageProj.init();
+	missingProvider = usageProj.apply(missingProvider, {
+		type: 'assistant/message',
+		time: Date.now(),
+		data: { turn: 1, step: 1, message: { source: { kind: 'model', model: 'deepseek-flash' } },
+			usage: { inputTokens: 11, outputTokens: 7 }, stream: [] }
+	});
+	usageProj.stateSchema.parse(missingProvider);
+	assert.strictEqual(missingProvider.calls[0].provider, '', 'missing provider defaults to empty; model name is not used to guess');
+	assert.strictEqual(Object.prototype.hasOwnProperty.call(missingProvider.calls[0], 'feeMultiplier'), false,
+		'call never stores the current multiplier snapshot');
 
 	/* 11. 两条路都拿不到型号：安全跳过这一笔，而不是抛错 */
 	let orphan = usageProj.init();
@@ -161,6 +197,16 @@ globalThis.setInterval = () => 0;
 	assert.ok(progressProj !== undefined, 'progress projection registered');
 	let progress = progressProj.init();
 	progressProj.stateSchema.parse(progress);
+
+	/* 工具名是上游字符串，可能是 JS 原型属性名：必须按**自有属性**计数，
+	   否则 `toolCounts[name]` 会读到 Object.prototype 上的函数，计数变成字符串拼接。 */
+	let protoCounts = progressProj.init();
+	protoCounts = progressProj.apply(protoCounts, {
+		type: 'tool/call', time: Date.now(),
+		data: { turn: 1, step: 1, name: '__proto__', arguments: '{}' }
+	});
+	progressProj.stateSchema.parse(protoCounts);
+	assert.strictEqual(protoCounts.toolCounts['__proto__'], 1, '原型属性名作为工具名也按自有属性正常计数');
 
 	/* 第 1 轮走到第 3 步，期间两次工具调用 */
 	[[1, 1], [1, 2], [1, 3]].forEach(([turn, step]) => {
@@ -376,8 +422,40 @@ globalThis.setInterval = () => 0;
 	assert.deepStrictEqual(cold.compacts, [{ turn: 7, step: null, afterTurn: null, manual: false }], '轮首压缩也留档，步号 null');
 	console.log('进度投影:', JSON.stringify({ turnSteps: progress.turnSteps, toolCalls: progress.toolCalls, toolNames: Object.keys(progress.toolCounts).length, skills: progress.skills, compactCount: progress.compactCount, compacts: progress.compacts }));
 
+	/* 一 31 未读投影字段清理：wire 视图不得带 updatedAt / compactTurn / compactStep。
+	   客户端只读 provider/model、contextWindow/maxOutputTokens、以及 compacts 数组
+	   （顶层 compactTurn/compactStep 是冗余副本，客户端从 compacts[last] 自己取）。 */
+	const modelProj = registered.filter((p) => p.key === 'desktopStatusbarModel')[0];
+	const capacityProj = registered.filter((p) => p.key === 'desktopStatusbarCapacity')[0];
+	assert.ok(modelProj !== undefined && capacityProj !== undefined, 'model / capacity 投影都已注册');
+	let modelState = modelProj.init();
+	modelState = modelProj.apply(modelState, {
+		type: 'assistant/message', time: Date.now(),
+		data: { message: { source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-flash' } } }
+	});
+	const modelWire = modelProj.wire.view(modelState);
+	modelProj.wire.viewSchema.parse(modelWire);
+	assert.strictEqual(modelWire.updatedAt, undefined, 'sessionModel wire 视图不带 updatedAt（客户端从不读）');
+	assert.strictEqual(modelWire.provider, 'deepseek-official', 'sessionModel wire 保留 provider');
+	let capacityState = capacityProj.init();
+	capacityState = capacityProj.apply(capacityState, { type: 'request/context', time: Date.now(), data: { contextWindow: 128000 } });
+	capacityState = capacityProj.apply(capacityState, { type: 'request/header', time: Date.now(), data: { header: { config: { maxTokens: 8192 } } } });
+	const capacityWire = capacityProj.wire.view(capacityState);
+	capacityProj.wire.viewSchema.parse(capacityWire);
+	assert.strictEqual(capacityWire.updatedAt, undefined, 'sessionCapacity wire 视图不带 updatedAt（客户端从不读）');
+	assert.strictEqual(capacityWire.contextWindow, 128000, 'sessionCapacity wire 保留 contextWindow');
+	const progressWire = progressProj.wire.view(progress);
+	progressProj.wire.viewSchema.parse(progressWire);
+	assert.strictEqual(progressWire.compactTurn, undefined, 'progress wire 视图不带 compactTurn');
+	assert.strictEqual(progressWire.compactStep, undefined, 'progress wire 视图不带 compactStep');
+	assert.ok(Array.isArray(progressWire.compacts) && progressWire.compacts.length === progress.compacts.length,
+		'progress wire 仍带完整 compacts 数组（客户端从最后一条取压缩落点）');
+	console.log('投影 wire 清理：updatedAt / compactTurn / compactStep 都不进 wire，compacts 完整保留');
+
 	console.log('\nHOST PROJECTION CHECKS PASSED');
-})().catch((error) => {
+})().finally(() => {
+	try { fs.rmSync(TEMP_HOME, { recursive: true, force: true }); } catch (error) { /* best effort */ }
+}).catch((error) => {
 	console.error('HOST PROJECTION CHECKS FAILED:', error && error.message ? error.message : error);
 	process.exitCode = 1;
 });

@@ -105,8 +105,4 @@ function pluginDir() {
 
 module.exports = {
   pluginDir: pluginDir,
-  dshHome: dshHome,
-  scanKnownLayouts: scanKnownLayouts,
-  PACKAGE_NAME: PACKAGE_NAME,
-  looksLikePlugin: looksLikePlugin,
 };

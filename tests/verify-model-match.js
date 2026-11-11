@@ -27,10 +27,11 @@ const path = require('path');
 const vm = require('vm');
 const zlib = require('zlib');
 const assert = require('assert');
+const os = require('os');
 
 const CLIENT = path.join(__dirname, '..', 'lib', 'client.js');
 const INDEX = path.join(__dirname, '..', 'lib', 'index.js');
-const HOME = path.join(__dirname, '.dsh-test-home-match');
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-test-home-match-'));
 
 globalThis.setInterval = () => 0;
 
@@ -169,7 +170,7 @@ assert.strictEqual(defaultFlash.peak.input, 2, '命中的是官方 deepseek-flas
 assert.strictEqual(defaultFlash.offPeak.input, 1, '空闲输入价 1');
 assert.strictEqual(client.priceOf('deepseek-v4.1-pro'), null,
   'deepseek-v4-pro 含数字 ⇒ 不走词元档，命不中 v4.1-pro');
-assert.strictEqual(client.priceOf('glm-5.3-flash'), null, '默认价目表里没有的模型仍返回 null');
+assert.strictEqual(client.priceOf('no-such-model-xyz-9.9'), null, '默认价目表里没有的模型仍返回 null');
 console.log('client 默认价目表：v4.1-flash-sg → deepseek-flash；v4.1-pro → null（含数字键不走词元档）');
 
 /* 已知边界（Lead 确认为预期，不做断言）：库里只剩那条全 0 的 `1` 时，
@@ -259,20 +260,28 @@ function writeSessionLog(sessionId, model) {
     const day = payload.body.days.filter((d) => d.date === DAY)[0];
     assert.ok(day !== undefined, '有 ' + DAY + ' 的日桶（' + one.name + '）');
     const ledger = JSON.parse(fs.readFileSync(path.join(HOME, 'dsh-status-bar', 'usage-ledger.json'), 'utf8'));
-    const unpriced = (ledger.days[DAY] || {}).unpriced;
-    const hasUnpriced = unpriced !== undefined && unpriced[one.model] !== undefined;
+    /* 新用量写 `unpricedByProvider` 数组，历史台账迁移下来的旧 `unpriced[model]` 仍保留；
+       这里汇总成「有欠账的模型名集合」，断言只关心该模型有没有进欠账。 */
+    const ledgerDay = ledger.days[DAY] || {};
+    const debtModels = new Set();
+    const legacyUnpriced = ledgerDay.unpriced === undefined || ledgerDay.unpriced === null ? {} : ledgerDay.unpriced;
+    for (const name of Object.keys(legacyUnpriced)) debtModels.add(name);
+    for (const debt of (Array.isArray(ledgerDay.unpricedByProvider) ? ledgerDay.unpricedByProvider : [])) {
+      if (debt !== null && typeof debt === 'object' && typeof debt.model === 'string') debtModels.add(debt.model);
+    }
+    const hasUnpriced = debtModels.has(one.model);
     if (one.expect === null) {
       assert.strictEqual(day.cost, 0, 'host 匹配：' + one.name + ' 不该命中任何键，实际 cost=' + day.cost);
       assert.strictEqual(hasUnpriced, true, 'host 匹配：' + one.name + ' 命中不到价，用量要记进 unpriced');
       hostKeys.push(null);
     } else if (isBlankKey) {
       assert.strictEqual(day.cost, 0, 'host 匹配：' + one.name + ' 命中全 0 条目 ⇒ ¥0，实际 cost=' + day.cost);
-      assert.strictEqual(unpriced, undefined, 'host 匹配：' + one.name + ' 命中了条目（哪怕是 0 价）就不该记欠账');
+      assert.strictEqual(debtModels.size, 0, 'host 匹配：' + one.name + ' 命中了条目（哪怕是 0 价）就不该记欠账');
       hostKeys.push(one.expect);
     } else {
       assert.strictEqual(day.cost, MARKS[one.expect],
         'host 匹配：' + one.name + ' 应命中 ' + one.expect + '（¥' + MARKS[one.expect] + '），实际 cost=' + day.cost);
-      assert.strictEqual(unpriced, undefined, 'host 匹配：' + one.name + ' 命中了价就不该有欠账');
+      assert.strictEqual(debtModels.size, 0, 'host 匹配：' + one.name + ' 命中了价就不该有欠账');
       hostKeys.push(MARK_OF[day.cost]);
     }
     assert.strictEqual(day.total, M, 'host 记账：token 照记（' + one.name + '）');
@@ -289,7 +298,9 @@ function writeSessionLog(sessionId, model) {
 
   console.log('');
   console.log('MODEL MATCH CHECKS PASSED（client 与 host 同一套输入、同一套结果）');
-})().catch((error) => {
+})().finally(() => {
+	try { fs.rmSync(HOME, { recursive: true, force: true }); } catch (error) { /* best effort */ }
+}).catch((error) => {
   console.error('MODEL MATCH CHECKS FAILED: ' + (error && error.message ? error.message : error));
   process.exitCode = 1;
 });

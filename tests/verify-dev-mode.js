@@ -34,7 +34,7 @@ assert.ok(code.includes(marker), 'exports.apply marker not found');
    （最后一项用来真挂载/卸载设置页，验证「卸载不关开发模式」）。
    注意 `devRoundOf` 在 client.js 自带那份里是**内联箭头函数**（不是具名函数），这里照写一份
    —— `devRound` 是同一作用域里的 `let`，闭包读得到当前值。 */
-code = code.replace(marker, '\t\texports.__test = { startPluginUpdate, updateErrorText, updateErrorCss, setLastUpdateFailure, snapshotUpdate, setUpdateState, setDevMode, runDevPreview, isDevMode, onVersionClick, DEV_VERSION, DEV_FAIL_REASON, DEV_UPDATE_FAILURE_REASONS, DEV_CLICKS, DEV_CLICK_WINDOW_MS, DEV_UNLOCK_KEY, devRoundOf: () => devRound, SettingsSection: SettingsSection, StatusBar: StatusBar, devFieldScenesOf: () => Object.assign({}, devFieldScenes) };\n' + marker);
+code = code.replace(marker, '\t\texports.__test = { startPluginUpdate, updateErrorText, updateErrorCss, setLastUpdateFailure, snapshotUpdate, setUpdateState, setDevMode, runDevPreview, isDevMode, onVersionClick, DEV_VERSION, DEV_UPDATE_FAILURE_REASONS, DEV_CLICKS, DEV_CLICK_WINDOW_MS, DEV_UNLOCK_KEY, devRoundOf: () => devRound, SettingsSection: SettingsSection, StatusBar: StatusBar, devFieldScenesOf: () => Object.assign({}, devFieldScenes) };\n' + marker);
 
 /* ------------------------------------------------------------ 最小替身 */
 /* localStorage 替身必须是**真实可读写**的 Map（原来是 getItem 恒返回 null 的空壳）：
@@ -156,37 +156,6 @@ function mountAndUnmountSettings(extraProps) {
 		}
 		return { mounted: mounted, cleanupCount: cleanupCount };
 	}
-}
-
-/**
- * 渲染一次 StatusBar（拿不到真 DOM 就只能直接调组件函数）。
- *
- * 它只是「底栏能在这套最小替身下渲染出来」的冒烟渲染（有 useState/useEffect 等），
- * 渲染崩了别的断言也会跟着失真。开发模式现在没有任何"组件在不在"的渲染期信号 ——
- * 它就是主插件的一部分。
- */
-function renderStatusBar() {
-	effectCleanups = [];
-	const t = (key) => '<' + key + '>';
-	const node = api.StatusBar({
-		t: t,
-		sessionId: 's1',
-		useProjection: () => undefined,
-		useSession: (selector) => (selector === undefined ? undefined : selector({
-			running: false, partial: null, runningCalls: [], lastAgentError: null
-		})),
-		useSessions: () => undefined,
-		useChat: () => undefined
-	});
-	/* 渲染期间注册的 effect 已经同步跑完（替身的 useEffect 就是立刻调用），
-	   这里顺手把 cleanup 也跑掉：底栏里有定时器，攒着会污染后面几次渲染。 */
-	const cleanups = effectCleanups;
-	effectCleanups = [];
-	while (cleanups.length > 0) {
-		const one = cleanups.pop();
-		try { one(); } catch (error) { /* 单个 cleanup 失败不影响其余 */ }
-	}
-	return node;
 }
 
 /* ---------------------------------------------------------- 渲染辅助（⑰⑰-b 用）

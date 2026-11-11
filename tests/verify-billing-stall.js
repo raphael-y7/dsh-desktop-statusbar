@@ -21,11 +21,12 @@ const path = require('path');
 const vm = require('vm');
 const zlib = require('zlib');
 const assert = require('assert');
+const os = require('os');
 
 const ROOT = path.join(__dirname, '..');
 const CLIENT = path.join(ROOT, 'lib', 'client.js');
 const INDEX = path.join(ROOT, 'lib', 'index.js');
-const HOME = path.join(__dirname, '.dsh-test-home-billing-stall');
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-test-home-billing-stall-'));
 
 /* 隔离 DSH_HOME：绝不碰真实 ~/.dsh */
 process.env.DSH_HOME = HOME;
@@ -395,7 +396,9 @@ function loadClient(stored) {
 
 	console.log('');
 	console.log('BILLING STALL CHECKS PASSED');
-})().catch((error) => {
+})().finally(() => {
+	try { fs.rmSync(HOME, { recursive: true, force: true }); } catch (error) { /* best effort */ }
+}).catch((error) => {
 	console.error('BILLING STALL CHECKS FAILED: ' + (error && error.message ? error.message : error));
 	process.exitCode = 1;
 });

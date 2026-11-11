@@ -1035,4 +1035,9 @@ assert.strictEqual(noGrantSegs.length, 1, '赠金全是 0 ⇒ 只剩灰段一段
 assert.ok(Math.abs(noGrantSegs[0].width - 100) < 0.01, '那一整段就是 100%');
 console.log('色条分支证据：新口径灰 ' + proofSegs[0].width.toFixed(2) + '%（老口径会是 50%）；'
 	+ '赠金全 0 时只出一段');
+
+/* 需求 10：活跃总览悬停浮层的样式必须高过官方层且不吃指针（否则会被盖住 / 闪跳） */
+assert.ok(code.includes('.dsb-tip.dsb-hovercard{font-size:10px;line-height:14px;z-index:120;pointer-events:none}'),
+	'悬停浮层样式必须含 z-index:120 与 pointer-events:none');
+console.log('悬停浮层样式：z-index:120 + pointer-events:none');
 console.log('TIP PANEL CHECKS PASSED');

@@ -146,7 +146,13 @@ const unusedCss = Array.from(classes).filter((name) => {
 report(unusedCss.length === 0, 'CSS 类 ' + classes.size + ' 个，没用到的：' + (unusedCss.length === 0 ? '无' : unusedCss.join(', ')));
 
 const classList = Array.from(classes);
-const missingStyle = Array.from(used).filter((name) => classList.indexOf(name) < 0);
+/* 结构标记类：只作为 DOM 定位锚（测试按 hasClass 找行/分组），布局由同容器的
+   其它类（如 .dsb-relay-row）提供，本身刻意不带样式。白名单逐个列名并写明
+   用途，新增标记类时必须在这里登记，防止白名单被当逃生门滥用。 */
+const markerClasses = new Set(['dsb-modelrow']);
+const missingStyle = Array.from(used)
+	.filter((name) => classList.indexOf(name) < 0)
+	.filter((name) => markerClasses.has(name) !== true);
 report(missingStyle.length === 0, 'JSX 用到的类 ' + used.size + ' 个，缺样式的：' + (missingStyle.length === 0 ? '无' : missingStyle.join(', ')));
 /* 前缀反查：拼接出来的前缀若在 CSS 里一个类都以它打头，说明拼接的类名根本不存在（写错或已删样式） */
 const missingPrefix = Array.from(dynamicPrefixes).filter((prefix) => classList.some((name) => name.indexOf(prefix) === 0) !== true);

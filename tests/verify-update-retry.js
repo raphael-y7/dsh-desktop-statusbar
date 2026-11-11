@@ -22,7 +22,7 @@ const marker = '\t\texports.apply = apply;';
 code = code.replace(marker,
 	'\t\texports.__test = { startPluginUpdate, snapshotUpdate, setUpdateState, setDevMode, '
 	+ 'onUpdateClick, dismissUpdateFailure, isDevMode, SettingsSection, '
-	+ 'DEV_VERSION, DEV_FAIL_REASON };\n' + marker);
+	+ 'DEV_VERSION };\n' + marker);
 
 /* ------------------------------------------------------------------ 替身 */
 /** 每次 fetch 的记录；测试按 url 取最近一条来控制它何时 resolve/reject。 */

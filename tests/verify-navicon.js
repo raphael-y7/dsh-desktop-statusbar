@@ -44,20 +44,34 @@ function makeCell(text, withSvg) {
 			return node;
 		},
 		querySelector(sel) {
-			if (sel === '.lucide-gauge') return cell.__replaced !== null ? cell.__replaced : null;
+			if (sel === '.lucide-gauge') return cell.__replaced !== null ? cell.__replaced : (cell.__gauge === undefined ? null : cell.__gauge);
 			if (sel === '.dsb-nav-pill') return kids.filter((one) => one.className === 'dsb-nav-pill')[0] || null;
+			/* 新宿主：图标包在 span.navIcon 里；旧宿主：按钮里直接一个 svg */
+			if (sel === 'span.navIcon svg') return cell.__wrapSvg === undefined ? null : cell.__wrapSvg;
+			if (sel === 'svg') return cell.__directSvg === undefined ? null : cell.__directSvg;
 			return null;
 		}
 	};
-	cell.firstElementChild = withSvg === false
-		? { tagName: 'span' }
-		: { tagName: 'svg', replaceWith(node) { cell.__replaced = node; } };
+	const replaceWith = (node) => { cell.__replaced = node; };
+	if (withSvg === 'navIcon') {
+		/* 宿主 0.2.2-rc.1：按钮 > span.navIcon > svg（+ span.navLabel） */
+		cell.__wrapSvg = { tagName: 'svg', replaceWith: replaceWith };
+	} else if (withSvg === 'gauge') {
+		/* 图标槽已经渲染出 gauge：DOM 兜底必须跳过 */
+		cell.__gauge = { className: 'lucide lucide-gauge' };
+	} else if (withSvg !== false) {
+		/* 旧宿主：按钮 > svg */
+		cell.__directSvg = { tagName: 'svg', replaceWith: replaceWith };
+	}
+	cell.firstElementChild = withSvg === false ? { tagName: 'span' } : { tagName: 'svg' };
 	return cell;
 }
 const documentStub = {
+	querySelector: () => null,
+	head: { appendChild() {} },
 	querySelectorAll: (sel) => (sel === 'nav button' ? cells : []),
 	createElement: () => {
-		const box = { innerHTML: '', className: '', textContent: '' };
+		const box = { innerHTML: '', className: '', textContent: '', dataset: {}, style: {} };
 		Object.defineProperty(box, 'firstElementChild', {
 			get() {
 				return box.innerHTML.indexOf('lucide-gauge') >= 0
@@ -104,11 +118,11 @@ const reactStub = {
 
 vm.createContext(sandbox);
 vm.runInContext(code, sandbox, { filename: 'client.js' });
-const api = captured.factory((name) => {
+const pluginModule = captured.factory((name) => {
 	if (name === 'react') return reactStub;
 	throw new Error('unexpected require: ' + name);
-}).__test;
-
+});
+const api = pluginModule.__test;
 /* ------------------------------------------------------------------ 用例 */
 cells.push(makeCell('通用设置', true));
 cells.push(makeCell('状态栏', true));
@@ -119,6 +133,7 @@ assert.strictEqual(cells[1].__replaced !== null, true, '状态栏那一项应被
 assert.strictEqual(cells[1].__replaced.className, 'lucide lucide-gauge', '应换成 gauge 图标');
 assert.strictEqual(cells[0].__replaced, null, '通用设置不该被动');
 assert.strictEqual(cells[2].__replaced, null, '桌面设置不该被动');
+
 assert.strictEqual(observers, 1, '应挂上一个 DOM 观察者');
 
 const first = cells[1].__replaced;
@@ -126,6 +141,23 @@ const stop2 = api.installNavIcon(() => '状态栏');
 assert.strictEqual(cells[1].__replaced, first, '已经换过的不重复替换');
 stop2();
 assert.strictEqual(observers, 1, '关掉第二个观察者后仍剩一个');
+
+/* 宿主 0.2.2-rc.1：图标被包进 span.navIcon，按钮第一个子元素不再是 svg —— 本次缺陷的直接回归 */
+cells.length = 0;
+cells.push(makeCell('通用设置', 'navIcon'), makeCell('状态栏', 'navIcon'));
+const stopWrap = api.installNavIcon(() => '状态栏');
+assert.strictEqual(cells[1].__replaced !== null, true, '新宿主结构：span.navIcon > svg 也要换成 gauge');
+assert.strictEqual(cells[1].__replaced.className, 'lucide lucide-gauge', '新宿主结构换的是 gauge');
+assert.strictEqual(cells[0].__replaced, null, '新宿主结构下其它项不动');
+stopWrap();
+
+/* 图标槽已渲染出 gauge 时：DOM 兜底跳过，绝不重复插入 */
+cells.length = 0;
+cells.push(makeCell('状态栏', 'gauge'));
+const stopGauge = api.installNavIcon(() => '状态栏');
+assert.strictEqual(cells[0].__replaced, null, '已有 .lucide-gauge 时跳过（不重复插入）');
+stopGauge();
+
 
 cells.length = 0;
 cells.push(makeCell('状态栏', false));
@@ -140,6 +172,41 @@ assert.strictEqual(cells[0].__replaced, null, '标签为空时不做任何事');
 stop4();
 stop();
 assert.strictEqual(observers, 0, '全部卸载后没有观察者');
+
+/* 官方图标槽：宿主 0.2.2+ 用 settings.section.icon 渲染导航图标；旧宿主没有这个槽也不能影响 apply */
+const makeCtx = (iconSlotSupported) => {
+	const registered = [];
+		const cleanups = [];
+	const ctx = {
+		effect: (fn) => { const cleanup = typeof fn === 'function' ? fn() : undefined; if (typeof cleanup === 'function') cleanups.push(cleanup); return () => {}; },
+		locale: { register: () => () => {}, bind: () => (key) => (key === 'nav' ? '状态栏' : '') },
+		slots: {
+			inject: (name, run) => {
+				if (name === 'settings.section.icon' && iconSlotSupported !== true) throw new Error('no such slot');
+				return run();
+			},
+			register: (entry, component) => { registered.push({ entry, component }); }
+		}
+	};
+		return { ctx, registered, cleanups };
+};
+const withIconSlot = makeCtx(true);
+assert.doesNotThrow(() => pluginModule.apply(withIconSlot.ctx), 'apply 不能抛错（新宿主）');
+const iconReg = withIconSlot.registered.filter((one) => one.entry.name === 'settings.section.icon')[0];
+assert.ok(iconReg !== undefined, 'apply 必须注册 settings.section.icon 槽');
+assert.strictEqual(iconReg.entry.id, 'dsh-desktop-statusbar', '图标槽 id 必须与 settings.section 完全一致');
+assert.strictEqual(iconReg.entry.order, 40, '图标槽 order = 40（与分区一致）');
+assert.strictEqual(typeof iconReg.component, 'function', '图标槽组件可渲染');
+const oldHost = makeCtx(false);
+assert.doesNotThrow(() => pluginModule.apply(oldHost.ctx), '旧宿主没有 icon 槽时 apply 也不能抛错');
+assert.strictEqual(oldHost.registered.filter((one) => one.entry.name === 'settings.section.icon').length, 0, '旧宿主不注册图标槽');
+assert.strictEqual(oldHost.registered.filter((one) => one.entry.name === 'settings.section').length, 1, '旧宿主仍注册设置分区');
+	/* 卸载这两次 apply 注册的观察者，别影响后面的胶囊用例（每个 installNavIcon 挂一个 MutationObserver） */
+	withIconSlot.cleanups.forEach((fn) => fn());
+	oldHost.cleanups.forEach((fn) => fn());
+	assert.strictEqual(observers, 0, 'apply 用例卸载后没有残留观察者');
+cells.length = 0;
+
 
 /* 「发现新版本」胶囊：默认隐藏，自检到 registry 上有新版才挂；只挂本插件那一项、重复扫描不重复挂 */
 const pillCount = (cell) => cell.__kids.filter((one) => one.className === 'dsb-nav-pill').length;

@@ -23,7 +23,7 @@ const ONLINE = process.argv.includes('--online');
 	const {
 		installedVersion, resolveSelfDir, resolvePnpm, resolvePnpmDetailed, runCommand,
 		isReleaseAgeBlocked, selfUpdateOnce, runSelfUpdate, isUpdating, lastUpdateResult,
-		updateArgs, RELEASE_AGE_OVERRIDE
+		updateArgs, RELEASE_AGE_OVERRIDE, killProcessTree
 	} = mod;
 
 	/* ------------------------------------------------------ 读版本 */
@@ -37,6 +37,29 @@ const ONLINE = process.argv.includes('--online');
 	assert.strictEqual(JSON.parse(readFileSync(join(selfDir, 'package.json'), 'utf8')).name, 'dsh-desktop-statusbar', 'resolveSelfDir 指到本包根目录');
 	assert.strictEqual(existsSync(join(selfDir, 'lib', 'self-update.js')), true, 'lib 就在 selfDir 下面（不是指到 lib/）');
 	console.log('自身定位：' + selfDir);
+
+	/* -------------------------------------------------- killProcessTree：taskkill 失败分支 */
+	/* spawnSync 的失败不抛异常：taskkill 不存在（error=ENOENT）或拒绝访问（status≠0）
+	   必须显式检查返回值并回退 child.kill。旧实现只 catch 异常 ⇒ 失败分支永远不可达。 */
+	{
+		let killed = 0;
+		const child = { pid: 4242, kill: () => { killed += 1; } };
+		killProcessTree(child, { platform: 'win32', spawnSync: () => ({ status: 1, error: null }) });
+		assert.strictEqual(killed, 1, 'taskkill status≠0 ⇒ 回退 child.kill');
+		killed = 0;
+		killProcessTree(child, { platform: 'win32', spawnSync: () => ({ status: null, error: new Error('ENOENT') }) });
+		assert.strictEqual(killed, 1, 'taskkill error=ENOENT ⇒ 回退 child.kill');
+		killed = 0;
+		killProcessTree(child, { platform: 'win32', spawnSync: () => { throw new Error('spawn failed'); } });
+		assert.strictEqual(killed, 1, 'spawnSync 抛错 ⇒ 回退 child.kill');
+		killed = 0;
+		killProcessTree(child, { platform: 'win32', spawnSync: () => ({ status: 0, error: null }) });
+		assert.strictEqual(killed, 0, 'taskkill 成功 ⇒ 不再 child.kill');
+		killed = 0;
+		killProcessTree({ pid: undefined, kill: () => { killed += 1; } }, { platform: 'win32', spawnSync: () => ({ status: 1 }) });
+		assert.strictEqual(killed, 0, '没有 pid 的 child 直接跳过');
+		console.log('killProcessTree：taskkill 失败/抛错都回退 child.kill，成功不重复杀');
+	}
 
 	/* -------------------------------------------------- pnpm 定位：环境变量覆盖口 */
 	/* 注意：这里不依赖任何文件候选的真实布局 —— 全部用注入的 env / execPath / exists，

@@ -20,11 +20,12 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const assert = require('assert');
+const os = require('os');
 const hostLib = require('./_host-lib.js');
 
 const CLIENT = path.join(__dirname, '..', 'lib', 'client.js');
 const TMP = path.join(__dirname, '.dsh-test-home-holiday-lib');
-const HOME = path.join(__dirname, '.dsh-test-home-holiday');
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-test-home-holiday-'));
 const HOST_EXPORTS = ['dshHome', 'holidaysPath', 'extraHolidayDays', 'saveHolidayDays', 'isLegalHoliday', 'isPeakTime'];
 
 globalThis.setInterval = () => 0;
@@ -171,6 +172,7 @@ function loadClient(stored) {
 		console.log('HOLIDAY PERSIST CHECKS PASSED');
 	} finally {
 		hostLib.cleanup(TMP);
+		try { fs.rmSync(HOME, { recursive: true, force: true }); } catch (error) { /* best effort */ }
 	}
 })().catch((error) => {
 	console.error('HOLIDAY PERSIST CHECKS FAILED: ' + (error && error.message ? error.message : error));

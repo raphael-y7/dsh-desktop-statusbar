@@ -1,0 +1,468 @@
+{
+  "generatedAt": "2026-11-04",
+  "pruning": "2026-11-04 第四轮精简：每厂商只保留最新一代常用档（目标 ≤40 条），旧代条目已删除；所有保留条目的价格数值与官网原文一致，未做任何修改。逐厂商保留依据见各 vendor 的 retention 字段。",
+  "verifiedAt": "2026-11-04",
+  "unit": "每百万 tokens 价格；currency 为 CNY 或 USD；null 表示官网未公布。",
+  "tiered": "tiered=true 时使用 peak / offPeak 两档，其余模型用顶层 input/cacheRead/cacheWrite/output。",
+  "longContext": "可选字段：超过 threshold 后的整单价（input/cacheRead/cacheWrite/output）。",
+  "vendors": [
+    {
+      "id": "deepseek",
+      "label": "DeepSeek",
+      "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "models": [
+        {
+          "name": "deepseek-flash",
+          "currency": "USD",
+          "tiered": true,
+          "peak": {
+            "input": 0.3,
+            "cacheRead": 0.006,
+            "cacheWrite": null,
+            "output": 1.2
+          },
+          "offPeak": {
+            "input": 0.15,
+            "cacheRead": 0.003,
+            "cacheWrite": null,
+            "output": 0.6
+          },
+          "note": "官网只列 cache hit / cache miss / output 三项，无独立缓存写入价；错峰价为峰时价 50%。峰时：UTC 周一至周五 01:00-04:00、06:00-10:00（中国法定节假日除外）。",
+          "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+          "verifiedAt": "2026-11-04"
+        },
+        {
+          "name": "deepseek-v4-pro",
+          "currency": "USD",
+          "tiered": true,
+          "peak": {
+            "input": 1.32,
+            "cacheRead": 0.044,
+            "cacheWrite": null,
+            "output": 3.96
+          },
+          "offPeak": {
+            "input": 0.66,
+            "cacheRead": 0.022,
+            "cacheWrite": null,
+            "output": 1.98
+          },
+          "note": "同上；cache miss 输入价即 input。",
+          "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+          "verifiedAt": "2026-11-04"
+        }
+      ],
+      "retention": "官网当前在售全部模型只有 flash / v4-pro 两条，全保留。"
+    },
+    {
+      "id": "anthropic",
+      "label": "Anthropic",
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "models": [
+        {
+          "name": "claude-fable-5.2",
+          "currency": "USD",
+          "input": 8,
+          "cacheRead": 0.2,
+          "cacheWrite": 10,
+          "output": 40,
+          "note": "cacheWrite 为官网所列的缓存写入价；非峰谷、单档价。",
+          "source": "https://www.anthropic.com/pricing",
+          "verifiedAt": "2026-11-10"
+        },
+        {
+          "name": "claude-fable-5.1",
+          "currency": "USD",
+          "input": 10,
+          "cacheRead": 0.25,
+          "cacheWrite": 12.5,
+          "output": 50,
+          "note": "cacheWrite 为 5m 写入价；1h 写入 $20。",
+          "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "verifiedAt": "2026-11-04"
+        },
+        {
+          "name": "claude-opus-5.5",
+          "currency": "USD",
+          "input": 4,
+          "cacheRead": 0.2,
+          "cacheWrite": 5,
+          "output": 20,
+          "note": "1h 写入 $8。",
+          "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "verifiedAt": "2026-11-04"
+        },
+        {
+          "name": "claude-sonnet-5.5",
+          "currency": "USD",
+          "input": 2,
+          "cacheRead": 0.1,
+          "cacheWrite": 2.5,
+          "output": 10,
+          "note": "1h 写入 $4。",
+          "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "verifiedAt": "2026-11-04"
+        },
+        {
+          "name": "claude-haiku-5.5",
+          "currency": "USD",
+          "input": 0.1,
+          "cacheRead": 0.01,
+          "cacheWrite": 0.125,
+          "output": 0.5,
+          "longContext": {
+            "input": 0.5,
+            "cacheRead": 0.05,
+            "cacheWrite": 0.625,
+            "output": 2.5,
+            "threshold": ">100k prompt tokens"
+          },
+          "note": "按 prompt 长度分档：≤100k tokens 为左列价，>100k 见 longContext。",
+          "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "verifiedAt": "2026-11-04"
+        }
+      ],
+      "retention": "5.5 代 opus/sonnet/haiku 三条为官网当前主推；fable 5.2 为 2026-11-10 官网最新价（fable 5.1 保留）；更早 5/4.x 与 mythos 等非点名家族按规则删除。"
+    },
+    {
+      "id": "zhipu",
+      "label": "智谱 GLM",
+      "source": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+      "models": [
+        {
+          "name": "GLM-5.3",
+          "currency": "CNY",
+          "input": 8,
+          "cacheRead": 2,
+          "cacheWrite": 0,
+          "output": 28,
+          "note": "缓存存储限时免费。 上下文 1M。",
+          "source": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+          "verifiedAt": "2026-11-04"
+        },
+        {
+          "name": "GLM-5.3-Flash",
+          "currency": "CNY",
+          "input": 0.8,
+          "cacheRead": 0.23,
+          "cacheWrite": 0,
+          "output": 2.8,
+          "note": "缓存存储限时免费。 支持图片/视频/文件/文本输入。",
+          "source": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+          "verifiedAt": "2026-11-04"
+        },
+        {
+          "name": "GLM-5.3-FlashX",
+          "currency": "CNY",
+          "input": 2,
+          "cacheRead": 0.57,
+          "cacheWrite": 0,
+          "output": 7,
+          "note": "缓存存储限时免费。 支持图片/视频/文件/文本输入。",
+          "source": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+          "verifiedAt": "2026-11-04"
+        }
+      ],
+      "note": "价格为官网“元/百万 Tokens”；图片/视频/语音/向量模型按次或按字符计价，未收录。",
+      "retention": "GLM-5.3 系列（标准 / Flash / FlashX）为官网“最新模型”表全部条目；FlashX-Legal 属小众变体未留，5.2/5.1/5-Turbo/5/4.x/视觉旧代全删。"
+    },
+    {
+      "id": "alibaba",
+      "label": "阿里云通义千问",
+      "source": "https://help.aliyun.com/zh/model-studio/model-pricing",
+      "models": [
+        {
+          "name": "qwen3.8-flash",
+          "currency": "CNY",
+          "input": 0.8,
+          "cacheRead": null,
+          "cacheWrite": null,
+          "output": 2.7,
+          "note": "华北2（北京）；单次请求输入 0<Token≤1M；非思考与思考模式同价。上下文缓存“享有折扣”但未公布具体单价；Batch 调用的输入输出均按 50% 计费。",
+          "source": "https://help.aliyun.com/zh/model-studio/model-pricing",
+          "verifiedAt": "2026-11-04"
+        },
+        {
+          "name": "qwen3.8-27b",
+          "currency": "CNY",
+          "input": 3,
+          "cacheRead": null,
+          "cacheWrite": null,
+          "output": 12,
+          "note": "华北2（北京）；单次请求输入 0<Token≤1M。新加坡/国际地域：输入 3.646、输出 21.875（元/百万 tokens）。上下文缓存折扣未公布单价。",
+          "source": "https://help.aliyun.com/zh/model-studio/model-pricing",
+          "verifiedAt": "2026-11-04"
+        }
+      ],
+      "retention": "按用户确认只保留 qwen3.8-flash 与 qwen3.8-27b 两条。"
+    },
+    {
+      "id": "moonshot",
+      "label": "月之暗面 Kimi",
+      "source": "https://platform.moonshot.cn/docs/pricing",
+      "models": [
+        {
+          "name": "kimi-k3.1-pro",
+          "currency": "CNY",
+          "input": 13,
+          "cacheRead": 1.3,
+          "cacheWrite": 13,
+          "output": 68,
+          "note": "cacheWrite 为 5min TTL 价；1h TTL 写入 ¥26.00。Batch API 为标准价 60%。",
+          "source": "https://platform.moonshot.cn/docs/pricing",
+          "verifiedAt": "2026-11-04"
+        },
+        {
+          "name": "kimi-k3.1-pro-highspeed",
+          "currency": "CNY",
+          "input": 26,
+          "cacheRead": 1.3,
+          "cacheWrite": 26,
+          "output": 136,
+          "note": "5min TTL 写入 ¥26.00；1h TTL ¥52.00。",
+          "source": "https://platform.moonshot.cn/docs/pricing",
+          "verifiedAt": "2026-11-04"
+        },
+        {
+          "name": "kimi-k3",
+          "currency": "CNY",
+          "input": 20,
+          "cacheRead": 2,
+          "cacheWrite": 20,
+          "output": 100,
+          "note": "5min TTL 写入 ¥20.00；1h TTL ¥40.00。Batch 60%。",
+          "source": "https://platform.moonshot.cn/docs/pricing",
+          "verifiedAt": "2026-11-04"
+        }
+      ],
+      "retention": "K3.1 Pro 为最新一代（含 highspeed 档）；K3 仍可正常调用，按用户补充加回（官网顺序在 K3.1 之后）；K2 系列为上一代，已删。"
+    },
+    {
+      "id": "google",
+      "label": "Google Gemini",
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "models": [
+        {
+          "name": "gemini-4-argon",
+          "currency": "USD",
+          "input": 2.0,
+          "cacheRead": 0.1,
+          "cacheWrite": null,
+          "output": 10.0,
+          "note": "仅付费层（无免费额度）；2026-12-01 起调至 input 4.00 / cache 0.20 / output 20.00。仅支持隐式缓存。",
+          "source": "https://ai.google.dev/gemini-api/docs/pricing",
+          "verifiedAt": "2026-11-04"
+        },
+        {
+          "name": "gemini-3.8-flash",
+          "currency": "USD",
+          "input": 0.75,
+          "cacheRead": 0.075,
+          "cacheWrite": null,
+          "output": 3.75,
+          "note": "促销价至 2026-12-31；2027-01-01 起 input 1.50 / cache 0.15 / output 7.50。缓存存储另计 $0.50/1M tokens/小时。",
+          "source": "https://ai.google.dev/gemini-api/docs/pricing",
+          "verifiedAt": "2026-11-04"
+        }
+      ],
+      "note": "仅收录文本/对话类 token 计价模型；图像生成、TTS、Transcribe、Embedding、Robotics 等按张/按秒/按字符计价，未收录。缓存写入不计费（Google 只收缓存存储费），故 cacheWrite 为 null。",
+      "retention": "Gemini 4 Argon 为最新旗舰，Gemini 3.8 Flash 为最新一代 Flash 档；3.6/3.5/3.1/2.5 及 live/omni 等旧代或非主推档已删。"
+    },
+    {
+      "id": "xai",
+      "label": "xAI Grok",
+      "source": "https://docs.x.ai/docs/pricing",
+      "models": [
+        {
+          "name": "grok-4.7",
+          "currency": "USD",
+          "input": 2.0,
+          "cacheRead": 0.5,
+          "cacheWrite": null,
+          "output": 6.0,
+          "longContext": {
+            "input": 4.0,
+            "cacheRead": 1.0,
+            "output": 12.0,
+            "threshold": "prompt >= 200k tokens"
+          },
+          "note": "短上下文价（<200k tokens）；≥200k tokens 的整单按 longContext 计费。缓存写入不收费；Batch 8 折；Priority 2x；US 区域端点 1.1x。 上下文 500k。",
+          "source": "https://docs.x.ai/docs/pricing",
+          "verifiedAt": "2026-11-04"
+        }
+      ],
+      "note": "仅收录 Text API 文本模型；Imagine/Voice/Tools 按张、按秒、按次计价，未收录。",
+      "retention": "Grok 4.7 为官网最新旗舰；4.6/4.5/4.3/4.20 与 grok-build 已删。"
+    },
+    {
+      "id": "xiaomi",
+      "label": "小米 MiMo",
+      "source": "https://mimo.mi.com/static/docs/price/pay-as-you-go.md",
+      "models": [
+        {
+          "name": "mimo-v2.6-pro",
+          "currency": "CNY",
+          "input": 3.0,
+          "cacheRead": 0.025,
+          "cacheWrite": 0,
+          "output": 6.0,
+          "note": "国内人民币价；缓存写入限时免费。海外美元价：$0.435 / $0.0036 / $0.87。",
+          "source": "https://mimo.mi.com/static/docs/price/pay-as-you-go.md",
+          "verifiedAt": "2026-11-04"
+        },
+        {
+          "name": "mimo-v2.6-flash",
+          "currency": "CNY",
+          "input": 1.0,
+          "cacheRead": 0.02,
+          "cacheWrite": 0,
+          "output": 2.0,
+          "note": "国内人民币价；海外美元价：$0.14 / $0.0028 / $0.28。",
+          "source": "https://mimo.mi.com/static/docs/price/pay-as-you-go.md",
+          "verifiedAt": "2026-11-04"
+        },
+        {
+          "name": "mimo-v2.6-pro-ultraspeed",
+          "currency": "CNY",
+          "input": 30.0,
+          "cacheRead": 0.25,
+          "cacheWrite": 0,
+          "output": 60.0,
+          "note": "国内人民币价；不支持 Batch API。海外美元价：$4.35 / $0.036 / $8.7。",
+          "source": "https://mimo.mi.com/static/docs/price/pay-as-you-go.md",
+          "verifiedAt": "2026-11-04"
+        }
+      ],
+      "note": "mimo-v2.5-pro / mimo-v2.5 已于 2026-10-21 下线，未收录；Batch API 为实时价 50%。",
+      "retention": "MiMo-V2.6 为最新一代，保留 pro / flash 两条常用档，并按用户点名补回 pro-ultraspeed（官网 API 名确认为 mimo-v2.6-pro-ultraspeed，非 mimo-v2.6-ultraspeed）。"
+    },
+    {
+      "id": "muse",
+      "label": "Muse (Meta)",
+      "source": "https://dev.meta.ai/docs/pricing-rate-limits",
+      "models": [
+        {
+          "name": "muse-wonder-1.0",
+          "currency": "USD",
+          "input": 4.0,
+          "cacheRead": 0.2,
+          "cacheWrite": null,
+          "output": 20.0,
+          "note": "Standard 模式；Muse Wonder 无 Contributor 模式。",
+          "source": "https://dev.meta.ai/docs/pricing-rate-limits",
+          "verifiedAt": "2026-11-04"
+        },
+        {
+          "name": "muse-spark-1.3",
+          "currency": "USD",
+          "input": 1.25,
+          "cacheRead": 0.15,
+          "cacheWrite": null,
+          "output": 4.25,
+          "note": "Standard 模式。",
+          "source": "https://dev.meta.ai/docs/pricing-rate-limits",
+          "verifiedAt": "2026-11-04"
+        }
+      ],
+      "note": "查证结论：Muse 是 Meta 的模型系列（Meta Model API / dev.meta.ai），非独立厂商。Muse Image 按张 $0.01、Muse Voice Transcribe 按音频 $0.18/小时，未收录。",
+      "retention": "Muse Wonder 1.0 为旗舰（官网 models 页确认 Wonder 仅有 1.0，无 1.1/2.0），Muse Spark 1.3 为最新 Spark；1.2/1.1 与 contributor 变体已删。"
+    },
+    {
+      "id": "openai",
+      "label": "OpenAI",
+      "source": "https://platform.openai.com/docs/pricing",
+      "models": [
+        {
+          "name": "gpt-6-astra",
+          "currency": "USD",
+          "input": 10,
+          "cacheRead": 1,
+          "cacheWrite": 12.5,
+          "output": 50,
+          "note": "Standard 档、短上下文档价格；Batch/Flex 为 5 折，Fast 为 2x，Ultrafast 为 6x；30m 缓存写入价，12h 写入为 30m 的 2 倍。",
+          "source": "https://platform.openai.com/docs/pricing",
+          "verifiedAt": "2026-11-04"
+        },
+        {
+          "name": "gpt-6.1-sol",
+          "currency": "USD",
+          "input": 2,
+          "cacheRead": 0.1,
+          "cacheWrite": 2.5,
+          "output": 10,
+          "note": "Standard 档、短上下文档价格；Batch/Flex 为 5 折，Fast 为 2x，Ultrafast 为 6x；30m 缓存写入价，12h 写入为 30m 的 2 倍。",
+          "source": "https://platform.openai.com/docs/pricing",
+          "verifiedAt": "2026-11-04"
+        },
+        {
+          "name": "gpt-6.1-terra",
+          "currency": "USD",
+          "input": 1,
+          "cacheRead": 0.05,
+          "cacheWrite": 1.25,
+          "output": 5,
+          "note": "Standard 档、短上下文档价格；Batch/Flex 为 5 折，Fast 为 2x，Ultrafast 为 6x；30m 缓存写入价，12h 写入为 30m 的 2 倍。",
+          "source": "https://platform.openai.com/docs/pricing",
+          "verifiedAt": "2026-11-04"
+        },
+        {
+          "name": "gpt-6-luna",
+          "currency": "USD",
+          "input": 0.1,
+          "cacheRead": 0.01,
+          "cacheWrite": 0.125,
+          "output": 0.5,
+          "note": "Standard 档、短上下文档价格；Batch/Flex 为 5 折，Fast 为 2x，Ultrafast 为 6x；30m 缓存写入价，12h 写入为 30m 的 2 倍。",
+          "source": "https://platform.openai.com/docs/pricing",
+          "verifiedAt": "2026-11-04"
+        }
+      ],
+      "note": "o 系列仅 o3 / o3-pro 仍在价格页；gpt-5.6-sol 另在 Cyber 表中出现（同价）。图像/音频/转写/嵌入模型与微调价格未收录。",
+      "retention": "官网“最新”折叠组 4 条：GPT-6 Astra 旗舰 + GPT-6.1 的 sol/terra + gpt-6-luna 轻量档；gpt-6-sol 被 6.1-sol 取代，5.x/4.x/o 系列及 cyber/rosalind/realtime 等专用档已删。"
+    }
+  ],
+  "verification": [
+    {
+      "name": "muse",
+      "conclusion": "Muse 是 Meta 的模型系列（Meta Model API，dev.meta.ai）：muse-wonder-1.0、muse-spark-1.3 / 1.2 / 1.1 及 contributor 变体。已收录到 vendors 中的 muse。"
+    },
+    {
+      "name": "fable",
+      "conclusion": "fable 是 Anthropic 的模型系列：Claude Fable 5.2 / 5.1 与 Claude Fable 5 均在 Anthropic 官方定价表中，已收录。"
+    },
+    {
+      "name": "haike",
+      "conclusion": "官方页面未出现名为 haike 的模型。最可能是 Anthropic Claude Haiku 的谐音/拼写变体：用户同批点名的 fable 已确认为 Anthropic 模型，且 haike 与 Haiku 音近；Claude Haiku 系列已在目录中（claude-haiku-5.5 / claude-haiku-4.5 / claude-haiku-3.5）。此为推测，未新增 haike 条目、未编价格，需用户确认。"
+    },
+    {
+      "name": "huike",
+      "conclusion": "用户已澄清是 haike，huike 作废，不再单独追查。"
+    }
+  ],
+  "unverified": [
+    {
+      "name": "haike",
+      "reason": "在 12 家已收录厂商官方定价页 + Anthropic 模型总览 + 腾讯混元/百度千帆/讯飞开放平台/商汤 SenseNova/华为云/火山引擎页面全文检索，均无 haike 或「海科/海客」；公开检索（DuckDuckGo/Bing）也无可核实的官方模型。未收录、未编价；疑为 Claude Haiku 谐音，见「名称查证结论」。",
+      "searchedAt": "2026-11-04",
+      "searchedSources": [
+        "https://api-docs.deepseek.com/quick_start/pricing/",
+        "https://platform.claude.com/docs/en/about-claude/pricing",
+        "https://platform.claude.com/docs/en/about-claude/models/overview",
+        "https://platform.openai.com/docs/pricing",
+        "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "https://help.aliyun.com/zh/model-studio/model-pricing",
+        "https://platform.moonshot.cn/docs/pricing",
+        "https://ai.google.dev/gemini-api/docs/pricing",
+        "https://docs.x.ai/docs/pricing",
+        "https://mimo.mi.com/static/docs/price/pay-as-you-go.md",
+        "https://dev.meta.ai/docs/pricing-rate-limits",
+        "https://cloud.tencent.com/document/product/1729/97731",
+        "https://cloud.baidu.com/doc/WENXINWORKSHOP/s/hlrk4akp7",
+        "https://www.xfyun.cn/doc/",
+        "https://platform.sensenova.cn/",
+        "https://www.huaweicloud.com/pricing.html",
+        "https://www.volcengine.com/docs/82379/1099320"
+      ]
+    }
+  ]
+}

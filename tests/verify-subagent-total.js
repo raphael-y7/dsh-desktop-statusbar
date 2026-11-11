@@ -31,11 +31,12 @@ const path = require('path');
 const vm = require('vm');
 const zlib = require('zlib');
 const assert = require('assert');
+const os = require('os');
 
 const ROOT = path.join(__dirname, '..');
 const CLIENT = path.join(ROOT, 'lib', 'client.js');
 const INDEX = path.join(ROOT, 'lib', 'index.js');
-const HOME = path.join(__dirname, '.dsh-test-home-subagent');
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-test-home-subagent-'));
 
 globalThis.setInterval = () => 0;
 process.env.DSH_HOME = HOME;
@@ -112,6 +113,15 @@ function writeSession(id, parentSession, events, headerId) {
 	const header = JSON.stringify({ type: 'session', id: headerId === undefined ? id : headerId, parentSession: parentSession });
 	const lines = [header].concat(events.map((one) => JSON.stringify(one)));
 	const dir = path.join(HOME, 'sessions', id);
+	fs.mkdirSync(dir, { recursive: true });
+	fs.writeFileSync(path.join(dir, 'usage.jsonl.zstd'),
+		zlib.zstdCompressSync(Buffer.from(lines.join('\n') + '\n', 'utf8')));
+}
+/** 真实目录结构：sessions/<workspace>/<session>/usage.jsonl.zstd（根目录下多一层工作区分组）。 */
+function writeNestedSession(workspace, id, parentSession, events) {
+	const header = JSON.stringify({ type: 'session', id: id, parentSession: parentSession });
+	const lines = [header].concat(events.map((one) => JSON.stringify(one)));
+	const dir = path.join(HOME, 'sessions', workspace, id);
 	fs.mkdirSync(dir, { recursive: true });
 	fs.writeFileSync(path.join(dir, 'usage.jsonl.zstd'),
 		zlib.zstdCompressSync(Buffer.from(lines.join('\n') + '\n', 'utf8')));
@@ -898,6 +908,90 @@ const zeroTokens = () => ({ input: 0, cacheRead: 0, cacheWrite: 0, output: 0 });
 		'job/registered **不**在 IDLE 里（它是"还在干活"，判成结束就是误杀）');
 	console.log('一 26c 末事件读不出 ⇒ 在跑（ghost 条目）；读不出 + 超龄 ⇒ 结束');
 
+	/* ============================ 一 27〜29：task-27 的缓存/目录/单次扫描修复 */
+	/* 一 27 真实嵌套目录：sessions/<workspace>/<session>。新增子会话只改 workspace 目录
+	   mtime（sessions 根目录 mtime 不变）；缓存必须在 10s TTL 内也能立刻发现它。 */
+	writeNestedSession('ws-real', 'p-nested', null, [turnStartEvent(ROUND_AT)]);
+	writeNestedSession('ws-real', 'nested-a', 'p-nested', [usageEvent(1, 1, 1, ROUND_AT, 'kid-model', { input: M })]);
+	const nested1 = await get('sessionId=p-nested&since=0');
+	assert.strictEqual(nested1.body.children.length, 1, '嵌套 workspace 下找到第一个子会话');
+	assert.strictEqual(nested1.body.total.cost, 3, '第一个子会话 ¥3');
+	/* 关键：不新建 workspace，只在**已存在的 ws-real** 下新增一个会话目录 */
+	writeNestedSession('ws-real', 'nested-b', 'p-nested', [usageEvent(1, 1, 1, ROUND_AT, 'kid-model', { input: M })]);
+	const nested2 = await get('sessionId=p-nested&since=0');
+	assert.strictEqual(nested2.body.children.length, 2, '同一 workspace 新增子会话后必须立即可见（不等 10s TTL）');
+	assert.strictEqual(nested2.body.total.cost, 6, '两个子会话合计 ¥6');
+	console.log('一 27 嵌套目录：ws-real 下新增子会话在本 workspace mtime 变化后立即可见（1 → 2 个）');
+
+	/* 一 28 parentLogFactsOfText：一次扫描同时给出 since / lastUsageAt。 */
+	const factsText = [
+		JSON.stringify({ type: 'session', id: 'p-facts', parentSession: null }),
+		JSON.stringify({ type: 'turn/start', time: 2000, data: { turn: 1 } }),
+		JSON.stringify({ type: 'user/message', time: 2100, data: { source: { kind: 'user' } } }),
+		JSON.stringify({ type: 'assistant/message', time: 2200, data: { turn: 1, step: 1, usage: { inputTokens: 1000 } } }),
+		JSON.stringify({ type: 'turn/end', time: 2300, data: { turn: 1 } }),
+		JSON.stringify({ type: 'turn/start', time: 3000, data: { turn: 2 } })
+	].join('\n');
+	const facts = mod.parentLogFactsOfText(factsText);
+	assert.strictEqual(facts.since, 3000, 'parentLogFactsOfText：since = 最后一条 turn/start');
+	assert.strictEqual(facts.lastUsageAt, 2200, 'parentLogFactsOfText：lastUsageAt = 最后一条非空 usage');
+	/* 一次 split/parse：2 万行无关文本 + 相关事件，JSON.parse 只该被调用相关行那么多次 */
+	const bulk = [];
+	for (let i = 0; i < 20000; i += 1) bulk.push(JSON.stringify({ type: 'tool/call', seq: i, data: { name: 'read' } }));
+	const parseText = bulk.join('\n') + '\n' + factsText;
+	let parseCalls = 0;
+	const realJsonParse = JSON.parse;
+	JSON.parse = function (...args) { parseCalls += 1; return realJsonParse.apply(this, args); };
+	let bulkFacts = null;
+	try {
+		bulkFacts = mod.parentLogFactsOfText(parseText);
+	} finally {
+		JSON.parse = realJsonParse;
+	}
+	assert.strictEqual(bulkFacts.since, 3000, '2 万行无关文本不影响 since');
+	assert.strictEqual(bulkFacts.lastUsageAt, 2200, '2 万行无关文本不影响 lastUsageAt');
+	assert.ok(parseCalls <= 10, '单次扫描只解析相关行（实际 JSON.parse ' + parseCalls + ' 次；两趟旧实现会更多）');
+	console.log('一 28 parentLogFactsOfText：一次扫描给出 since/lastUsageAt，2 万行无关文本只 parse ' + parseCalls + ' 次');
+
+	/* 一 29 缓存字节/淘汰：events 计入字节；父会话快照按文件路径替换而不是按 mtime 堆积版本。 */
+	assert.strictEqual(mod.subagentFileEntryBytes({ events: [] }), 64, '空条目 64 字节');
+	assert.strictEqual(mod.subagentFileEntryBytes({ events: new Array(10).fill({}) }),
+		64 + 10 * 160, 'events 按 160 字节/条计入字节上限');
+	mod.resetSubagentCachesForTest();
+	const heavy = { events: new Array(20000).fill({}) };
+	for (let i = 0; i < 30; i += 1) mod.putSubagentFileCacheEntry('k-' + i, heavy);
+	const cacheStats = mod.subagentCacheStatsForTest();
+	assert.ok(cacheStats.fileSize < 30, '超过 64MB 后最旧条目被淘汰（实际 ' + cacheStats.fileSize + ' 条）');
+	assert.ok(cacheStats.fileBytes <= 64 * 1024 * 1024, '淘汰后总字节回到预算内（实际 ' + cacheStats.fileBytes + '）');
+	/* 父会话快照：同一个文件先用 mtime=1 算一次，再用 mtime=2 算一次 ⇒ 只保留一条（替换旧快照） */
+	const factsFile = path.join(HOME, 'sessions', 'facts-parent.zstd');
+	fs.writeFileSync(factsFile, zlib.zstdCompressSync(Buffer.from(factsText + '\n', 'utf8')));
+	mod.resetSubagentCachesForTest();
+	await mod.parentLogFactsOf({ file: factsFile, mtimeMs: 1, size: fs.statSync(factsFile).size });
+	await mod.parentLogFactsOf({ file: factsFile, mtimeMs: 2, size: fs.statSync(factsFile).size });
+	const sinceStats = mod.subagentCacheStatsForTest();
+	assert.strictEqual(sinceStats.sinceSize, 1, '同一父文件只保留一条最新快照（不按 mtime 累积版本）');
+	assert.ok(sinceStats.sinceBytes > 0, '父日志快照字节计入总预算');
+	console.log('一 29 缓存：events 计入 ' + cacheStats.fileBytes + ' 字节账并触发淘汰 · 父快照按路径替换（1 条）');
+
+	/* 一 30 profile 路径按分隔符边界：sibling 目录不能被当成 DSH_HOME 子目录采信 */
+	const savedProfileDirEnv = process.env.DSH_PROFILE_DIR;
+	const savedDshHome = process.env.DSH_HOME;
+	try {
+		process.env.DSH_HOME = path.join(HOME, 'home-a');
+		process.env.DSH_PROFILE_DIR = path.join(HOME, 'home-ab', 'profiles', 'desktop');
+		assert.notStrictEqual(mod.currentProfileDir(), process.env.DSH_PROFILE_DIR,
+			'home-ab 不是 home-a 的子目录（字符串前缀相同也不行）');
+		process.env.DSH_PROFILE_DIR = path.join(HOME, 'home-a', 'profiles', 'desktop');
+		assert.strictEqual(mod.currentProfileDir(), process.env.DSH_PROFILE_DIR,
+			'真正的 home-a/profiles/desktop 必须被采信');
+	} finally {
+		if (savedProfileDirEnv === undefined) delete process.env.DSH_PROFILE_DIR;
+		else process.env.DSH_PROFILE_DIR = savedProfileDirEnv;
+		process.env.DSH_HOME = savedDshHome;
+	}
+	console.log('一 30 profile 路径：按分隔符边界判断（home-ab 不被当成 home-a 子目录）');
+
 	/* ============================================================ 二、client：并入 + 撤拆分块 + 1s */
 	const api = loadClient({
 		version: 6, priceVersion: 2, enabled: true, wrap: true, currency: 'CNY',
@@ -1224,7 +1318,9 @@ const zeroTokens = () => ({ input: 0, cacheRead: 0, cacheWrite: 0, output: 0 });
 
 	console.log('');
 	console.log('SUBAGENT TOTAL CHECKS PASSED');
-})().catch((error) => {
+})().finally(() => {
+	try { fs.rmSync(HOME, { recursive: true, force: true }); } catch (error) { /* best effort */ }
+}).catch((error) => {
 	console.error('SUBAGENT TOTAL CHECKS FAILED: ' + (error && error.message ? error.message : error));
 	process.exitCode = 1;
 });

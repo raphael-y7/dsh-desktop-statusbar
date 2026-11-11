@@ -11,7 +11,8 @@
  *   · `startEdit`：新建 → 全空；此外**唯一**的"整条没填过"判据 = 该条目所有格都是**数字 0**
  *     （旧版本遗留数据没有 null，分不清"没填"与"填了 0"，只能按没填过处理 → 显示空白）；
  *     **只要有一格是 null 就照实显示**（null → 空白，数字 → 数字）。
- * 另：只收窄**价格输入框**（`.dsb-settings .dsb-field input`）：高 24px、宽 52px（"够放 XX.XX 就行"）；
+ * 另：只收窄**价格输入框**（`.dsb-settings .dsb-field input`）：高 24px、宽 calc(6ch + 18px)
+ * （刚好显示 XXX.XX；52px 连「28.41」都显示不全 —— 用户实测 Claude 切成人民币后数值被截断）；
  * 通用 `.dsb-settings input[type=text]` / `input[type=number]` / `select` **仍是 28px**，
  * 按钮 `.dsb-action` 28px、编辑浮层 `.dsb-edit-pop` 保持 gap:8px / padding:10px 12px；
  * 单档价格行（没有档位名的那种）三组字段双边对齐，有档位名的两行仍整体贴右。
@@ -24,10 +25,11 @@ const path = require('path');
 const vm = require('vm');
 const zlib = require('zlib');
 const assert = require('assert');
+const os = require('os');
 
 const PLUGIN = path.join(__dirname, '..', 'lib', 'client.js');
 const INDEX = path.join(__dirname, '..', 'lib', 'index.js');
-const HOME = path.join(__dirname, '.dsh-test-home-filled');
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-test-home-filled-'));
 
 globalThis.setInterval = () => 0;
 /* host 那段要隔离：先指到 tests/ 下的目录，别碰真实 ~/.dsh/dsh-status-bar/ */
@@ -443,7 +445,13 @@ const moreSpecific = (left, right) => {
 const PRICE_RULE = '.dsb-settings .dsb-field input[type=text],.dsb-settings .dsb-field input[type=number]';
 assert.strictEqual(propOf(PRICE_RULE, 'height'), '24px',
 	'价格输入框高度 24px（用户澄清：只收窄价格输入框）');
-assert.strictEqual(propOf(PRICE_RULE, 'width'), '52px', '价格输入框宽度 52px（够放 XX.XX 就行）');
+assert.strictEqual(propOf(PRICE_RULE, 'width'), 'calc(6ch + 18px)',
+	'价格输入框宽度 = 6 个字符（xxx.xx）+ 左右 padding 16px + 边框 2px（用户要求刚好显示 6 个字符）');
+assert.ok(/calc\(6ch \+ 18px\)/.test(propOf(PRICE_RULE, 'width')),
+	'价格输入框宽度必须按 6ch 计算，才能完整显示 XXX.XX（如 123.45）：' + propOf(PRICE_RULE, 'width'));
+assert.strictEqual(propOf(PRICE_RULE, 'min-width'), propOf(PRICE_RULE, 'width'),
+	'窄面板下价格框不许被 flex 压窄（min-width = width）');
+assert.strictEqual(propOf(PRICE_RULE, 'flex'), 'none', '价格框不参与收缩（放不下就整组换行）');
 assert.strictEqual(propOf(PRICE_RULE, 'text-align'), 'right', '价格输入框数字右对齐（保持原样）');
 assert.strictEqual(propOf('.dsb-settings input[type=text],.dsb-settings input[type=number],.dsb-settings select', 'height'),
 	'28px', '通用输入框 / select 仍是 28px（自定义模型名称框也走这条）');
@@ -457,8 +465,11 @@ assert.strictEqual(propOf('.dsb-settings input[type=text],.dsb-settings input[ty
 });
 assert.strictEqual(specificity('.dsb-settings .dsb-field input[type=number]')[1],
 	specificity('.dsb-settings input[type=number]')[1] + 1, '价格框比通用规则正好多一个类（.dsb-field）');
-assert.strictEqual(propOf('.dsb-settings .dsb-fields', 'margin-left'), 'auto', '价格三组字段默认整体贴右（左边留给档位名）');
+assert.strictEqual(propOf('.dsb-settings .dsb-fields', 'flex'), '1', '价格三组字段占满档位名右侧的剩余宽度');
+assert.strictEqual(propOf('.dsb-settings .dsb-fields', 'min-width'), '0', '窄面板下价格字段容器可以收缩');
 assert.strictEqual(propOf('.dsb-settings .dsb-fields', 'display'), 'flex', '价格三组字段是 flex 行');
+assert.strictEqual(propOf('.dsb-settings .dsb-fields', 'flex-wrap'), 'wrap', '价格字段放不下时在容器内部换行');
+assert.strictEqual(propOf('.dsb-settings .dsb-tier', 'flex-wrap'), 'nowrap', '档位名与价格字段容器始终同一行（不整体换行）');
 /* task-19：单档价格行改用「全时段」档位名 + 常规规则；靠"没有档位名"判断的双边对齐规则已被舍弃。
    这里作为**负断言**钉住，防止它被加回来（加回来会让单档行与两档行的对齐方式不一致）。 */
 assert.strictEqual(cssText.indexOf('dsb-tier:not(:has(.dsb-tier-name))'), -1,
@@ -466,8 +477,8 @@ assert.strictEqual(cssText.indexOf('dsb-tier:not(:has(.dsb-tier-name))'), -1,
 assert.strictEqual(propOf('.dsb-settings .dsb-action', 'height'), '28px', '按钮高度保持 28px（不被这轮改动波及）');
 assert.strictEqual(propOf('.dsb-settings .dsb-edit-pop', 'gap'), '8px', '编辑浮层 gap 保持 8px');
 assert.strictEqual(propOf('.dsb-settings .dsb-edit-pop', 'padding'), '10px 12px', '编辑浮层 padding 保持 10px 12px');
-console.log('8 样式：价格输入框 24px 高 / 52px 宽；通用输入框与按钮 28px、浮层 gap:8px/padding:10px 12px'
-	+ '（单档行的 :not(:has(.dsb-tier-name)) 双边对齐规则已按 task-19 舍弃）');
+console.log('8 样式：价格输入框 24px 高 / calc(6ch + 18px) 宽（刚好放 XXX.XX）；档位行不换行、字段容器内部换行；'
+	+ '通用输入框与按钮 28px、浮层 gap:8px/padding:10px 12px（单档行的 :not(:has(.dsb-tier-name)) 双边对齐规则已按 task-19 舍弃）');
 
 /* -------------------------------------------- 10：峰谷联动 linkedTierValue */
 assert.strictEqual(api.linkedTierValue(50, true), '25', '填高峰 50 → 空闲 25（÷2）');
@@ -511,29 +522,37 @@ assert.strictEqual(scrollCalls, beforeOpen + 2,
 	'勾上「峰谷计价」后浮层长高一截，要再滚一次（依赖里带 draft.tiered），实际 ' + (scrollCalls - beforeOpen));
 console.log('12 自动滚动：打开编辑区滚一次 · 依赖没变不重滚 · 勾上峰谷计价后再滚一次');
 
-/* -------------------------------------------- 13：勾「峰谷计价」时单档填过的值必须清空 + 未勾时有「全时段」名 */
-/* 第 12 节已经把 paid-real 这张卡打开了（且被勾成了两档），这里直接用它，别再点一次「修改」。 */
-if (collectByClass(cardByKey(renderSettings(), 'paid-real'), 'dsb-tier-name').length > 1) {
-	findInput(collectByClass(cardByKey(renderSettings(), 'paid-real'), 'dsb-inline-check')[0], 'checkbox')
-		.props.onChange({ target: { checked: false } });
-}
-let toggleCard = cardByKey(renderSettings(), 'paid-real');
-assert.deepStrictEqual(collectByClass(toggleCard, 'dsb-tier-name').map(textOf), ['全时段'],
-	'未勾峰谷计价时价格行前面要有「全时段」档位名（task-19）');
-assert.strictEqual(numberValues(toggleCard).length, 3, '未勾时只有三个价格框');
-fieldsOf(toggleCard).forEach((input) => input.props.onChange({ target: { value: '7' } }));
-toggleCard = cardByKey(renderSettings(), 'paid-real');
-assert.deepStrictEqual(numberValues(toggleCard), ['7', '7', '7'], '前置：单档三个框都填上了 7');
-findInput(collectByClass(toggleCard, 'dsb-inline-check')[0], 'checkbox').props.onChange({ target: { checked: true } });
-const tieredCard = cardByKey(renderSettings(), 'paid-real');
-const tieredValues = numberValues(tieredCard);
-assert.ok(tieredValues.length >= 4, '勾上峰谷计价后应至少四个价格框，实际 ' + tieredValues.length);
-assert.deepStrictEqual(tieredValues, tieredValues.map(() => ''),
-	'勾上「峰谷计价」后所有价格框必须全空（单档填过的 7 不得出现在高峰/空闲行里）');
-assert.strictEqual(JSON.stringify(tieredValues).indexOf('7'), -1, '渲染结果里不许残留单档填过的 7');
-assert.deepStrictEqual(collectByClass(tieredCard, 'dsb-tier-name').map(textOf), ['空闲时段', '高峰时段'],
-	'勾上后两档都带档位名，且不再有「全时段」');
-console.log('13 勾「峰谷计价」：单档填过的值全部清空（' + tieredValues.length + ' 个框全为 ""）· 未勾时有「全时段」名');
+	/* -------------------------------------------- 13：task-25 —— 切换「峰谷计价」不丢数据 */
+	/* 第 12 节已经把 paid-real 这张卡打开了（且被勾成了两档），这里直接用它，别再点一次「修改」。 */
+	if (collectByClass(cardByKey(renderSettings(), 'paid-real'), 'dsb-tier-name').length > 1) {
+		findInput(collectByClass(cardByKey(renderSettings(), 'paid-real'), 'dsb-inline-check')[0], 'checkbox')
+			.props.onChange({ target: { checked: false } });
+	}
+	let toggleCard = cardByKey(renderSettings(), 'paid-real');
+	assert.deepStrictEqual(collectByClass(toggleCard, 'dsb-tier-name').map(textOf), ['全时段'],
+		'未勾峰谷计价时价格行前面要有「全时段」档位名（task-19）');
+	assert.strictEqual(numberValues(toggleCard).length, 3, '未勾时只有三个价格框');
+	fieldsOf(toggleCard).forEach((input) => input.props.onChange({ target: { value: '7' } }));
+	toggleCard = cardByKey(renderSettings(), 'paid-real');
+	assert.deepStrictEqual(numberValues(toggleCard), ['7', '7', '7'], '前置：单档三个框都填上了 7');
+	/* 勾上：单档价搬到「低谷（空闲）」行，高峰按 ×2 联动带出 —— 两档都不清空 */
+	findInput(collectByClass(toggleCard, 'dsb-inline-check')[0], 'checkbox').props.onChange({ target: { checked: true } });
+	const tieredCard = cardByKey(renderSettings(), 'paid-real');
+	const tierRows = collectByClass(tieredCard, 'dsb-tier');
+	assert.strictEqual(tierRows.length, 2, '勾上后是两档');
+	assert.deepStrictEqual(collectByClass(tieredCard, 'dsb-tier-name').map(textOf), ['空闲时段', '高峰时段'],
+		'勾上后两档都带档位名，且不再有「全时段」');
+	assert.deepStrictEqual(numberValues(tierRows[0]), ['7', '7', '7'], '勾上：单档填过的 7 搬到低谷行（不再清空）');
+	assert.deepStrictEqual(numberValues(tierRows[1]), ['14', '14', '14'], '勾上：高峰按低谷 ×2 自动带出');
+	/* 取消：低谷行的值搬回单档行（计价读 peak 单档行），价格回到原值 */
+	findInput(collectByClass(tieredCard, 'dsb-inline-check')[0], 'checkbox').props.onChange({ target: { checked: false } });
+	const backCard = cardByKey(renderSettings(), 'paid-real');
+	assert.deepStrictEqual(numberValues(backCard), ['7', '7', '7'], '取消：价格框恢复单档原值（没有变空白）');
+	assert.deepStrictEqual(collectByClass(backCard, 'dsb-tier-name').map(textOf), ['全时段'], '取消后回到「全时段」');
+	/* 留给第 14 节：把勾选停在两档（它靠切换 draft.tiered 触发滚动 effect） */
+	findInput(collectByClass(backCard, 'dsb-inline-check')[0], 'checkbox').props.onChange({ target: { checked: true } });
+	renderSettings();
+	console.log('13 task-25 切换峰谷计价：单档 7 → 低谷 7 / 高峰 14，再取消回到单档 7（不丢数据）');
 
 /* -------------------------------------------- 14：底部自动滚入（task-19）—— 按差值滚 / 没被裁不动 / rAF 补一次 */
 rafQueue.clear();
@@ -604,6 +623,31 @@ assert.strictEqual(scrollCalls, beforeGrow + 1, 'rAF 已消费完，再 flush �
 assert.strictEqual(SCROLLER.scrollTop, grownTop, '滚动位置也不再变');
 console.log('15 币种菜单：按**菜单节点**底边滚（按钮在视野内 → 按它算会是 0）· 没被裁不动 · 下一帧长高补滚一次且幂等');
 
+/* -------------------------------------------- 16：添加自定义模型 → 自动展开「自定义模型」分组并滚到新卡 */
+POP.box = { top: 100, bottom: 400, height: 300, left: 0, right: 100, width: 100 };
+rafQueue.clear();
+let treeBeforeAdd = renderSettings();
+/* 前面的用例已经加过自定义模型，分组可能是展开的 —— 先模拟点一下收起，再验 addModel 会重新展开 */
+const customBefore = collectByClass(treeBeforeAdd, 'dsb-catalog-vendor').filter((one) => one.props.key === '__custom')[0];
+if (customBefore !== undefined && customBefore.props.open === true) {
+	customBefore.props.onToggle({ currentTarget: { open: false } });
+	treeBeforeAdd = renderSettings();
+}
+const customClosed = collectByClass(treeBeforeAdd, 'dsb-catalog-vendor').filter((one) => one.props.key === '__custom')[0];
+assert.ok(customClosed === undefined || customClosed.props.open !== true, '前置：自定义模型分组已收起');
+findInput(treeBeforeAdd, 'text').props.onChange({ target: { value: 'my-custom' } });
+renderSettings();
+const beforeAddScroll = scrollCalls;
+buttonByLabel(renderSettings(), t('priceAdd')).props.onClick();
+const afterAdd = renderSettings();
+assert.ok(cardByKey(afterAdd, 'my-custom') !== undefined, '新自定义模型卡出现');
+const customGroup = collectByClass(afterAdd, 'dsb-catalog-vendor').filter((one) => one.props.key === '__custom')[0];
+assert.ok(customGroup !== undefined, '自定义模型分组已渲染');
+assert.strictEqual(customGroup.props.open, true, '自定义模型分组自动展开（details open），不用用户再点一次');
+assert.strictEqual(collectByClass(cardByKey(afterAdd, 'my-custom'), 'dsb-field').length, 3, '新卡编辑区随分组一起可见（3 个价格框）');
+assert.strictEqual(scrollCalls, beforeAddScroll + 1, '添加自定义模型后自动滚到新增价格卡（实际 ' + (scrollCalls - beforeAddScroll) + ' 次）');
+console.log('16 添加自定义模型：自定义分组自动展开（details open）· 自动滚到新增价格卡');
+
 /* -------------------------------------------- 9：host 收到带 null 的价格库照样只按数值计价 */
 const BEIJING = 8 * 3600 * 1000;
 const pad2 = (value) => (value < 10 ? '0' + String(value) : String(value));
@@ -652,12 +696,24 @@ const DAY = (() => {
 			offPeak: { input: 4, cacheRead: null, cacheWrite: null, output: null }
 		}
 	};
+	/* 欠账现在有两套结构：新用量写 `unpricedByProvider` 数组（按 provider+model+倍率分条），
+	   历史台账迁移下来的旧 `unpriced[model]` 仍然保留。这里统一按模型名汇总，
+	   让下游断言只关心「这个模型有没有欠账」，不绑死内部结构。 */
 	const unpricedOf = () => {
 		const file = path.join(HOME, 'dsh-status-bar', 'usage-ledger.json');
 		if (fs.existsSync(file) !== true) return {};
 		const ledger = JSON.parse(fs.readFileSync(file, 'utf8'));
 		const day = ledger.days === undefined ? undefined : ledger.days[DAY];
-		return day === undefined || day.unpriced === undefined ? {} : day.unpriced;
+		if (day === undefined) return {};
+		const out = {};
+		const legacy = day.unpriced === undefined || day.unpriced === null ? {} : day.unpriced;
+		for (const name of Object.keys(legacy)) out[name] = legacy[name];
+		const debts = Array.isArray(day.unpricedByProvider) ? day.unpricedByProvider : [];
+		for (const debt of debts) {
+			if (debt === null || typeof debt !== 'object' || typeof debt.model !== 'string') continue;
+			if (out[debt.model] === undefined) out[debt.model] = debt;
+		}
+		return out;
 	};
 	/** 每个用例先铺一份干净的隔离目录 + 一条 1M 输入用量 */
 	const setupUsage = (caseName, model) => {
@@ -766,7 +822,9 @@ const DAY = (() => {
 		+ '空键被丢弃 · 重报 changed=false · 单档条目按 peak（计价与结算都是）');
 	console.log('');
 	console.log('PRICE FILLED CHECKS PASSED');
-})().catch((error) => {
+})().finally(() => {
+	try { fs.rmSync(HOME, { recursive: true, force: true }); } catch (error) { /* best effort */ }
+}).catch((error) => {
 	console.error('PRICE FILLED CHECKS FAILED: ' + (error && error.message ? error.message : error));
 	process.exitCode = 1;
 });

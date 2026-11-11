@@ -1,0 +1,124 @@
+[
+  {
+    "vendorId": "anthropic",
+    "vendorLabel": "Anthropic",
+    "model": "Claude Opus 5.5 (Max, Default Fallback)",
+    "aaModelSlug": "claude-opus-5-5",
+    "aaIndex": 59.11,
+    "source": "https://artificialanalysis.ai/leaderboards/models",
+    "verifiedAt": "2026-11-04",
+    "note": "公开可用（AA provider 页 4 个 provider：Anthropic / Amazon / Google / Azure）；对应目录 claude-opus-5.5。",
+    "excluded": []
+  },
+  {
+    "vendorId": "openai",
+    "vendorLabel": "OpenAI",
+    "model": "GPT-6 Astra (Max)",
+    "aaModelSlug": "gpt-6-astra",
+    "aaIndex": 56.85,
+    "source": "https://artificialanalysis.ai/leaderboards/models",
+    "verifiedAt": "2026-11-04",
+    "note": "公开可用（6 个 provider）；对应目录 gpt-6-astra；同代 gpt-6.1-sol 为 54.61。",
+    "excluded": []
+  },
+  {
+    "vendorId": "google",
+    "vendorLabel": "Google Gemini",
+    "model": "Gemini 4 Argon (High)",
+    "aaModelSlug": "gemini-4-argon",
+    "aaIndex": 50.41,
+    "source": "https://artificialanalysis.ai/leaderboards/models",
+    "verifiedAt": "2026-11-04",
+    "note": "公开可用（3 个 provider，含 Google AI Studio / Google (Vertex)）；对应目录 gemini-4-argon。AA 全场第一的 Gemini 4 Carbon 按用户口径排除后，这是 Google 可用的最高分。",
+    "excluded": [
+      {
+        "model": "Gemini 4 Carbon (High / Medium / Low)",
+        "aaIndex": 60.03,
+        "reason": "用户明确反馈当前无法调用（不可用 / 未开放），据此排除，三个推理档一并排除（High 60.03、Medium 58.26、Low 54.22）。注意：AA 自己并未标注 preview/unavailable——其 provider 页写「Gemini 4 Carbon (high) is available through Google」（1 provider，公开价 $4/$20），故本条排除依据是用户的实际可访问性，不是 AA 的可用性字段。"
+      }
+    ]
+  },
+  {
+    "vendorId": "moonshot",
+    "vendorLabel": "月之暗面 Kimi",
+    "model": "Kimi K3.1 Pro",
+    "aaModelSlug": "kimi-k3-1-pro",
+    "aaIndex": 46.45,
+    "source": "https://artificialanalysis.ai/leaderboards/models",
+    "verifiedAt": "2026-11-04",
+    "note": "公开可用（2 个 provider）；对应目录 kimi-k3.1-pro。Kimi K3 可正常调用但 AA 无独立条目，不影响排序。",
+    "excluded": []
+  },
+  {
+    "vendorId": "muse",
+    "vendorLabel": "Muse (Meta)",
+    "model": "Muse Wonder (Max)",
+    "aaModelSlug": "muse-wonder",
+    "aaIndex": 43.57,
+    "source": "https://artificialanalysis.ai/leaderboards/models",
+    "verifiedAt": "2026-11-04",
+    "note": "公开可用（AA provider 页 1 个 provider：Meta，公开价 $4/$20）；对应目录 muse-wonder-1.0。Meta 在 AA 上分数最高的 Muse Wonder Full (Max) 因 AA 判定无任何 API provider 被排除。Meta 下一档 Muse Spark 1.3 (Max) 36.62 已被 AA 标 deprecated（Meta 已用 Muse Wonder 取代），且低于 Wonder，不影响排序。",
+    "excluded": [
+      {
+        "model": "Muse Wonder Full (Max)",
+        "aaIndex": 50.08,
+        "reason": "AA 明确判定无公开 API：provider 页「No API providers are currently available for Muse Wonder Full (max)」，Total 0 providers；排行榜该行 Cost / Time / TTFT 全为「--」，无公开价格（priceClass = null）。与用户反馈一致。"
+      }
+    ]
+  },
+  {
+    "vendorId": "xai",
+    "vendorLabel": "xAI Grok",
+    "model": "Grok 4.7 (Xhigh)",
+    "aaModelSlug": "grok-4-7",
+    "aaIndex": 35.49,
+    "source": "https://artificialanalysis.ai/leaderboards/models",
+    "verifiedAt": "2026-11-04",
+    "note": "公开可用（1 个 provider，AA 记为 SpaceXAI）；对应目录 grok-4.7。",
+    "excluded": []
+  },
+  {
+    "vendorId": "alibaba",
+    "vendorLabel": "阿里云通义千问",
+    "model": "Qwen3.8 Max (0902)",
+    "aaModelSlug": "qwen3-8-max",
+    "aaIndex": 33.65,
+    "source": "https://artificialanalysis.ai/leaderboards/models",
+    "verifiedAt": "2026-11-04",
+    "note": "公开可用（1 个 provider：Alibaba Cloud）；AA 上厂商最强为 Qwen3.8 Max，不在精简目录（目录仅 qwen3.8-flash / qwen3.8-27b；AA 上 27b 为 20.11）。按“厂商最强模型”口径排序。",
+    "excluded": []
+  },
+  {
+    "vendorId": "deepseek",
+    "vendorLabel": "DeepSeek",
+    "model": "DeepSeek V4.1 Flash 1017 (Max)",
+    "aaModelSlug": "deepseek-v4-1-flash-1017",
+    "aaIndex": 32.59,
+    "source": "https://artificialanalysis.ai/leaderboards/models",
+    "verifiedAt": "2026-11-04",
+    "note": "公开可用（23 个 provider）；AA 上厂商最强为 V4.1 Flash，目录内 v4-pro 在 AA 为 23.06；本排序按厂商最强口径。",
+    "excluded": []
+  },
+  {
+    "vendorId": "zhipu",
+    "vendorLabel": "智谱 GLM",
+    "model": "GLM-5.3 (Max)",
+    "aaModelSlug": "glm-5-3",
+    "aaIndex": 31.65,
+    "source": "https://artificialanalysis.ai/leaderboards/models",
+    "verifiedAt": "2026-11-04",
+    "note": "公开可用（26 个 provider）；对应目录 GLM-5.3；同代 GLM-5.3-Flash 为 27.80。",
+    "excluded": []
+  },
+  {
+    "vendorId": "xiaomi",
+    "vendorLabel": "小米 MiMo",
+    "model": "MiMo-V2.6-Pro",
+    "aaModelSlug": "mimo-v2-6-pro",
+    "aaIndex": 29.89,
+    "source": "https://artificialanalysis.ai/leaderboards/models",
+    "verifiedAt": "2026-11-04",
+    "note": "公开可用（4 个 provider）；对应目录 mimo-v2.6-pro；ultraspeed 档在 AA 无单独条目。",
+    "excluded": []
+  }
+]

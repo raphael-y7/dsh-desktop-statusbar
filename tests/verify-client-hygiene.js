@@ -6,20 +6,21 @@
  *      （`git log -S '.dsb-day-today'` 为空），它只进 DOM、不产生任何视觉差异，已删除。
  *      这里正断言它不会再回来；同时断言 `tip.today` 在热力图 / 年条里的真实用途还在。
  *   ② `tools/shot.cjs` 里 `pricingShot` 的 JSDoc 曾写「币种下拉**摊开**」，
- *      实现却是 `presets[7] = false`（收起）—— 注释与行为矛盾，已改注释。
+ *      实现却是 `presets[8] = false`（收起）—— 注释与行为矛盾，已改注释。
  *   ③ `pricingShot` 的 `presets` 下标是**脆的**：组件里新增/删除一个 `useState`
  *      就会让后面所有 hook 位移一位，下标必须回来重数。本测试用真实组件
  *      （vm + react 桩，与 `shot.cjs` 的 `loadPlugin` 同构）**实际渲染一遍**，
  *      数出 `SettingsSection` 的 useState 调用顺序，再用行为探针逐个确认
  *      editing / draft / currencyOpen 分别落在哪个下标上。
- *      **当前顺序（2026-10-22 起）**：0 drag / 1 newModel / 2 hostModel / 3 editing /
- *      4 draft / 5 holidayBusy / 6 holidayNote / 7 currencyOpen。
- *      开发模式不再占一个 useState（它改成从模块级快照 `useDevState` 派生），
- *      所以整张表比上一版**前移了一位**：editing 4→3、draft 5→4、currencyOpen 8→7；
- *      `tools/shot.cjs` 的 presets 下标必须同步，否则重新生成截图会得到
- *      「编辑区没展开 + 卡片里一句『抓取失败（undefined）』」。
- *      历史上的坑：2026-10-13 新增 `devOn` 让 hook 整体后移一位而 `presets` 没跟改，
- *      就是上面那个症状。
+ *      **当前顺序**：0 drag / 1 newModel / 2 hostModel / 3 editing / 4 draft /
+ *      5 catalogNotice / 6 platformModelOpen / 7 catalogDrag / 8 currencyOpen /
+ *      9 platformEditing / 10 platformDraft / 11 platformNotice / 12 newPlatform /
+ *      13 platformErrors。
+ *      开发模式状态来自模块级快照；catalogNotice 是重复添加/校验失败时的提示状态；
+ *      13 是「第三方平台」保存时的字段级校验错误（task-41）。
+ *      因此截图预设保持 editing=3、draft=4，并将 currencyOpen 设为 8；
+ *      `tools/shot.cjs` 的 presets 下标必须同步，否则下拉状态会错打到 catalogDrag。
+ *      历史上的坑：hook 顺序变化时截图 preset 没跟改，会造成编辑区不展开或草稿塞入错误状态。
  *
  * 用法：node tests/verify-client-hygiene.js
  */
@@ -27,10 +28,13 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const assert = require('assert');
+const os = require('os');
 
 /* 与仓库其它测试一致：把 DSH_HOME 指到 tests/ 下的隔离目录，绝不碰真实 ~/.dsh。
    本文件只读源码、只在 vm 里渲染组件、不调 apply()，但仍按惯例隔离。 */
-process.env.DSH_HOME = path.join(__dirname, '.dsh-test-home-client-hygiene');
+const TEMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-test-home-client-hygiene-'));
+process.on('exit', () => { try { fs.rmSync(TEMP_HOME, { recursive: true, force: true }); } catch (error) { /* best effort */ } });
+process.env.DSH_HOME = TEMP_HOME;
 
 const ROOT = path.join(__dirname, '..');
 const CLIENT = path.join(ROOT, 'lib', 'client.js');
@@ -74,13 +78,13 @@ const jsdocStart = shotSource.indexOf('/** 只要价格区');
 assert.ok(jsdocStart !== -1 && jsdocStart < pricingStart, 'pricingShot 前面应有「只要价格区」那行 JSDoc');
 const pricingJsdoc = shotSource.slice(jsdocStart, pricingStart);
 assert.ok(pricingJsdoc.indexOf('收起') !== -1,
-	'pricingShot 的 JSDoc 应写「币种下拉收起」—— 实现就是 presets[7] = false');
+	'pricingShot 的 JSDoc 应写「币种下拉收起」—— 实现就是 presets[8] = false');
 assert.strictEqual(pricingJsdoc.indexOf('摊开'), -1,
 	'JSDoc 曾误写「摊开」，与实现（收起）矛盾，不该回来');
-assert.ok(/presets\[7\]\s*=\s*false/.test(pricingBlock), 'pricingShot 仍要显式把币种下拉置为收起');
-assert.ok(/presets\[7\]\s*=\s*false[^\n]*收起/.test(pricingBlock),
-	'`presets[7] = false` 那行要标明「收起」，与 JSDoc 说法一致');
-console.log('      JSDoc 说收起、实现 presets[7] = false、行内注释也是收起，三处一致');
+assert.ok(/presets\[8\]\s*=\s*false/.test(pricingBlock), 'pricingShot 仍要显式把币种下拉置为收起');
+assert.ok(/presets\[8\]\s*=\s*false[^\n]*收起/.test(pricingBlock),
+	'`presets[8] = false` 那行要标明「收起」，与 JSDoc 说法一致');
+console.log('      JSDoc 说收起、实现 presets[8] = false、行内注释也是收起，三处一致');
 
 /* ======================================================================
    ③ 用真实组件的 useState 顺序验证 presets 下标
@@ -276,7 +280,7 @@ function textOf(node) {
 	return out.join('');
 }
 
-/** shot.cjs 里 pricingShot 实际用的下标：4 = editing、5 = draft、8 = currencyOpen */
+/** shot.cjs 里 pricingShot 实际用的下标：3 = editing、4 = draft、8 = currencyOpen */
 const assigned = [];
 const assignRe = /presets\[(\d+)\]\s*=/g;
 let assignOne = assignRe.exec(pricingBlock);
@@ -284,13 +288,13 @@ while (assignOne !== null) {
 	assigned.push(Number(assignOne[1]));
 	assignOne = assignRe.exec(pricingBlock);
 }
-assert.deepStrictEqual(assigned, [3, 4, 7],
-	'pricingShot 的 presets 下标应为 3(editing) / 4(draft) / 7(currencyOpen)，实际 '
+assert.deepStrictEqual(assigned, [3, 4, 8],
+	'pricingShot 的 presets 下标应为 3(editing) / 4(draft) / 8(currencyOpen)，实际 '
 	+ JSON.stringify(assigned) + '；hook 顺序变了就要跟着改');
 
 /* 名字层面的守卫：这三个下标各自应该是什么 */
 ['editing', 'draft', 'currencyOpen'].forEach((want, at) => {
-	const index = [3, 4, 7][at];
+	const index = [3, 4, 8][at];
 	assert.strictEqual(names[index], want,
 		'下标 ' + index + ' 应是 ' + want + '，实际是 ' + names[index]
 		+ ' —— SettingsSection 的 hook 顺序变了，pricingShot 的 presets 必须回来重数');
@@ -304,7 +308,7 @@ shotPresets[4] = {
 	peak: { input: '2', cacheRead: '0.04', cacheWrite: '0', output: '8' },
 	offPeak: { input: '1', cacheRead: '0.02', cacheWrite: '0', output: '4' }
 };
-shotPresets[7] = false;
+shotPresets[8] = false;
 
 const isEditPop = (node) => classOf(node).indexOf('dsb-edit-pop') !== -1;
 const isSelectMenu = (node) => classOf(node).indexOf('dsb-select-menu') !== -1;
@@ -329,20 +333,20 @@ const values = findAll(pops[0], (node) => node.type === 'input').map((node) => n
 const baseBtn = findAll(base.tree, isSelectBtn);
 assert.strictEqual(baseBtn.length, 1, '展开的编辑区里应有一个币种下拉按钮');
 assert.strictEqual(baseBtn[0].props['aria-expanded'], 'false',
-	'presets[7] = false 时币种下拉应处于收起状态（aria-expanded="false"）');
+	'presets[8] = false 时币种下拉应处于收起状态（aria-expanded="false"）');
 assert.strictEqual(findAll(base.tree, isSelectMenu).length, 0,
-	'presets[7] = false 时不该渲染出币种菜单（.dsb-select-menu）');
+	'presets[8] = false 时不该渲染出币种菜单（.dsb-select-menu）');
 
 /* 反证 1：把下标 8 换成 true，菜单必须出现 —— 证明 8 确实是 currencyOpen */
 const openPresets = shotPresets.slice();
-openPresets[7] = true;
+openPresets[8] = true;
 const openedTree = renderSettings(openPresets).tree;
 const openBtn = findAll(openedTree, isSelectBtn);
 assert.strictEqual(openBtn.length, 1, '展开状态下应有币种下拉按钮');
 assert.strictEqual(openBtn[0].props['aria-expanded'], 'true',
-	'presets[7] = true 时币种下拉应展开 —— 否则下标 7 不是 currencyOpen');
+	'presets[8] = true 时币种下拉应展开 —— 否则下标 8 不是 currencyOpen');
 assert.strictEqual(findAll(openedTree, isSelectMenu).length, 1,
-	'presets[7] = true 时应渲染出币种菜单（.dsb-select-menu）');
+	'presets[8] = true 时应渲染出币种菜单（.dsb-select-menu）');
 
 /* 反证 2：不注入下标 3（editing 保持初值 null），一张卡都不该展开 */
 const noEdit = shotPresets.slice();
@@ -373,10 +377,10 @@ assert.strictEqual(textOf(base.tree).indexOf('抓取失败'), -1,
 const draftMatch = /presets\[4\]\s*=/.exec(pricingBlock);
 assert.ok(draftMatch !== null, 'pricingShot 里应能找到 presets[4]（draft 预设的赋值）');
 const draftStart = draftMatch.index;
-const currencyMatch = /presets\[7\]\s*=/.exec(pricingBlock.slice(draftStart));
-assert.ok(currencyMatch !== null, 'pricingShot 里应能找到 presets[7]（currencyOpen 的赋值）');
+const currencyMatch = /presets\[8\]\s*=/.exec(pricingBlock.slice(draftStart));
+assert.ok(currencyMatch !== null, 'pricingShot 里应能找到 presets[8]（currencyOpen 的赋值）');
 const draftBlock = pricingBlock.slice(draftStart, draftStart + currencyMatch.index);
-assert.ok(draftBlock.length > 0, '切得出 presets[4] 到 presets[7] 之间的草稿预设片段');
+assert.ok(draftBlock.length > 0, '切得出 presets[4] 到 presets[8] 之间的草稿预设片段');
 const enBranch = /locale === 'en'\s*\?\s*\{([\s\S]*?)\}\s*:\s*\{/.exec(draftBlock);
 const zhBranch = /locale === 'en'\s*\?\s*\{[\s\S]*?\}\s*:\s*\{([\s\S]*?)\}\s*;/.exec(draftBlock);
 assert.ok(enBranch !== null, '切得出 en 分支（locale === \'en\' ? { ... }）');
@@ -418,5 +422,5 @@ assert.ok(onAt > offAt, '输入框的 user-select:text 写在禁选之后，层�
 console.log('      禁选：' + SELECTION_OFF.join(' / ') + ' 全部 user-select:none + ::selection 透明；输入框保留可编辑');
 
 console.log('      渲染实测：' + names.length + ' 个 useState；'
-	+ '下标 3 = editing（展开第一张卡）、下标 4 = draft（框里显示预设值）、下标 7 = currencyOpen（false 收起 / true 展开）');
+	+ '下标 3 = editing（展开第一张卡）、下标 4 = draft（框里显示预设值）、下标 8 = currencyOpen（false 收起 / true 展开）');
 console.log('\n全部通过');

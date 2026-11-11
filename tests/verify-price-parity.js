@@ -32,15 +32,16 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const assert = require('assert');
+const os = require('os');
 const hostLib = require('./_host-lib.js');
 
 const ROOT = path.join(__dirname, '..');
 const CLIENT = path.join(ROOT, 'lib', 'client.js');
 /* host 侧要直接调内部函数：把 lib/ 复制到 tests/ 下的临时目录再 patch 导出（见 _host-lib.js），用完删掉。 */
 const TMP = path.join(__dirname, '.dsh-test-home-parity-lib');
-const HOME = path.join(__dirname, '.dsh-test-home-parity');
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-test-home-parity-'));
 const HOST_EXPORTS = ['sanitizePriceBook', 'fingerprintOf', 'parseFingerprint', 'pickPriceKey',
-	'priceIsBlank', 'hasAnyPriceValue', 'tokenCost', 'modelNameTokens', 'tokenMatches'];
+	'priceIsBlank', 'hasAnyPriceValue', 'tokenCost', 'modelNameTokens', 'tokenMatches', 'builtinPriceBook'];
 
 globalThis.setInterval = () => 0;
 process.env.DSH_HOME = HOME;   /* 只 import 纯函数、不调 apply()，但按惯例仍隔离 */
@@ -89,6 +90,28 @@ function loadClient() {
 }
 
 /* ---------------------------------------------------------------- 工具 */
+/** 从 client.js 源码里取出内置 CNY 价表的对象字面量（client 不可改，只能按源码读）。
+ *  这是“默认价”唯一的事实源；host 的 TOKEN_PRICES 必须与它逐字段一致，否则同一个
+ *  内置模型在底栏与活跃总览会显示两个价钱。 */
+function clientDefaultPrices() {
+	const text = fs.readFileSync(CLIENT, 'utf8');
+	const marker = 'const DEFAULT_PRICES = {';
+	const start = text.indexOf(marker);
+	assert.ok(start >= 0, 'client.js 里找不到 DEFAULT_PRICES');
+	const open = text.indexOf('{', start);
+	let depth = 0;
+	let end = -1;
+	for (let i = open; i < text.length; i += 1) {
+		if (text[i] === '{') depth += 1;
+		else if (text[i] === '}') {
+			depth -= 1;
+			if (depth === 0) { end = i; break; }
+		}
+	}
+	assert.ok(end > open, 'DEFAULT_PRICES 对象字面量不完整');
+	return vm.runInNewContext('(' + text.slice(open, end + 1) + ')');
+}
+
 /** 键序无关的规范化，用来把两侧对象压成可比字符串。 */
 function canon(value) {
 	if (Array.isArray(value)) return value.map(canon);
@@ -237,6 +260,24 @@ function compareBook(client, host, raw) {
 		['sanitizePriceBook', 'pickPriceKey', 'priceIsBlank', 'hasAnyPriceValue', 'fingerprintOf', 'parseFingerprint']
 			.forEach((name) => assert.strictEqual(typeof host[name], 'function', 'host 未导出 ' + name));
 
+		/* ------------------------------------------------ 0. 默认价表：client 内置 vs host 内置 */
+		const clientDefaults = clientDefaultPrices();
+		const hostDefaults = host.builtinPriceBook();
+		assert.deepStrictEqual(Object.keys(clientDefaults).sort(), Object.keys(hostDefaults).sort(),
+			'默认价表的模型集合两侧一致');
+		for (const name of Object.keys(clientDefaults)) {
+			const c = clientDefaults[name];
+			const h = hostDefaults[name];
+			assert.ok(h !== undefined && h !== null, 'host 缺少默认价模型 ' + name);
+			for (const tier of ['peak', 'offPeak']) {
+				for (const field of ['input', 'cacheRead', 'cacheWrite', 'output']) {
+					assert.strictEqual(h[tier][field], c[tier][field],
+						'默认价 ' + name + '.' + tier + '.' + field + ' 两侧一致');
+				}
+			}
+		}
+		console.log('0 默认价表：' + Object.keys(clientDefaults).length + ' 个内置模型 × 两档 × 四字段与 host 一致');
+
 		/* ------------------------------------------------ 0. 词元切分：两侧同一个口径 */
 		const nameSamples = KEY_POOL.concat(MODEL_POOL).concat(['DeepSeek-V4.1-Flash-SG', 'a--b__c.d e']);
 		nameSamples.forEach((name) => {
@@ -337,6 +378,7 @@ function compareBook(client, host, raw) {
 		console.log('PRICE PARITY CHECKS PASSED（client / host 逐例一致）');
 	} finally {
 		hostLib.cleanup(TMP);
+		try { fs.rmSync(HOME, { recursive: true, force: true }); } catch (error) { /* best effort */ }
 	}
 })().catch((error) => {
 	console.error('PRICE PARITY CHECKS FAILED: ' + (error && error.message ? error.message : error));

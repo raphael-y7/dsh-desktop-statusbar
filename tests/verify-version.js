@@ -6,6 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
+const os = require('os');
 
 const INDEX = path.join(__dirname, '..', 'lib', 'index.js');
 
@@ -13,7 +14,8 @@ const INDEX = path.join(__dirname, '..', 'lib', 'index.js');
 globalThis.setInterval = () => 0;
 
 /* 隔离真实家目录：apply 会顺手预热用量台账，别让它扫真实会话、写真实台账 */
-process.env.DSH_HOME = path.join(__dirname, '.dsh-test-home');
+const TEMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-test-home-'));
+process.env.DSH_HOME = TEMP_HOME;
 
 /**
  * 起一个独立的模块实例：latestVersion 是模块级状态，多个用例要不同的自检结果，
@@ -117,7 +119,9 @@ async function boot(tag, stub) {
 	console.log('版本号一致：client VERSION = package.json version =', pkgVersion);
 
 	console.log('\nVERSION SELF-CHECK CHECKS PASSED');
-})().catch((error) => {
+})().finally(() => {
+	try { fs.rmSync(TEMP_HOME, { recursive: true, force: true }); } catch (error) { /* best effort */ }
+}).catch((error) => {
 	console.error('VERSION SELF-CHECK CHECKS FAILED:', error && error.message ? error.message : error);
 	process.exitCode = 1;
 });

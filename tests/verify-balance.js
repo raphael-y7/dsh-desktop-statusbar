@@ -5,14 +5,19 @@
 const path = require('path');
 const assert = require('assert');
 const fs = require('fs');
+const http = require('http');
+const os = require('os');
 
 const INDEX = path.join(__dirname, '..', 'lib', 'index.js');
 
 /* 假 ctx 不会跑 effect 的 cleanup，插件的用量刷新定时器会把进程吊住不退出：让它别真的起定时器 */
 globalThis.setInterval = () => 0;
 
-/* 隔离真实家目录：否则会读到本机 ~/.dsh/.credentials.yaml，余额来源就会跟着环境变 */
-process.env.DSH_HOME = path.join(__dirname, '.dsh-test-home');
+/* 隔离真实家目录：否则会读到本机 ~/.dsh/.credentials.yaml，余额来源就会跟着环境变。
+   用系统临时目录 + mkdtemp：每次运行一个独立目录，结束时统一删掉，不在仓库里堆残留。 */
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-balance-'));
+const RELAY_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-relay-security-'));
+process.env.DSH_HOME = HOME;
 
 /* 预置一份**当天的**汇率缓存：余额路由每次被调用时会顺带检查"今天拉过汇率没有"，
    没有缓存就会真的发一次网络请求，把下面「余额只发一次请求」那条计数打乱。
@@ -644,9 +649,322 @@ process.env.DSH_HOME = path.join(__dirname, '.dsh-test-home');
 	assert.strictEqual(allFailed.body.provider, 'zhipu', '失败态也标明是链首那条适配器');
 	console.log('= 智谱两条路全失败：报链序第一个 http-500（链尾 http-502 先回来也不抢结论）');
 
+	/* ============= Relay config route: credential tombstone and full Origin checks */
+	process.env.DSH_HOME = RELAY_HOME;
+	const relayDir = path.join(process.env.DSH_HOME, 'dsh-status-bar');
+	fs.mkdirSync(relayDir, { recursive: true });
+	const relayConfigFile = path.join(relayDir, 'relay-balance.json');
+	try { fs.unlinkSync(relayConfigFile); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+	const relayStored = new Map();
+	const relaySetCalls = [];
+	const relayUnsetCalls = [];
+	const fallbackEnvelope = JSON.stringify({
+		token: 'ambient-token-sentinel',
+		userId: 'ambient-user-sentinel',
+		headers: { 'x-ambient': 'ambient-header-sentinel' }
+	});
+	const relayCredentials = {
+		resolve: async (ref) => relayStored.has(ref)
+			? { value: relayStored.get(ref), source: 'provider-managed' }
+			: { value: fallbackEnvelope, source: 'env' },
+		set: async (ref, value) => { relaySetCalls.push([ref, value]); relayStored.set(ref, value); },
+		unset: async (ref) => { relayUnsetCalls.push(ref); relayStored.delete(ref); }
+	};
+	let relayHandler = null;
+	let trustedOrigin = 'http://127.0.0.1:19387';
+	mod.apply({
+		logger: { info: () => {} },
+		effect: (fn, label) => {
+			if (label === 'dsh-desktop-statusbar: balance api') fn();
+		},
+		sessionProjections: { register: () => () => {} },
+		webServer: {
+			getOrigin: () => trustedOrigin,
+			register: (route) => {
+				if (route.path === '/dsh-desktop-statusbar/api') relayHandler = route.handler;
+				return () => {};
+			}
+		},
+		credentials: relayCredentials,
+		get: (name) => name === 'credentials' ? relayCredentials : undefined
+	});
+	assert.ok(relayHandler !== null, 'relay config prefix route registered');
+	const relayCall = async (method, route, body, origin) => {
+		const listeners = {};
+		const req = {
+			url: route,
+			method,
+			headers: { host: '127.0.0.1:19387' },
+			on: (type, fn) => {
+				if (listeners[type] === undefined) listeners[type] = [];
+				listeners[type].push(fn);
+				return req;
+			},
+			destroy: () => {}
+		};
+		if (origin !== undefined) req.headers.origin = origin;
+		let result = null;
+		const res = {
+			headersSent: false,
+			writeHead: (status) => { res.status = status; res.headersSent = true; },
+			end: (text) => { result = { status: res.status, body: text === undefined ? null : JSON.parse(text) }; }
+		};
+		if (method === 'POST') {
+			process.nextTick(() => {
+				const raw = Buffer.from(JSON.stringify(body));
+				(listeners.data || []).forEach((fn) => fn(raw));
+				(listeners.end || []).forEach((fn) => fn());
+			});
+		}
+		await relayHandler(req, res);
+		assert.ok(result !== null, 'route completed response');
+		return result;
+	};
+	const relayPath = '/dsh-desktop-statusbar/api/relay-balance-config';
+	const ordinaryRelay = {
+		channelKey: 'relay-test-channel', endpoint: 'http://127.0.0.1:9/balance',
+		balancePath: '$.balance', currency: 'CNY', feeMultiplier: 1.5,
+		token: 'relay-token-sentinel', userId: 'relay-user-sentinel',
+		headers: { 'x-custom-secret': 'relay-header-sentinel' }
+	};
+	const relayCreate = await relayCall('POST', relayPath, ordinaryRelay, undefined);
+	assert.strictEqual(relayCreate.status, 200, 'real relay POST creates ordinary channel');
+	assert.strictEqual(relaySetCalls.length, 1, 'POST stores per-channel credential through Service.set');
+	assert.ok(relaySetCalls[0][1].length > 0, 'credential payload is non-empty');
+	const relayInitialGet = await relayCall('GET', relayPath);
+	assert.strictEqual(relayInitialGet.status, 200, 'real relay GET returns configured channel');
+	assert.strictEqual(relayInitialGet.body.channels[0].tokenConfigured, true, 'GET reports token configured');
+	assert.strictEqual(relayInitialGet.body.channels[0].userIdConfigured, true, 'GET reports user id configured');
+	assert.deepStrictEqual(relayInitialGet.body.channels[0].headerNames, ['x-custom-secret'], 'GET returns only custom header names');
+	const relayInitialText = JSON.stringify(relayInitialGet.body);
+	for (const secret of ['relay-token-sentinel', 'relay-user-sentinel', 'relay-header-sentinel']) {
+		assert.strictEqual(relayInitialText.includes(secret), false, 'GET response redacts secret');
+	}
+	const beforeClearUnset = relayUnsetCalls.length;
+	const relayClear = await relayCall('POST', relayPath, {
+		channelKey: ordinaryRelay.channelKey, token: null, userId: '', headers: {}
+	}, undefined);
+	assert.strictEqual(relayClear.status, 200, 'real relay POST clears credentials');
+	assert.strictEqual(relayUnsetCalls.length, beforeClearUnset, 'clearing fields does not unset CredentialRef');
+	assert.strictEqual(relaySetCalls.length, 2, 'clearing fields writes an explicit tombstone');
+	const tombstoneText = relaySetCalls[1][1];
+	assert.ok(tombstoneText.length > 0, 'tombstone payload is non-empty');
+	const tombstone = JSON.parse(tombstoneText);
+	assert.deepStrictEqual(tombstone, { token: '', userId: '', headers: {} }, 'tombstone masks all ambient fallback fields');
+	const ref = relaySetCalls[0][0];
+	const observedCredential = await relayCredentials.resolve(ref);
+	assert.deepStrictEqual(JSON.parse(observedCredential.value), { token: '', userId: '', headers: {} },
+		'CredentialRef resolve observes tombstone, not ambient fallback');
+	const relayClearedGet = await relayCall('GET', relayPath);
+	assert.strictEqual(relayClearedGet.status, 200, 'GET succeeds after clear');
+	assert.strictEqual(relayClearedGet.body.channels[0].tokenConfigured, false, 'cleared token reports unconfigured');
+	assert.strictEqual(relayClearedGet.body.channels[0].userIdConfigured, false, 'cleared user id reports unconfigured');
+	assert.deepStrictEqual(relayClearedGet.body.channels[0].headerNames, [], 'cleared custom headers report empty names');
+	const relayClearedText = JSON.stringify(relayClearedGet.body);
+	for (const secret of ['ambient-token-sentinel', 'ambient-user-sentinel', 'ambient-header-sentinel']) {
+		assert.strictEqual(relayClearedText.includes(secret), false, 'cleared GET does not expose ambient fallback');
+	}
+	const relayRemove = await relayCall('POST', relayPath, { remove: true, channelKey: ordinaryRelay.channelKey }, undefined);
+	assert.strictEqual(relayRemove.status, 200, 'real relay POST removes channel');
+	assert.strictEqual(relayUnsetCalls.length, beforeClearUnset + 1, 'only full channel removal unsets CredentialRef');
+	assert.strictEqual(relayUnsetCalls[0], ref, 'remove unsets only that channel CredentialRef');
+	const relayEmptyGet = await relayCall('GET', relayPath);
+	assert.strictEqual(relayEmptyGet.status, 200, 'GET succeeds after channel removal');
+	assert.deepStrictEqual(relayEmptyGet.body.channels, [], 'removed channel absent from actual GET response');
+	console.log('= relay POST/GET: tombstone masks ambient credentials; remove alone unsets');
+
+	const setCountBeforeOriginChecks = relaySetCalls.length;
+	const unsetCountBeforeOriginChecks = relayUnsetCalls.length;
+	const originChannel = (channelKey) => Object.assign({}, ordinaryRelay, { channelKey });
+	const rejectedOrigins = [
+		'https://127.0.0.1:19387',
+		'http://127.0.0.1:19388',
+		'null',
+		'not-an-origin'
+	];
+	for (let index = 0; index < rejectedOrigins.length; index += 1) {
+		const channelKey = 'origin-rejected-' + String(index);
+		const rejected = await relayCall('POST', relayPath, originChannel(channelKey), rejectedOrigins[index]);
+		assert.strictEqual(rejected.status, 403, 'cross-origin POST rejected: ' + rejectedOrigins[index]);
+		assert.strictEqual(relayStored.size, 0, 'rejected origin does not create stored CredentialRef');
+	}
+	assert.strictEqual(relaySetCalls.length, setCountBeforeOriginChecks, 'rejected origins do not call credentials.set');
+	assert.strictEqual(relayUnsetCalls.length, unsetCountBeforeOriginChecks, 'rejected origins do not call credentials.unset');
+	const rejectedConfigGet = await relayCall('GET', relayPath);
+	assert.strictEqual(rejectedConfigGet.status, 200, 'GET remains available after rejected writes');
+	assert.deepStrictEqual(rejectedConfigGet.body.channels, [], 'rejected Origin attempts leave relay config unchanged');
+	const sameOrigin = await relayCall('POST', relayPath, originChannel('origin-allowed'), 'http://127.0.0.1:19387');
+	assert.strictEqual(sameOrigin.status, 200, 'exact HTTP listener origin is allowed');
+	assert.strictEqual(relaySetCalls.length, setCountBeforeOriginChecks + 1, 'same-origin route reaches credentials.set');
+	const sameOriginRemove = await relayCall('POST', relayPath, { remove: true, channelKey: 'origin-allowed' }, 'http://127.0.0.1:19387');
+	assert.strictEqual(sameOriginRemove.status, 200, 'same-origin route can remove test channel');
+	const cliOriginless = await relayCall('POST', relayPath, originChannel('originless-cli'), undefined);
+	assert.strictEqual(cliOriginless.status, 200, 'POST without Origin remains available to CLI clients');
+	const cliRemove = await relayCall('POST', relayPath, { remove: true, channelKey: 'originless-cli' }, undefined);
+	assert.strictEqual(cliRemove.status, 200, 'Originless CLI can remove its test channel');
+	trustedOrigin = 'invalid-listener-origin';
+	const invalidListenerOrigin = await relayCall('POST', relayPath, originChannel('invalid-listener'), 'http://127.0.0.1:19387');
+	assert.strictEqual(invalidListenerOrigin.status, 403, 'invalid trusted listener origin fails closed');
+	console.log('= relay POST Origin: scheme, port, opaque, malformed and invalid listener cases');
+
+	/* ============= 第三方平台余额端到端：真实 HTTP stub 验证落库字段真的被用于查询 */
+	/* 预置当天汇率，避免 /balance 顺带拉一次外部汇率打乱请求计数 */
+	const relayRateDir = path.join(process.env.DSH_HOME, 'dsh-status-bar');
+	const relayNineAm = new Date();
+	relayNineAm.setHours(9, 0, 0, 0);
+	fs.writeFileSync(path.join(relayRateDir, 'exchange-rate.json'), JSON.stringify({
+		rate: 6.6768, fetchedAt: Math.max(Date.now(), relayNineAm.getTime() + 1000), source: 'test-fixture'
+	}));
+	const stubRequests = [];
+	let stubMode = 'ok';
+	const stubServer = http.createServer((req, res) => {
+		stubRequests.push({ url: req.url, headers: req.headers });
+		if (stubMode === 'redirect') {
+			res.writeHead(302, { location: 'http://127.0.0.1:9/elsewhere' });
+			res.end();
+			return;
+		}
+		if (stubMode === 'http-error') {
+			res.writeHead(500, { 'content-type': 'application/json' });
+			res.end(JSON.stringify({ error: 'upstream-down' }));
+			return;
+		}
+		res.writeHead(200, { 'content-type': 'application/json' });
+		res.end(JSON.stringify({ data: { quota: 5000000 } }));
+	});
+	await new Promise((resolve) => stubServer.listen(0, '127.0.0.1', resolve));
+	const stubPort = stubServer.address().port;
+	const stubChannel = 'claude-opus-5.5';
+	const balanceUrl = (provider, model) => '/dsh-desktop-statusbar/api/balance?provider='
+		+ encodeURIComponent(provider) + '&model=' + encodeURIComponent(model) + '&force=1';
+	try {
+		const created = await relayCall('POST', relayPath, {
+			channelKey: stubChannel,
+			endpoint: 'http://127.0.0.1:' + stubPort + '/balance',
+			tokenHeader: 'authorization',
+			userIdHeader: 'New-Api-User',
+			tokenPrefix: 'Bearer ',
+			balancePath: 'data.quota',
+			currency: 'CNY',
+			balanceDivisor: 500000,
+			feeMultiplier: 1,
+			token: 'stub-bearer-token',
+			userId: 'stub-new-api-user',
+		}, undefined);
+		assert.strictEqual(created.status, 200,
+			'第三方平台通道已保存（tokenHeader/userIdHeader/balancePath/balanceDivisor）: ' + JSON.stringify(created.body));
+
+		/* 会话 provider 是任意中转站名，model 用分隔符变体（5-5），靠归一化回退命中 5.5 的通道 */
+		const queried = await relayCall('GET', balanceUrl('unknown-relay-provider', 'claude-opus-5-5'));
+		assert.strictEqual(queried.status, 200, '第三方余额路由 HTTP 200');
+		assert.strictEqual(queried.body.ok, true, '第三方余额 ok: ' + JSON.stringify(queried.body));
+		assert.strictEqual(queried.body.source, 'relay', '余额来自第三方平台通道');
+		assert.strictEqual(queried.body.total, '10.00', 'quota 5000000 / balanceDivisor 500000 = 10.00');
+		assert.strictEqual(stubRequests.length, 1, 'stub 收到且只收到一次请求');
+		assert.strictEqual(stubRequests[0].url, '/balance', 'stub 的路径是 /balance');
+		assert.strictEqual(stubRequests[0].headers.authorization, 'Bearer stub-bearer-token',
+			'Authorization = 配置的 tokenHeader + tokenPrefix + 密文 token');
+		assert.strictEqual(stubRequests[0].headers['new-api-user'], 'stub-new-api-user',
+			'New-Api-User = 配置的 userIdHeader + 密文 userId');
+
+		/* 失败路径：stub 非 200 / 3xx 不跟随 / 无此通道 */
+		stubMode = 'http-error';
+		const upstreamError = await relayCall('GET', balanceUrl('unknown-relay-provider', 'claude-opus-5-5'));
+		assert.strictEqual(upstreamError.body.ok, false, '非 200 时 ok=false');
+		assert.strictEqual(upstreamError.body.reason, 'upstream-http-error', '非 200 报 upstream-http-error');
+		stubMode = 'redirect';
+		const redirected = await relayCall('GET', balanceUrl('unknown-relay-provider', 'claude-opus-5-5'));
+		assert.strictEqual(redirected.body.ok, false, '3xx 时 ok=false');
+		assert.strictEqual(redirected.body.reason, 'redirect-not-allowed', '3xx 报 redirect-not-allowed');
+		stubMode = 'ok';
+		const noChannel = await relayCall('GET', balanceUrl('no-such-provider', 'no-such-model'));
+		assert.strictEqual(noChannel.body.ok, false, '无此通道时 ok=false');
+		assert.strictEqual(noChannel.body.reason, 'unknown-platform', '无此通道走原有 unknown-platform');
+
+		/* ===== 平台档案复用：channelKey = 平台名，relay 参数优先（relay → provider → model） ===== */
+		const platformA = 'relay-platform-a';
+		const platformB = 'relay-platform-b';
+		const writePlatform = async (channelKey, pathSuffix, divisor) => {
+			const result = await relayCall('POST', relayPath, {
+				channelKey,
+				endpoint: 'http://127.0.0.1:' + stubPort + pathSuffix,
+				tokenHeader: 'authorization',
+				userIdHeader: 'New-Api-User',
+				tokenPrefix: 'Bearer ',
+				balancePath: 'data.quota',
+				currency: 'CNY',
+				balanceDivisor: divisor,
+				feeMultiplier: 1,
+				token: 'platform-token-' + channelKey,
+				userId: 'platform-user-' + channelKey,
+			}, undefined);
+			assert.strictEqual(result.status, 200, '平台配置已保存: ' + channelKey);
+			return result.body.channels.find((one) => one.channelKey === channelKey);
+		};
+		const savedA = await writePlatform(platformA, '/balance-a', 500000);
+		const savedB = await writePlatform(platformB, '/balance-b', 1000000);
+		assert.strictEqual(savedA.balanceDivisor, 500000, '平台 A 的 balanceDivisor 已保存');
+		assert.strictEqual(savedB.balanceDivisor, 1000000, '平台 B 的 balanceDivisor 已保存');
+
+		const relayMarkA = stubRequests.length;
+		const byRelayA = await relayCall('GET', balanceUrl('unknown-relay-provider', 'any-model')
+			+ '&relay=' + encodeURIComponent(platformA));
+		assert.strictEqual(byRelayA.status, 200, '平台 A 余额路由 HTTP 200');
+		assert.strictEqual(byRelayA.body.ok, true, '平台 A 余额 ok');
+		assert.strictEqual(byRelayA.body.total, '10.00', '平台 A：quota 5000000 / 500000 = 10.00');
+		assert.strictEqual(byRelayA.body.provider, platformA, '余额 provider 是平台名');
+		assert.deepStrictEqual(stubRequests.slice(relayMarkA).map((one) => one.url), ['/balance-a'],
+			'平台 A 只打自己的 endpoint');
+
+		const relayMarkB = stubRequests.length;
+		const byRelayB = await relayCall('GET', balanceUrl('unknown-relay-provider', 'any-model')
+			+ '&relay=' + encodeURIComponent(platformB));
+		assert.strictEqual(byRelayB.body.total, '5.00', '平台 B：quota 5000000 / 1000000 = 5.00');
+		assert.deepStrictEqual(stubRequests.slice(relayMarkB).map((one) => one.url), ['/balance-b'],
+			'平台 B 只打自己的 endpoint（多平台并存各自命中）');
+
+		/* relay 不存在 ⇒ 忽略，回退 provider→model（model 用分隔符变体，靠紧凑串命中之前存的模型通道） */
+		const fallbackMark = stubRequests.length;
+		const byFallback = await relayCall('GET', balanceUrl('unknown-relay-provider', 'claude-opus-5-5')
+			+ '&relay=' + encodeURIComponent('no-such-platform'));
+		assert.strictEqual(byFallback.body.ok, true, '未知 relay 回退到 model 匹配');
+		assert.strictEqual(byFallback.body.total, '10.00', '回退命中 claude-opus-5.5 通道');
+		assert.deepStrictEqual(stubRequests.slice(fallbackMark).map((one) => one.url), ['/balance'],
+			'回退请求打到模型通道的 endpoint');
+
+		/* relay 非法（空白）⇒ 同样忽略、走原逻辑（不额外发请求） */
+		const invalidMark = stubRequests.length;
+		const byInvalid = await relayCall('GET', balanceUrl('unknown-relay-provider', 'any-model')
+			+ '&relay=' + encodeURIComponent('   '));
+		assert.strictEqual(byInvalid.body.ok, false, '非法 relay + 未知 provider/model 仍 ok=false');
+		assert.strictEqual(byInvalid.body.reason, 'unknown-platform', '非法 relay 被忽略，走原有 unknown-platform');
+		assert.strictEqual(stubRequests.length, invalidMark, '非法 relay 不额外发请求');
+
+		/* relay 指向 Magpie 类平台 ⇒ 不查任何通道、直接返回 unsupported（客户端显示横杠） */
+		const magpieMark = stubRequests.length;
+		const byMagpieRelay = await relayCall('GET', balanceUrl('unknown-relay-provider', 'any-model')
+			+ '&relay=' + encodeURIComponent('magpie-proxy'));
+		assert.strictEqual(byMagpieRelay.body.ok, false, 'relay 含 magpie 时 ok=false');
+		assert.strictEqual(byMagpieRelay.body.reason, 'unsupported-provider',
+			'relay 含 magpie 返回 unsupported-provider（横杠）');
+		assert.strictEqual(byMagpieRelay.body.provider, 'magpie-proxy', '失败态标明是哪个平台');
+		assert.strictEqual(stubRequests.length, magpieMark, 'relay 含 magpie 不查任何通道');
+		console.log('= 平台档案：relay 参数优先命中对应平台；不存在/非法 relay 回退 provider→model；Magpie 类直接横杠');
+		console.log('= 第三方余额端到端：stub 收到 Bearer/New-Api-User，quota/500000='
+			+ queried.body.total + '；非200 与 redirect 各自报错');
+	} finally {
+		await new Promise((resolve) => stubServer.close(resolve));
+	}
+
 	console.log('');
 	console.log('BALANCE ROUTE CHECKS PASSED');
-})().catch((error) => {
+})().finally(() => {
+	/* 临时 home 由本测试独占：无论成功失败都删掉，避免每次运行在系统临时目录里留一份。
+	   用 mkdtemp 后目录名唯一，也不会出现并发跑同一测试时互相踩目录。 */
+	for (const dir of [HOME, RELAY_HOME]) {
+		try { fs.rmSync(dir, { recursive: true, force: true }); } catch (error) { /* best effort */ }
+	}
+}).catch((error) => {
 	console.error('BALANCE ROUTE CHECKS FAILED: ' + (error !== null && error !== undefined && error.message ? error.message : error));
 	process.exitCode = 1;
 });

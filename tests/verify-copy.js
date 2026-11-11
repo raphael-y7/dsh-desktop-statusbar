@@ -26,6 +26,7 @@ const ZH = {
 	secSegments: '统计字段',
 	secSegmentsHint: '勾选显示；按住拖动调整顺序。',
 	secPrices: '自定义模型价格',
+	secPlatformsBadge: '实验性功能',
 	updatePill: '发现新版本',
 	updateTo: '更新 {version} 版本',
 	updateRunning: '正在更新中',
@@ -78,6 +79,9 @@ const ZH = {
 	tipCreditsExpireLatest: ' · {date} 到期(最近)',
 	tipCreditsLeft: '剩余 {left} / {total}',
 	priceNewModel: '自定义模型',
+	/* 适用模型下拉的占位项：用户改为下拉选择 */
+	platformModelSelectPh: '请选择模型',
+	platformFeePh: '如 0.02',
 	/* task-24：提示行不再带币种（用户要求删掉那半句）。 */
 	secPricesHint: '填写你使用的模型单价（每百万 tokens）。',
 	priceTierPeak: '高峰时段',
@@ -92,6 +96,7 @@ const EN = {
 	secSegments: 'Stats fields',
 	secSegmentsHint: 'Select to show; drag to reorder.',
 	secPrices: 'Custom model prices',
+	secPlatformsBadge: 'Experimental',
 	/* task-24：不再带币种。 */
 	secPricesHint: 'Prices per million tokens.',
 	updatePill: 'Update available',
@@ -151,7 +156,9 @@ const EN = {
 	tipCreditsRefreshLatest: ' · refreshes {date} (nearest)',
 	tipCreditsExpireLatest: ' · expires {date} (nearest)',
 	tipCreditsLeft: '{left} / {total} left',
-	priceNewModel: 'Custom model'
+	priceNewModel: 'Custom model',
+	platformModelSelectPh: 'Select a model',
+	platformFeePh: 'e.g. 0.02'
 };
 
 const STYLES = [
@@ -162,7 +169,7 @@ const STYLES = [
 	['把手点阵在行内居中', 'dsb-handle::before{content:"";position:absolute;left:4px;top:1.5px;'],
 	['占位文字更淡', 'input::placeholder{color:var(--dsw-alias-label-tertiary);opacity:.5}'],
 	['最后一条模型贴齐卡片底', 'dsb-model:last-child{padding-bottom:0}'],
-	['数字输入右对齐（价格框那条规则一并管宽度与高度）', 'dsb-field input[type=text],.dsb-settings .dsb-field input[type=number]{width:52px;height:24px;text-align:right}'],
+	['数字输入右对齐（价格框那条规则一并管宽度与高度）', 'dsb-field input[type=text],.dsb-settings .dsb-field input[type=number]{width:calc(6ch + 18px);min-width:calc(6ch + 18px);flex:none;height:24px;text-align:right}'],
 	['藏官方统计行挂在 html.dsb-on 上（关掉开关就恢复）', 'html.dsb-on [data-slot="conversation.composer.dock"] > *:not(.dsb-root):not(:has(.dsb-root)){display:none !important}'],
 	['藏官方上下文按钮同样挂在 html.dsb-on 上', 'html.dsb-on button[aria-haspopup="dialog"][aria-label*="上下文"]'],
 	['藏官方「用量」按钮（TurnUsagePanel）', 'html.dsb-on span[class$="_root"]>button[aria-haspopup="dialog"][class$="_trigger"]'],
@@ -176,7 +183,7 @@ const STYLES = [
 	['工具彩条悬停段：轻微纵向放大（1.45 倍）+ 沿用胶囊圆头', '.dsb-bar-hoverable .dsb-bar-seg:hover{transform:scaleY(1.45);z-index:2}'],
 	['工具彩条放开 overflow，让凸起的段不被上下裁平', '.dsb-bar-hoverable{overflow:visible}'],
 	['工具彩条每段的上下判定区各外扩 7px（悬停放大更容易触发）', 'dsb-bar-hoverable .dsb-bar-seg::before{content:\\"\\";position:absolute;left:0;right:0;top:-7px;bottom:-7px}'],
-	['工具彩条悬停提示：无气泡、无阴影、纯文字 11px（比标题 12px 小）；z-index 106 跟着气泡（105）一起上移、始终高它一层', '.dsb-hover-plain{position:fixed;z-index:106;pointer-events:none;white-space:nowrap;font-size:11px;line-height:15px;font-weight:500;color:var(--dsw-alias-label-primary);font-variant-numeric:tabular-nums}'],
+	['工具彩条悬停提示：无气泡、无阴影、纯文字 11px（比标题 12px 小）；z-index 120 高于气泡面板（105）', '.dsb-hover-plain{position:fixed;z-index:120;pointer-events:none;white-space:nowrap;font-size:11px;line-height:15px;font-weight:500;color:var(--dsw-alias-label-primary);font-variant-numeric:tabular-nums}'],
 	['只有工具调用子视图把间隙收到 1ch', '.dsb-meter-tight .dsb-meter-value{padding-left:1ch}'],
 	['手动调用 / 手动压缩的星号是上标（像 X² 的 ²），且不把行盒撑高', '.dsb-sup{font-size:.7em;line-height:0;vertical-align:super'],
 	['积分套餐列表一屏正好 5 块（单块 37px × 5）且可滚动', '.dsb-credits-list{max-height:calc(5 * 37px);overflow-y:auto;overscroll-behavior:contain'],
@@ -205,8 +212,23 @@ const STYLES = [
 		'dsb-meter-cols{display:flex;flex-direction:row;flex-wrap:nowrap;align-content:flex-start;align-items:flex-start;gap:6px 16px;max-height:calc(50vh - 46px);overflow-x:auto;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none;-ms-overflow-style:none}'],
 	['列网格的滚动条 WebKit 下也隐藏', 'dsb-meter-cols::-webkit-scrollbar{display:none}'],
 	['每列不收缩（flex:none，否则列被压扁替代滚动，宽度账失真）', 'dsb-meter-col{display:flex;flex-direction:column;flex:none}'],
-	['价格三组字段整体贴右（有档位名那两行）', 'dsb-fields{display:flex;flex-wrap:wrap;gap:8px;margin-left:auto}'],
-	['价格输入框够放 xx.xx（52px 宽、24px 高；选择器带 input[type] 才压得住通用规则）', 'dsb-field input[type=text],.dsb-settings .dsb-field input[type=number]{width:52px;height:24px;text-align:right}'],
+	['价格三组字段占满档位名右侧、整体右对齐并在自身内部换行', 'dsb-fields{display:flex;flex:1;min-width:0;flex-wrap:wrap;justify-content:flex-end;gap:8px}'],
+	['价格行不换行（「全时段」/高峰/低谷与价格框始终同一行）', 'dsb-tier{display:flex;align-items:center;gap:8px;flex-wrap:nowrap}'],
+	['价格输入框刚好显示 XXX.XX（calc(6ch + 18px) 宽、24px 高；选择器带 input[type] 才压得住通用规则）', 'dsb-field input[type=text],.dsb-settings .dsb-field input[type=number]{width:calc(6ch + 18px);min-width:calc(6ch + 18px);flex:none;height:24px;text-align:right}'],
+	['费用倍率输入框刚好显示 xx.xx（calc(5ch + 18px)）', 'dsb-modelrow-fee input[type=number]{width:calc(5ch + 18px);min-width:calc(5ch + 18px);text-align:left}'],
+	['平台模型下拉强制向下、最多显示 5 项超出滚动（left:0 / width:100% / max-height 5 项 / 自身滚动）', 'dsb-modelrow-menu{left:0;right:auto;width:100%;max-height:calc(5 * 30px + 8px);overflow-y:auto;overscroll-behavior:contain}'],
+	['平台模型下拉已被其他行占用的模型灰显不可点', 'dsb-select-item-disabled{opacity:.45;cursor:not-allowed}'],
+	['厂商名 summary 与模型名块等高（summary 44px + 父级 1px 边框 = 45px）且字号 15px', 'dsb-catalog-summary{display:flex;align-items:center;justify-content:space-between;gap:8px;box-sizing:border-box;min-height:44px;padding:8px 2px;line-height:20px;color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600'],
+	['实验性功能胶囊样式（6px / 999px 圆角 / 1px 轻描边 / padding 1px 3px / line-height 10px）', 'dsb-experimental-badge{padding:1px 3px;border:1px solid var(--dsw-alias-separator-primary,rgba(127,127,127,.3));border-radius:999px;font-size:6px;line-height:10px;font-weight:400'],
+	['实验性功能角标按 x² 上标位置贴在标题右上角（vertical-align:super / margin-left:2px）', 'white-space:nowrap;vertical-align:super;margin-left:2px}'],
+	['模型名字号 13px（厂商名字号必须比它大）', 'dsb-model-name{color:var(--dsw-alias-label-primary);font-weight:400;font-size:13px}'],
+	['平台「适用模型」下拉文字左对齐、默认 13px 且强制单行', 'dsb-modelrow-select .dsb-select-btn{display:flex;width:100%;height:28px;box-sizing:border-box;font-size:13px;justify-content:flex-start;text-align:left;white-space:nowrap;overflow:hidden}'],
+	['厂商目录拖拽浮层与摘要行同款（左对齐、15px/600、padding 0 2px）', 'dsb-catalog-drag-card{justify-content:flex-start;text-align:left;padding:0 2px;font-size:15px;font-weight:600'],
+	['厂商目录拖拽浮层使用原行克隆（wrapper 不额外加 padding，pointer-events:none）', 'dsb-catalog-drag-ghost{display:block;padding:0;gap:0;justify-content:flex-start;align-items:stretch;pointer-events:none}'],
+	['厂商目录拖拽浮层 wrapper 带 dsb-settings 作用域类（portal 到 body 后克隆体仍能命中 .dsb-settings .dsb-catalog-summary / .dsb-handle 的原行完整样式）', 'dsb-settings dsb-drag-card dsb-catalog-drag-card dsb-catalog-drag-ghost'],
+	['厂商目录拖拽浮层克隆原行 summary（保留 .dsb-catalog-summary 类）', 'rowNode.querySelector(".dsb-catalog-summary")'],
+	['厂商姓名前的 chevron 由 .dsb-settings 作用域规则提供（浮层必须把作用域带过去，否则只剩文字和六个点）', '.dsb-settings .dsb-catalog-summary::before{content:"";flex:none;width:6px;height:6px'],
+	['目录最后一项不再多出 8px 底部留白（只保留左侧缩进）', 'dsb-catalog-list{display:flex;flex-direction:column;gap:0;padding:0 0 0 14px;min-width:0}'],
 	['峰谷计价勾选只占自身宽度', 'dsb-inline-check{display:flex;align-self:flex-start'],
 	['勾选与计价单位同一行两端对齐', 'dsb-tier-head{display:flex;align-items:center;justify-content:space-between'],
 	['币种下拉：毛玻璃 + 大圆角（与气泡同材质）', 'border-radius:var(--dsw-radius-lg,16px);background:rgb(from var(--dsw-specific-menu'],
@@ -255,9 +277,20 @@ STYLES.forEach(([label, needle]) => {
 	console.log('× 样式 ' + label + ' 缺失: ' + needle);
 });
 
+/* 数值断言：厂商名字号必须大于模型名字号（用户要求） */
+const summaryFont = /\.dsb-settings \.dsb-catalog-summary\{[^}]*font-size:(\d+)px/.exec(raw);
+const modelNameFont = /\.dsb-settings \.dsb-model-name\{[^}]*font-size:(\d+)px/.exec(raw);
+if (summaryFont === null || modelNameFont === null || Number(summaryFont[1]) <= Number(modelNameFont[1])) {
+	bad += 1;
+	console.log('× 厂商名字号必须大于模型名字号：summary=' + (summaryFont === null ? '缺失' : summaryFont[1] + 'px') + ' model-name=' + (modelNameFont === null ? '缺失' : modelNameFont[1] + 'px'));
+} else {
+	console.log('= 厂商名字号 ' + summaryFont[1] + 'px > 模型名字号 ' + modelNameFont[1] + 'px');
+}
+
 /* task-19：单档价格行改用「全时段」档位名 + 常规规则，靠"没有档位名"判断的双边对齐规则已被舍弃。
    这里作为**负断言**钉住，防止有人把它加回来（加回来会让单档行的对齐方式与两档行不一致）。 */
 const GONE = [
+	['第三方平台标题旧的 flex 两端布局（已删除，角标改为紧跟标题的上标）', 'dsb-platforms-title'],
 	['单档价格行双边对齐（已被舍弃：改由「全时段」档位名 + 常规规则）', 'dsb-tier:not(:has(.dsb-tier-name))'],
 	['令牌条小段 2px 保底（用户拍板去掉：按实际比例显示，极小段看不见是预期）', '.dsb-bar-seg{flex:0 1 auto;min-width:2px'],
 	['条形图段内透明右边框的间隔方案（会吞掉 0.76%/0.29% 这类极小段，已回退成 gap:1px）', '.dsb-bar-seg:not(:last-child){border-right:1px solid transparent'],

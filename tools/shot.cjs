@@ -227,15 +227,14 @@ function settingsShot(locale) {
 function pricingShot(locale) {
   /* SettingsSection 里 useState 的顺序（组件加了 hook 就要回来重数一遍）：
      0 drag / 1 newModel / 2 hostModel / 3 editing / 4 draft /
-     5 holidayBusy / 6 holidayNote / 7 currencyOpen。
-     **2026-10-22 起前移了一位**：开发模式的状态改从模块级快照读（`useDevState` 的 const），
-     组件里不再有 `devOn` 那个 useState，于是它后面所有 hook 整体前移一位 ——
-     editing 4→3、draft 5→4、currencyOpen 8→7。不改的话第一张卡展不开（探针 dsb-edit-pop=0）。
-     2026-10-05 之前按下标写的是旧顺序（把 editing 当第 5 个、holidayNote 当第 6 个），
-     结果第一张卡展不开、还把草稿对象塞进了 holidayNote，卡片里冒出一句「抓取失败（undefined）」。
-     2026-10-13 又踩了一次同类的坑：新增 devOn（开发模式胶囊）插在最前面，
-     后面整体后移一位，于是 presets[3] 从 editing 变成 hostModel、
-     presets[4] 从 draft 变成 editing、presets[7] 从 currencyOpen 变成 holidayNote。
+     5 catalogNotice / 6 platformModelOpen / 7 catalogDrag / 8 currencyOpen /
+     9 platformEditing / 10 platformDraft / 11 platformNotice / 12 newPlatform /
+     13 platformErrors。
+     开发模式状态来自模块级快照；重复添加 / 倍率校验失败的提示由 catalogNotice 管理；
+     9-13 是「第三方平台」区块（平台编辑 / 草稿 / 校验提示 / 新平台名输入 / 字段级错误）。
+     pricingShot 的 presets 固定为 editing=3、draft=4、currencyOpen=8。
+     旧的 presets[7] 会命中 catalogDrag，币种下拉将无法按截图预设收起。
+     历史上的坑：hook 顺序变化时截图 presets 未同步，会造成编辑区不展开或草稿注入错误状态。
      教训：**下标是脆的**，加 hook 必须回来重数，并用 `node tools/shot.cjs` 实际生成一次确认。 */
   const presets = [];
   presets[3] = 'deepseek-flash';
@@ -255,7 +254,7 @@ function pricingShot(locale) {
       peak: { input: '2', cacheRead: '0.04', cacheWrite: '0', output: '8' },
       offPeak: { input: '1', cacheRead: '0.02', cacheWrite: '0', output: '4' }
     };
-  presets[7] = false;   /* 币种下拉收起：展开会压住右边那列输入框 */
+  presets[8] = false;   /* 币种下拉收起：展开会压住右边那列输入框 */
   const loaded = loadPlugin(locale, locale === 'en' ? SETTINGS_USD : SETTINGS_CONFIG, presets);
   const t = translator(loaded.shot, locale);
   const tree = loaded.shot.SettingsSection({

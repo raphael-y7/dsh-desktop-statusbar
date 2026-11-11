@@ -1,7 +1,8 @@
 /**
- * 客户端「更新节假峰谷」逻辑测试：
- *   - 按钮常驻，目标年份永远是下一年；
- *   - 点按钮抓到日期后写进配置，峰谷判定立刻用上新表，按钮不变；
+ * 客户端「节假日自动更新」逻辑测试：
+ *   - 12/31 抓下一年；当年完全缺失时任何日期都补抓（12/30 到 2/10 没开机的漏抓场景）；
+ *   - 失败冷却 24 小时；已有当年数据不重复抓；开发模式不发真实请求；
+ *   - 抓到日期后写进配置，峰谷判定立刻用上新表；
  *   - 抓取失败（未发布 / 网络错 / 后台还是旧版）时不写配置，只回一个失败结果。
  * 用法：node verify-holiday-update.js
  */
@@ -18,7 +19,7 @@ function load(config, fetchResult) {
 	let code = fs.readFileSync(PLUGIN, 'utf8');
 	const marker = '\t\texports.apply = apply;';
 	code = code.replace(marker,
-		'\t\texports.__test = { isPeakTime, nextHolidayYear, updateHolidays, holidaySummary };\n' + marker);
+		'\t\texports.__test = { isPeakTime, shouldAutoUpdateHolidays, autoUpdateHolidays, updateHolidays };\n' + marker);
 
 	const store = new Map();
 	if (config !== null) store.set(STORAGE_KEY, JSON.stringify(config));
@@ -80,19 +81,90 @@ const FRESH_2027 = ['2027-01-01', '2027-01-04', '2027-02-05', '2027-02-08', '202
 	'2027-05-03', '2027-05-04', '2027-05-05', '2027-06-09', '2027-09-15', '2027-10-01', '2027-10-04'];
 
 (async () => {
-	/* 1. 按钮常驻：目标年份永远是下一年，跟日期窗口无关 */
+	/* 1. 自动更新时机：12/31 抓下一年；当年完全缺失时任何日期都补抓（长期未打开的兜底） */
 	const first = load(null, { ok: true, days: FRESH_2027 });
-	assert.strictEqual(first.api.nextHolidayYear(beijing(2026, 9, 19, 10, 0)), 2027, '2026 年里的目标是 2027');
-	assert.strictEqual(first.api.nextHolidayYear(beijing(2026, 12, 24, 23, 59)), 2027, '圣诞前也是 2027');
-	assert.strictEqual(first.api.nextHolidayYear(beijing(2026, 12, 25, 0, 0)), 2027, '圣诞当天仍是 2027');
-	assert.strictEqual(first.api.nextHolidayYear(beijing(2027, 1, 1, 8, 0)), 2028, '跨年后指向再下一年');
-	console.log('= 目标年份永远是下一年（按钮常驻，不看圣诞窗口）');
+	assert.strictEqual(first.api.shouldAutoUpdateHolidays(beijing(2026, 12, 31, 0, 0), []), 2027, '12/31 目标下一年');
+	assert.strictEqual(first.api.shouldAutoUpdateHolidays(beijing(2026, 12, 31, 23, 59), []), 2027, '12/31 深夜仍目标下一年');
+	assert.strictEqual(first.api.shouldAutoUpdateHolidays(beijing(2027, 1, 1, 0, 0), []), 2027, '1/1 补抓当年');
+	assert.strictEqual(first.api.shouldAutoUpdateHolidays(beijing(2027, 1, 7, 23, 59), []), 2027, '1/7 仍补抓');
+	/* 核心漏抓场景：12/30 到 2/10 一直没打开，2/10 打开时当年仍没有任何数据 */
+	assert.strictEqual(first.api.shouldAutoUpdateHolidays(beijing(2027, 2, 10, 9, 0), []), 2027, '2/10 打开补抓当年');
+	assert.strictEqual(first.api.shouldAutoUpdateHolidays(beijing(2027, 3, 15, 9, 0), ['2026-01-01']), 2027, '3/15 只有别的年份数据仍补抓当年');
+	assert.strictEqual(first.api.shouldAutoUpdateHolidays(beijing(2026, 11, 30, 10, 0), []), 2026, '11/30 当年缺失也补抓');
+	assert.strictEqual(first.api.shouldAutoUpdateHolidays(beijing(2027, 12, 31, 12, 0), []), 2028, '跨年后 12/31 指向再下一年');
+	/* 已有目标年份任意一天 → 不再抓（避免每个 tick 重复请求） */
+	assert.strictEqual(first.api.shouldAutoUpdateHolidays(beijing(2027, 1, 2, 12, 0), ['2027-01-01']), false, '1 月已有当年数据不重复抓');
+	assert.strictEqual(first.api.shouldAutoUpdateHolidays(beijing(2027, 2, 10, 12, 0), ['2027-01-01']), false, '2/10 已有当年数据不重复抓');
+	assert.strictEqual(first.api.shouldAutoUpdateHolidays(beijing(2027, 1, 2, 12, 0), ['2026-01-01']), 2027, '只有别的年份数据仍要补抓');
+	assert.strictEqual(first.api.shouldAutoUpdateHolidays(beijing(2026, 12, 31, 12, 0), ['2027-01-01']), 2026, '12/31 已有下一年但当年缺失 → 补当年');
+	/* 失败冷却：同一年失败后 24 小时内不再重试（按年份分开记） */
+	const failedAt = beijing(2027, 2, 10, 9, 0);
+	assert.strictEqual(first.api.shouldAutoUpdateHolidays(beijing(2027, 2, 10, 20, 0), [], { 2027: failedAt }), false, '失败当天 20:00 不重试');
+	assert.strictEqual(first.api.shouldAutoUpdateHolidays(beijing(2027, 2, 11, 8, 59), [], { 2027: failedAt }), false, '失败未满 24 小时不重试');
+	assert.strictEqual(first.api.shouldAutoUpdateHolidays(beijing(2027, 2, 11, 9, 1), [], { 2027: failedAt }), 2027, '失败满 24 小时后重试');
+	assert.strictEqual(first.api.shouldAutoUpdateHolidays(beijing(2027, 2, 10, 20, 0), [], { 2026: failedAt }), 2027, '别的年份的失败不影响当年');
+	console.log('= 自动更新时机：12/31 抓下一年、当年缺失任意日期补抓、已有数据不重复、失败按年份 24 小时冷却');
 
-	/* 1b. 状态文案的年份：还没有下一年的表时用当年（内嵌 2026 有 19 天） */
-	const before = first.api.holidaySummary(beijing(2026, 9, 19, 10, 0));
-	assert.strictEqual(before.year, 2026, '没有下一年数据时年份用当年');
-	assert.strictEqual(before.count, 19, '2026 年内嵌 19 个节假日');
-	console.log('= 状态文案：没有 2027 数据 → 显示 2026 年 19 个节假日');
+	/* 1b. 12/31 两个候选年都缺失：连续 5 个 tick 里每个目标年只请求一次（旧实现会互相覆盖、每 tick 重试） */
+	const dec31 = load(null, { ok: false, reason: 'not-found' });
+	const decState = { busy: false, failed: {} };
+	const decAt = beijing(2027, 12, 31, 9, 0);
+	const decFired = [];
+	for (let i = 0; i < 5; i += 1) decFired.push(await dec31.api.autoUpdateHolidays(decAt + i * 1000, [], decState, false));
+	assert.deepStrictEqual(decFired, [true, true, false, false, false], '12/31 两个年份各尝试一次，之后全部冷却');
+	assert.strictEqual(dec31.calls.length, 2, '12/31 连续 5 tick 只发 2 次请求（两个缺失年份各一次）');
+	assert.ok(dec31.calls[0].indexOf('year=2028') !== -1, '第一次抓下一年：' + dec31.calls[0]);
+	assert.ok(dec31.calls[1].indexOf('year=2027') !== -1, '第二次补当年：' + dec31.calls[1]);
+	assert.deepStrictEqual(Object.keys(decState.failed).sort(), ['2027', '2028'], '两个年份的失败记录互不覆盖');
+	/* 只有下一年缺失（当年已有数据）时：连续 5 tick 只发 1 次请求 */
+	const dec31b = load(null, { ok: false, reason: 'not-found' });
+	const decStateB = { busy: false, failed: {} };
+	const decFiredB = [];
+	for (let i = 0; i < 5; i += 1) decFiredB.push(await dec31b.api.autoUpdateHolidays(decAt + i * 1000, ['2027-01-01'], decStateB, false));
+	assert.deepStrictEqual(decFiredB, [true, false, false, false, false], '单个目标年失败后 5 tick 内不再重试');
+	assert.strictEqual(dec31b.calls.length, 1, '12/31 连续 5 tick 只发 1 次请求');
+	console.log('= 12/31 连续 5 tick：两个缺失年份共 2 次请求、单年份只 1 次（按年份冷却）');
+
+	/* 1c. 长期未打开（12/30 → 2/10）：2/10 打开时必须真的触发 updateHolidays 并写入当年数据 */
+	const missed = load({ version: 6, holidayDays: ['2026-01-01', '2026-10-01'] }, { ok: true, days: FRESH_2027 });
+	const openAt = beijing(2027, 2, 10, 9, 0);
+	assert.strictEqual(missed.api.shouldAutoUpdateHolidays(openAt, missed.stored().holidayDays), 2027, '2/10 打开返回当年');
+	const fired = await missed.api.autoUpdateHolidays(openAt, missed.stored().holidayDays, { busy: false, failed: null }, false);
+	assert.strictEqual(fired, true, '2/10 打开触发自动抓取');
+	assert.strictEqual(missed.calls.length, 1, '只发一次请求');
+	assert.ok(missed.calls[0].indexOf('year=2027') !== -1, '请求抓的是当年：' + missed.calls[0]);
+	assert.deepStrictEqual(missed.stored().holidayDays, ['2026-01-01', '2026-10-01'].concat(FRESH_2027).sort(), '当年数据写入配置');
+	assert.strictEqual(missed.api.shouldAutoUpdateHolidays(openAt, missed.stored().holidayDays), false, '已有当年数据不再抓');
+	const firedAgain = await missed.api.autoUpdateHolidays(beijing(2027, 3, 15, 9, 0), missed.stored().holidayDays, { busy: false, failed: null }, false);
+	assert.strictEqual(firedAgain, false, '已有当年数据不重复请求');
+	assert.strictEqual(missed.calls.length, 1, '没有多发请求');
+	console.log('= 12/30 到 2/10 未打开：2/10 打开抓当年并写入，之后整年不再抓');
+
+	/* 1d. 失败冷却：第一次失败记录年份+时间，24 小时内每个 tick 都不再发请求 */
+	const cooling = load(null, { ok: false, reason: 'not-found' });
+	const coolState = { busy: false, failed: {} };
+	const coolAt = beijing(2027, 2, 10, 9, 0);
+	assert.strictEqual(await cooling.api.autoUpdateHolidays(coolAt, [], coolState, false), true, '首次失败尝试会发出请求');
+	assert.strictEqual(cooling.calls.length, 1, '首次失败一次请求');
+	assert.strictEqual(coolState.failed['2027'], coolAt, '冷却记录该年份的尝试时间');
+	assert.strictEqual(coolState.busy, false, '失败后 busy 复位');
+	const coolTicks = [1000, 3600 * 1000, 23 * 3600 * 1000 + 59 * 60 * 1000];
+	for (let i = 0; i < coolTicks.length; i += 1) {
+		assert.strictEqual(await cooling.api.autoUpdateHolidays(coolAt + coolTicks[i], [], coolState, false), false, '冷却期内不重试（+' + coolTicks[i] + 'ms）');
+	}
+	assert.strictEqual(cooling.calls.length, 1, '冷却期内没有新请求');
+	assert.strictEqual(await cooling.api.autoUpdateHolidays(coolAt + 24 * 3600 * 1000 + 1000, [], coolState, false), true, '满 24 小时后重试');
+	assert.strictEqual(cooling.calls.length, 2, '重试发出第二次请求');
+	assert.strictEqual(cooling.stored(), undefined, '失败不写配置');
+	console.log('= 失败冷却：记录年份+时间，24 小时内不重试，满 24 小时才重试');
+
+	/* 1e. 开发模式：自动检查一律不发真实请求 */
+	const dev = load(null, { ok: true, days: FRESH_2027 });
+	const devState = { busy: false, failed: {} };
+	assert.strictEqual(await dev.api.autoUpdateHolidays(beijing(2027, 2, 10, 9, 0), [], devState, true), false, '开发模式不触发');
+	assert.strictEqual(dev.calls.length, 0, '开发模式 0 次请求');
+	assert.strictEqual(dev.stored(), undefined, '开发模式不写配置');
+	console.log('= 开发模式：自动检查不 fetch、不写配置');
 
 	/* 2. 没更新时 2027-01-01（周五）会按高峰算 —— 这正是要更新的原因 */
 	assert.strictEqual(first.api.isPeakTime(beijing(2027, 1, 1, 10, 0)), true, '未更新时 2027 元旦按高峰');
@@ -105,20 +177,15 @@ const FRESH_2027 = ['2027-01-01', '2027-01-04', '2027-02-05', '2027-02-08', '202
 	assert.strictEqual(ok.year, 2027, '结果年份');
 	assert.strictEqual(ok.count, FRESH_2027.length, '结果天数');
 	assert.deepStrictEqual(first.stored().holidayDays, FRESH_2027.slice().sort(), '写入 config.holidayDays');
-	assert.strictEqual(first.api.nextHolidayYear(beijing(2026, 12, 25, 0, 0)), 2027, '写完按钮还在（常驻）');
 	assert.strictEqual(first.api.isPeakTime(beijing(2027, 1, 1, 10, 0)), false, '2027 元旦整天空闲');
 	assert.strictEqual(first.api.isPeakTime(beijing(2027, 1, 5, 10, 0)), true, '2027-01-05（周二）仍是高峰');
 	assert.strictEqual(first.api.isPeakTime(beijing(2026, 1, 1, 10, 0)), false, '内嵌表照旧生效');
 	assert.strictEqual(first.api.isPeakTime(beijing(2026, 9, 25, 10, 0)), false, '内嵌表照旧生效（中秋）');
 	assert.strictEqual(first.calls.length, 1, '只请求一次 host 接口');
 	assert.ok(first.calls[0].indexOf('year=2027') !== -1, '请求带上目标年份：' + first.calls[0]);
-	console.log('= 更新后写入配置、2027 元旦改判空闲、工作日仍是高峰、按钮仍在');
+	console.log('= 更新后写入配置、2027 元旦改判空闲、工作日仍是高峰');
 
-	/* 3b. 按钮右边那行状态文案的数据：有下一年的表就用下一年，否则用当年 */
-	const after = first.api.holidaySummary(beijing(2026, 9, 19, 10, 0));
-	assert.strictEqual(after.year, 2027, '录入 2027 后年份用下一年');
-	assert.strictEqual(after.count, FRESH_2027.length, '数量来自抓取结果');
-	console.log('= 状态文案：已录入 2027 → 显示 2027 年 ' + after.count + ' 个节假日');
+	/* 3b. 状态文案已随按钮一起删除：holidaySummary / holidayCount / nextHolidayYear 是死代码，不再保留 */
 
 	/* 4. 还没发布：回 not-found，不写配置 */
 	const missing = load(null, { ok: false, reason: 'not-found' });
@@ -126,8 +193,7 @@ const FRESH_2027 = ['2027-01-01', '2027-01-04', '2027-02-05', '2027-02-08', '202
 	assert.strictEqual(failed.ok, false, '未发布时不算成功');
 	assert.strictEqual(failed.reason, 'not-found', '未发布时的原因');
 	assert.strictEqual(missing.stored(), undefined, '失败不写配置');
-	assert.strictEqual(missing.api.nextHolidayYear(beijing(2026, 12, 25, 0, 0)), 2027, '失败后按钮仍在，可以重试');
-	console.log('= 官方还没发布时：不写配置、按钮保留');
+	console.log('= 官方还没发布时：不写配置');
 
 	/* 5. 网络断了：同样不写配置 */
 	const offline = load(null, null);

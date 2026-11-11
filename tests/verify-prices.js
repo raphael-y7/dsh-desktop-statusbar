@@ -17,7 +17,7 @@ const PLUGIN = path.join(__dirname, '..', 'lib', 'client.js');
 let code = fs.readFileSync(PLUGIN, 'utf8');
 code = code.replace('\t\texports.apply = apply;',
 	'\t\texports.__t = { pricesMissing, loadConfig, segmentView, isPeakTime, PRICE_VERSION,'
-	+ ' mainModelOf, displayCurrencyOf, REFERENCE_RATE };\n\t\texports.apply = apply;');
+	+ ' mainModelOf, displayCurrencyOf, REFERENCE_RATE, MODEL_PRESENTATION };\n\t\texports.apply = apply;');
 
 /* 明确填 0（用户说的"免费"）：有数字格 ⇒ 不算缺失、要原样留住 */
 const ZERO_BOOK = {
@@ -105,6 +105,12 @@ console.log('明确填 0 的价格库被原样保留:', JSON.stringify(currentCf
    与它上面那句注释"用户自己改过的条目不覆盖"正好相反（实测缺陷：用户改过的
    deepseek-flash 被顶回官方价，白改）。 */
 const USER_FLASH = {
+	/* v7：读配置时会给条目补基准价（= 当前值 + 当前币种，不改数值） */
+	base: {
+		currency: 'CNY',
+		peak: { input: 99, cacheRead: 8, cacheWrite: 7, output: 66 },
+		offPeak: { input: 44, cacheRead: 4, cacheWrite: 3, output: 33 }
+	},
 	tiered: true,
 	/* task-22：币种改成每个条目自带 —— 读配置时会把入口的默认币种落成显式 `currency`，
 	   所以这份"用户改过的条目"基准也要带上它。 */
@@ -139,6 +145,45 @@ assert.strictEqual(twiceCfg.models['deepseek-v4-pro'].peak.output, 27, '4b) 补�
 assert.strictEqual(twiceCfg.priceVersion, api.PRICE_VERSION, '4b) 版本号保持当前值');
 console.log('版本落后时并入官方价：官方价打底、用户条目优先（'
 	+ Object.keys(legacyCfg.models).length + ' 条：' + Object.keys(legacyCfg.models).join(' / ') + '）');
+
+/* 2d. v8 补播：老用户 priceVersion=7 升级后自动出现 Claude Fable 5.2；
+   已有条目（改过价的 fable 5.1）逐字段不动，已下架旧模型不会被加回。 */
+const V7_FABLE = {
+	tiered: false, currency: 'USD', feeMultiplier: 2,
+	peak: { input: 99, cacheRead: 0.25, cacheWrite: 12.5, output: 50 },
+	offPeak: { input: 99, cacheRead: 0.25, cacheWrite: 12.5, output: 50 },
+	base: {
+		currency: 'USD',
+		peak: { input: 99, cacheRead: 0.25, cacheWrite: 12.5, output: 50 },
+		offPeak: { input: 99, cacheRead: 0.25, cacheWrite: 12.5, output: 50 }
+	}
+};
+const v7 = boot({ version: 6, priceVersion: 7, currency: 'CNY', models: { 'claude-fable-5.1': V7_FABLE } });
+const v7Cfg = v7.loadConfig();
+assert.strictEqual(v7Cfg.priceVersion, api.PRICE_VERSION, '2d) priceVersion 7 升到 8');
+assert.deepStrictEqual(JSON.parse(JSON.stringify(v7Cfg.models['claude-fable-5.2'])), {
+	tiered: false, currency: 'USD',
+	peak: { input: 8, cacheRead: 0.2, cacheWrite: 10, output: 40 },
+	offPeak: { input: 8, cacheRead: 0.2, cacheWrite: 10, output: 40 },
+	base: { currency: 'USD', peak: { input: 8, cacheRead: 0.2, cacheWrite: 10, output: 40 }, offPeak: { input: 8, cacheRead: 0.2, cacheWrite: 10, output: 40 } }
+}, '2d) 老用户 priceVersion 7 自动补上 Claude Fable 5.2（官网价 + 基准价）');
+assert.deepStrictEqual(JSON.parse(JSON.stringify(v7Cfg.models['claude-fable-5.1'])), V7_FABLE,
+	'2d) 已有条目不被覆盖（fable 5.1 的改价 + 倍率 + 基准价保留）');
+assert.strictEqual(v7Cfg.models['GLM-5.2'], undefined, '2d) 已下架的旧模型不会被加回');
+assert.strictEqual(v7Cfg.models['GLM-5.3'], undefined, '2d) 用户主动删除的当前官方模型不会被 v7→v8 补播加回');
+console.log('v8 补播：priceVersion 7 自动出现 Fable 5.2，已有价格不被覆盖');
+
+/* 2e. 全新安装（清 localStorage / 第一次装）：默认价格库也要播种官方目录，Fable 5.2 必须出现；
+   不能只剩 DEFAULT_PRICES 的 DeepSeek 两条。 */
+const fresh = boot(undefined);
+const freshCfg = fresh.loadConfig();
+assert.ok(freshCfg.models['claude-fable-5.2'] !== undefined, '2e) 新装价格库包含 Claude Fable 5.2');
+assert.ok(freshCfg.models['deepseek-flash'] !== undefined, '2e) 新装价格库保留 DeepSeek 参考价');
+assert.strictEqual(freshCfg.models['deepseek-flash'].peak.output, 8, '2e) DeepSeek 参考价仍是内嵌 CNY 值');
+assert.strictEqual(Object.keys(freshCfg.models).length, Object.keys(api.MODEL_PRESENTATION).length,
+	'2e) 新装价格库 = 官方目录全部模型（' + Object.keys(api.MODEL_PRESENTATION).length + ' 条）');
+assert.ok(freshCfg.modelOrder.indexOf('claude-fable-5.2') >= 0, '2e) Fable 5.2 也在 modelOrder 里');
+console.log('新装价格库：官方目录 ' + Object.keys(freshCfg.models).length + ' 条已播种（含 Fable 5.2）');
 
 /* 3. 真实用量下费用不再是 0 */
 const calls = [

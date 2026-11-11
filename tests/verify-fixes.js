@@ -19,6 +19,7 @@
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
+const os = require('os');
 
 const LIB = path.join(__dirname, '..', 'lib');
 const client = fs.readFileSync(path.join(LIB, 'client.js'), 'utf8');
@@ -141,8 +142,8 @@ console.log('      已加值比较，不会自激 MutationObserver');
  * 临时目录必须落在仓库内 —— index.js 要 import 'zod'，Node 从该文件往上找 node_modules。
  * ====================================================================================== */
 const hostLib = require('./_host-lib.js');
-const TMP = path.join(__dirname, '.dsh-fixes-lib');
-const FIX_HOME = path.join(__dirname, '.dsh-test-home-fixes');
+const TMP = path.join(__dirname, '.dsh-test-home-fixes-lib');
+const FIX_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-test-home-fixes-'));
 process.env.DSH_HOME = FIX_HOME;
 globalThis.setInterval = () => 0;
 
@@ -282,12 +283,16 @@ const bookOf = (entry) => ({ x: entry });
 		   伪造的价格库被完整接受 → settleUnpriced 按攻击者单价结算进 days[].cost，而 cost
 		   一旦记下就不再改动 → 污染不可逆；同一面还能触发 /api/self-update 真跑 pnpm 安装。
 		   最小方案：只拦「带跨站 Origin 的 POST」，同源与无 Origin（命令行 / curl / 宿主内部）放行。 */
-		const registered = { route: null };
-		host.apply({
-			logger: { info: () => {} },
-			effect: (fn) => fn(),
-			sessionProjections: { register: () => () => {} },
-			webServer: { register: (route) => { registered.route = route; return () => {}; } },
+	const registered = { route: null };
+	const TRUSTED_ORIGIN = 'http://127.0.0.1:19387';
+	host.apply({
+		logger: { info: () => {} },
+		effect: (fn) => fn(),
+		sessionProjections: { register: () => () => {} },
+		webServer: {
+			getOrigin: () => TRUSTED_ORIGIN,
+			register: (route) => { registered.route = route; return () => {}; }
+		},
 			/* credentials 服务直接抛错：顺带验 ⑬ 的整体兜底 */
 			get: () => { throw new Error('credentials 服务炸了'); },
 		});
@@ -323,16 +328,28 @@ const bookOf = (entry) => ({ x: entry });
 			});
 		});
 		const PRICE_BODY = JSON.stringify({ models: { 'safe-model': { tiered: false, peak: TIER(1, 1), offPeak: TIER(1, 1) } } });
-		assert.strictEqual(host.isCrossSiteWrite({ method: 'POST', headers: { origin: 'https://evil.example', host: HOST_HEADER } }), true,
+		const trustedCtx = { webServer: { getOrigin: () => TRUSTED_ORIGIN } };
+		assert.strictEqual(host.isCrossSiteWrite({ method: 'POST', headers: { origin: 'https://evil.example', host: HOST_HEADER } }, trustedCtx), true,
 			'isCrossSiteWrite：跨站 Origin 的 POST 判为跨站');
-		assert.strictEqual(host.isCrossSiteWrite({ method: 'GET', headers: { origin: 'https://evil.example', host: HOST_HEADER } }), false,
+		assert.strictEqual(host.isCrossSiteWrite({ method: 'GET', headers: { origin: 'https://evil.example', host: HOST_HEADER } }, trustedCtx), false,
 			'isCrossSiteWrite：GET 不受影响');
-		assert.strictEqual(host.isCrossSiteWrite({ method: 'POST', headers: { host: HOST_HEADER } }), false,
+		assert.strictEqual(host.isCrossSiteWrite({ method: 'POST', headers: { host: HOST_HEADER } }, trustedCtx), false,
 			'isCrossSiteWrite：无 Origin 放行');
-		assert.strictEqual(host.isCrossSiteWrite({ method: 'POST', headers: { origin: 'http://' + HOST_HEADER, host: HOST_HEADER } }), false,
-			'isCrossSiteWrite：同源放行');
-		assert.strictEqual(host.isCrossSiteWrite({ method: 'POST', headers: { origin: 'null', host: HOST_HEADER } }), true,
+		assert.strictEqual(host.isCrossSiteWrite({ method: 'POST', headers: { origin: TRUSTED_ORIGIN, host: HOST_HEADER } }, trustedCtx), false,
+			'isCrossSiteWrite：完整 scheme/authority 同源放行');
+		assert.strictEqual(host.isCrossSiteWrite({ method: 'POST', headers: { origin: 'https://127.0.0.1:19387', host: HOST_HEADER } }, trustedCtx), true,
+			'isCrossSiteWrite：scheme 不同即使 authority 相同也拒绝');
+		assert.strictEqual(host.isCrossSiteWrite({ method: 'POST', headers: { origin: 'http://127.0.0.1:19388', host: HOST_HEADER } }, trustedCtx), true,
+			'isCrossSiteWrite：不同 port 拒绝');
+		assert.strictEqual(host.isCrossSiteWrite({ method: 'POST', headers: { origin: 'null', host: HOST_HEADER } }, trustedCtx), true,
 			'isCrossSiteWrite：opaque 来源（null）也判为跨站');
+		assert.strictEqual(host.isCrossSiteWrite({ method: 'POST', headers: { origin: 'not-an-origin', host: HOST_HEADER } }, trustedCtx), true,
+			'isCrossSiteWrite：malformed Origin fail closed');
+		assert.strictEqual(host.isCrossSiteWrite({ method: 'POST', headers: { origin: TRUSTED_ORIGIN } }, {}), true,
+			'isCrossSiteWrite：缺失 listener origin fail closed');
+		assert.strictEqual(host.isCrossSiteWrite({ method: 'POST', headers: { origin: TRUSTED_ORIGIN } }, {
+			webServer: { getOrigin: () => { throw new Error('origin unavailable'); } }
+		}), true, 'isCrossSiteWrite：listener origin 抛错 fail closed');
 		/* 四个写面逐个打：prices 改价、active-model 改状态、self-update 真跑 pnpm、tip-diag 落文件 */
 		const writeSurfaces = [
 			['/dsh-desktop-statusbar/api/prices', PRICE_BODY],
@@ -345,9 +362,21 @@ const bookOf = (entry) => ({ x: entry });
 			assert.strictEqual(evil.status, 403, '跨站写 ' + pathname + ' 必须 403，实际 ' + evil.status);
 			assert.strictEqual(evil.body.reason, 'cross-origin', pathname + ' 给出 cross-origin 原因');
 		}
+		const sameAuthorityWrongScheme = await hit('/dsh-desktop-statusbar/api/prices', {
+			method: 'POST', headers: { origin: 'https://127.0.0.1:19387' }, body: PRICE_BODY
+		});
+		assert.strictEqual(sameAuthorityWrongScheme.status, 403, 'HTTPS Origin 对 HTTP listener 即使 authority 相同也必须拒绝');
+		const wrongPort = await hit('/dsh-desktop-statusbar/api/prices', {
+			method: 'POST', headers: { origin: 'http://127.0.0.1:19388' }, body: PRICE_BODY
+		});
+		assert.strictEqual(wrongPort.status, 403, '不同端口的 Origin 必须拒绝');
+		const malformed = await hit('/dsh-desktop-statusbar/api/prices', {
+			method: 'POST', headers: { origin: 'not-an-origin' }, body: PRICE_BODY
+		});
+		assert.strictEqual(malformed.status, 403, 'malformed Origin 必须 fail closed');
 		const opaque = await hit('/dsh-desktop-statusbar/api/prices', { method: 'POST', headers: { origin: 'null' }, body: PRICE_BODY });
 		assert.strictEqual(opaque.status, 403, 'Origin: null（沙箱 iframe / file:// 页面）也必须 403，实际 ' + opaque.status);
-		const sameOrigin = await hit('/dsh-desktop-statusbar/api/prices', { method: 'POST', headers: { origin: 'http://' + HOST_HEADER }, body: PRICE_BODY });
+		const sameOrigin = await hit('/dsh-desktop-statusbar/api/prices', { method: 'POST', headers: { origin: TRUSTED_ORIGIN }, body: PRICE_BODY });
 		assert.strictEqual(sameOrigin.status, 200, '同源 POST 照常放行，实际 ' + sameOrigin.status);
 		const noOrigin = await hit('/dsh-desktop-statusbar/api/prices', { method: 'POST', body: PRICE_BODY });
 		assert.strictEqual(noOrigin.status, 200, '无 Origin 的 POST（命令行 / curl / 宿主内部）照常放行，实际 ' + noOrigin.status);
@@ -426,8 +455,8 @@ const bookOf = (entry) => ({ x: entry });
 		/* 走真实路由：往隔离 home 写一份日桶被改坏的台账，打 /api/daily-usage。
 		   修复前 bucket.input 直接相加 → NaN 会传染整个 totals，JSON 里还丢键。
 		   复用文件顶部已 require 的 hostLib（再 require 一次会撞声明）。 */
-		const TMP2 = path.join(__dirname, '.dsh-fixes-lib2');
-		const HOME2 = path.join(__dirname, '.dsh-test-home-malformed');
+		const TMP2 = path.join(__dirname, '.dsh-test-home-malformed-lib');
+		const HOME2 = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-test-home-malformed-'));
 		const prevHome = process.env.DSH_HOME;
 		process.env.DSH_HOME = HOME2;
 		try {

@@ -18,13 +18,16 @@
  *
  * 用法：node tests/verify-compaction-usage.js
  */
+const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
+const os = require('os');
 
 const INDEX = path.join(__dirname, '..', 'lib', 'index.js');
 
 /* apply() 会预热扫一次台账（读会话日志、必要时落盘）：把 DSH_HOME 指到隔离目录 */
-process.env.DSH_HOME = path.join(__dirname, '.dsh-test-home-compaction-usage');
+const TEMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-test-home-compaction-usage-'));
+process.env.DSH_HOME = TEMP_HOME;
 
 /* 假 ctx 不会跑 effect 的 cleanup，插件里的定时器会吊住进程：让它别真的起定时器 */
 globalThis.setInterval = () => 0;
@@ -78,7 +81,7 @@ const applyAll = (proj, state, events) => events.reduce((one, event) => proj.app
 
 	const proj = registered.filter((p) => p.key === 'desktopStatusbarUsage')[0];
 	assert.ok(proj !== undefined, 'usage 投影已注册');
-	assert.strictEqual(proj.stateVersion, 8, 'usage 投影 stateVersion 升到 8（新增 summaryParts + 手动压缩刷新本轮）');
+	assert.strictEqual(proj.stateVersion, 11, 'usage projection stateVersion is 11 after dropping overflowByProvider');
 	let state = proj.init();
 	proj.stateSchema.parse(state);
 
@@ -102,6 +105,10 @@ const applyAll = (proj, state, events) => events.reduce((one, event) => proj.app
 	assert.strictEqual(state.current.output, 200 + 4186 + 100, '本轮 output 含摘要');
 	assert.strictEqual(state.current.calls.length, 3, '本轮逐条明细也含摘要那一笔');
 	assert.strictEqual(state.current.calls[1].model, SUMMARY_MODEL, '摘要那笔用 summary 的 data.model');
+	assert.deepStrictEqual(state.calls.map((call) => call.provider), [SUMMARY_PROVIDER, SUMMARY_PROVIDER, SUMMARY_PROVIDER],
+		'每条 assistant/summary 调用只持久化其可观察 provider');
+	assert.strictEqual(state.calls.some((call) => Object.prototype.hasOwnProperty.call(call, 'feeMultiplier')), false,
+		'session usage 不保存倍率快照，由客户端按当前非敏感配置动态重算');
 	/* 总计：models 按模型分别累计，摘要模型那项必须出现且数字与样本一致 */
 	assert.deepStrictEqual(state.models[SUMMARY_MODEL], {
 		input: 496385, cacheRead: 1152, cacheWrite: 0, output: 4186
@@ -285,7 +292,7 @@ const applyAll = (proj, state, events) => events.reduce((one, event) => proj.app
 	/* 被挤掉的永远是 calls 队首（最老）那条：这里把它造成独特分量，好在 overflow 里认出来 */
 	const bulkCalls = [];
 	for (let i = 0; i < 4000; i += 1) {
-		bulkCalls.push({ at: i + 1, model: 'bulk-model', input: i + 1, cacheRead: 0, cacheWrite: 0, output: 0 });
+		bulkCalls.push({ at: i + 1, provider: '', model: 'bulk-model', input: i + 1, cacheRead: 0, cacheWrite: 0, output: 0 });
 	}
 	const overflowTotal = (overflow) => {
 		const total = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
@@ -326,7 +333,9 @@ const applyAll = (proj, state, events) => events.reduce((one, event) => proj.app
 		current: { input: state.current.input, cacheRead: state.current.cacheRead, output: state.current.output, calls: state.current.calls.length }
 	}));
 	console.log('\nCOMPACTION USAGE CHECKS PASSED');
-})().catch((error) => {
+})().finally(() => {
+	try { fs.rmSync(TEMP_HOME, { recursive: true, force: true }); } catch (error) { /* best effort */ }
+}).catch((error) => {
 	console.error('COMPACTION USAGE CHECKS FAILED:', error && error.message ? error.message : error);
 	process.exitCode = 1;
 });

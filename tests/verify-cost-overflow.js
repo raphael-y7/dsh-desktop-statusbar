@@ -8,13 +8,16 @@
  *
  * 用法：node tests/verify-cost-overflow.js
  */
+const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
+const os = require('os');
 
 const INDEX = path.join(__dirname, '..', 'lib', 'index.js');
 
 /* 隔离真实家目录：apply 会预热台账，别让它扫真实会话 */
-process.env.DSH_HOME = path.join(__dirname, '.dsh-test-home-cost-overflow');
+const TEMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-test-home-cost-overflow-'));
+process.env.DSH_HOME = TEMP_HOME;
 globalThis.setInterval = () => 0;
 
 /* ---------------------------------------------------------------- 价格与峰谷
@@ -139,7 +142,9 @@ async function loadProjection(tag) {
 	console.log('  补齐后与基准一致（偏差 < 1e-6）');
 
 	console.log('\nCOST OVERFLOW CHECKS PASSED');
-})().catch((error) => {
+})().finally(() => {
+	try { fs.rmSync(TEMP_HOME, { recursive: true, force: true }); } catch (error) { /* best effort */ }
+}).catch((error) => {
 	console.error('COST OVERFLOW CHECKS FAILED:', error && error.message ? error.message : error);
 	process.exitCode = 1;
 });

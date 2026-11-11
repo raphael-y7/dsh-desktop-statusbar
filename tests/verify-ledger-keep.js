@@ -37,19 +37,32 @@ const os = require('os');
 const { pathToFileURL } = require('url');
 
 const INDEX = path.join(__dirname, '..', 'lib', 'index.js');
-const HOME_KEEP = path.join(__dirname, '.dsh-test-home-keep');      /* A/B/D/E/H */
-const HOME_MIGRATE = path.join(__dirname, '.dsh-test-home-migrate'); /* F */
-const HOME_BAK = path.join(__dirname, '.dsh-test-home-bak');        /* G */
-const HOME_V1 = path.join(__dirname, '.dsh-test-home-v1');          /* F 的 v1 变体 */
-const HOME_RACE = path.join(__dirname, '.dsh-test-home-race');      /* F 顺序变体 */
-const HOME_LEGACY = path.join(__dirname, '.dsh-test-home-legacy');  /* F 回扫判据（当年规则） */
-const HOME_BAK2 = path.join(__dirname, '.dsh-test-home-bak2');      /* G 的 .bak 污染补测 */
-const HOME_BILL = path.join(__dirname, '.dsh-test-home-bill');      /* I：v4 分币种 + 迁移重扫 */
-const HOME_YIELD = path.join(__dirname, '.dsh-test-home-yield');    /* I-7：让出事件循环 */
+/* 每个 home 都是系统临时目录里的独立 mkdtemp：并发跑不会互相踩，结束统一清理。 */
+const TEMP_HOMES = [];
+const tempHome = (name) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-' + name + '-'));
+  TEMP_HOMES.push(dir);
+  return dir;
+};
+const HOME_KEEP = tempHome('keep');            /* A/B/D/E/H */
+const HOME_MIGRATE = tempHome('migrate');      /* F */
+const HOME_BAK = tempHome('bak');              /* G */
+const HOME_V1 = tempHome('v1');                /* F 的 v1 变体 */
+const HOME_RACE = tempHome('race');            /* F 顺序变体 */
+const HOME_LEGACY = tempHome('legacy');        /* F 回扫判据（当年规则） */
+const HOME_BAK2 = tempHome('bak2');            /* G 的 .bak 污染补测 */
+const HOME_BILL = tempHome('bill');            /* I：v4 分币种 + 迁移重扫 */
+const HOME_YIELD = tempHome('yield');          /* I-7：让出事件循环 */
 
 /* 契约 J：每种坏法各要一份**全新的 home + 全新的模块实例**（单变量隔离），
-   所以给它留一组目录，编号即坏法编号。 */
-const HOME_HARDEN = (n) => path.join(__dirname, '.dsh-test-home-harden-' + n);
+   所以给它留一组目录，编号即坏法编号。这组目录要放回 tests/ 下：loadHost 会把
+   index.js 复制进去并用 ESM 动态 import，裸 `zod` 必须能从仓库 node_modules 解析到
+   （系统临时目录里没有 node_modules）。 */
+const HOME_HARDEN = (n) => {
+  const dir = path.join(__dirname, '.dsh-test-home-harden-' + n);
+  TEMP_HOMES.push(dir);
+  return dir;
+};
 
 globalThis.setInterval = () => 0;
 
@@ -86,6 +99,25 @@ const DAY = dateKeyOf(AT);
 const LEDGER_NAME = path.join('dsh-status-bar', 'usage-ledger.json');
 const ledgerFileOf = (home) => path.join(home, LEDGER_NAME);
 const readLedgerOf = (home) => JSON.parse(fs.readFileSync(ledgerFileOf(home), 'utf8'));
+
+/**
+ * 把一份当前版本（v4）台账改造成"真实的 v2 台账"：抹掉所有 v4 才有的字段。
+ * **不抹干净会制造假缺陷**：`unpricedByProvider` 是 v4 的欠账结构，留在"假 v2"里再走
+ * 迁移 + 回扫，同一笔用量会同时出现在 legacy `unpriced` 与 provider 数组里，结算时补算两遍
+ * （实测：verify-ledger-keep F 段 settled.entries 2 !== 1）。真实 v2 台账不会有这个字段。
+ */
+function asV2Ledger(ledger) {
+  ledger.version = 2;
+  delete ledger.unpricedBackfill;
+  delete ledger.costByCurrencyBackfill;
+  for (const key of Object.keys(ledger.days)) {
+    delete ledger.days[key].unpriced;
+    delete ledger.days[key].unpricedByProvider;
+    delete ledger.days[key].costByCurrency;
+    delete ledger.days[key].legacyCost;
+  }
+  return ledger;
+}
 
 /** 重置一个隔离的 DSH_HOME（只动 tests/ 下的目录）。 */
 function freshHome(home) {
@@ -224,19 +256,27 @@ const ledgerNumbersOf = (day) => ({
 
   const ledgerA = readLedgerOf(HOME_KEEP);
   assert.strictEqual(ledgerA.days[DAY].cost, 5, '台账里 cost 也不含缺价那笔');
-  const unpricedA = ledgerA.days[DAY].unpriced;
-  assert.ok(unpricedA !== undefined && unpricedA !== null, '台账里要有 ' + DAY + ' 的 unpriced');
-  assert.strictEqual(unpricedA['alpha-x'] !== undefined, true, 'alpha-x 缺价，要记进 unpriced');
-  assert.strictEqual(unpricedA['deepseek-flash'], undefined, 'deepseek-flash 当时有价，不该进 unpriced');
-  const alphaA = unpricedA['alpha-x'];
+  /* 新合同：欠账写进 `unpricedByProvider` 数组（按 provider + model + 倍率分条），
+     旧 `unpriced[model]` 只留给历史台账迁移，新用量不再写它。 */
+  const debtsA = ledgerA.days[DAY].unpricedByProvider;
+  assert.ok(Array.isArray(debtsA) && debtsA.length > 0, '台账里要有 ' + DAY + ' 的 unpricedByProvider');
+  const alphaA = debtsA.find((one) => one.model === 'alpha-x');
+  assert.ok(alphaA !== undefined, 'alpha-x 缺价，要记进 unpricedByProvider');
+  assert.strictEqual(debtsA.some((one) => one.model === 'deepseek-flash'), false,
+    'deepseek-flash 当时有价，不该进欠账');
+  assert.strictEqual(alphaA.provider, 'test-provider', '欠账条目带上可观察 provider');
+  assert.strictEqual(typeof alphaA.feeMultiplier, 'number', '欠账条目快照倍率（后续补价按它结算）');
   assert.strictEqual(alphaA.offPeak.input, M, 'alpha-x 空闲档 input 欠账');
   assert.strictEqual(alphaA.offPeak.cacheRead, 0, 'alpha-x 空闲档 cacheRead 欠账');
   assert.strictEqual(alphaA.offPeak.cacheWrite, 0, 'alpha-x 空闲档 cacheWrite 欠账');
   assert.strictEqual(alphaA.offPeak.output, M, 'alpha-x 空闲档 output 欠账');
-  const alphaPeakSum = alphaA.peak.input + alphaA.peak.cacheRead + alphaA.peak.cacheWrite + alphaA.peak.output;
+  const alphaPeak = alphaA.peak === null || alphaA.peak === undefined
+    ? { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }
+    : alphaA.peak;
+  const alphaPeakSum = alphaPeak.input + alphaPeak.cacheRead + alphaPeak.cacheWrite + alphaPeak.output;
   assert.strictEqual(alphaPeakSum, 0, '20:00 北京在空闲档，高峰档不该有欠账');
   console.log('A 缺价记欠账：calls=' + dayA.calls + ' tokens=' + dayA.total
-    + ' cost=' + dayA.cost + '，unpriced.alpha-x.offPeak=' + JSON.stringify(alphaA.offPeak));
+    + ' cost=' + dayA.cost + '，unpricedByProvider.alpha-x.offPeak=' + JSON.stringify(alphaA.offPeak));
 
   /* 契约 H：台账顶层字段 */
   assert.strictEqual(ledgerA.version, 4, 'version=4（v4 起按币种分桶），实际 ' + ledgerA.version);
@@ -331,11 +371,9 @@ const ledgerNumbersOf = (day) => ({
   assert.strictEqual(dayM0.total, 6 * M, '三笔用量都记着，实际 ' + dayM0.total);
   assert.strictEqual(dayM0.calls, 3, '三次调用都记着，实际 ' + dayM0.calls);
 
-  /* 2) 手写成 v2 台账：没有 unpriced 明细、没有 unpricedBackfill（旧版本就是这样的） */
-  const v2 = readLedgerOf(HOME_MIGRATE);
-  v2.version = 2;
-  delete v2.unpricedBackfill;
-  for (const key of Object.keys(v2.days)) delete v2.days[key].unpriced;
+  /* 2) 手写成 v2 台账：没有 unpriced 明细、没有 unpricedBackfill（旧版本就是这样的）。
+     v4 才有的字段必须一并抹掉，否则会造出"两套欠账结构同时命中"的假缺陷（见 asV2Ledger）。 */
+  const v2 = asV2Ledger(readLedgerOf(HOME_MIGRATE));
   fs.writeFileSync(ledgerFileOf(HOME_MIGRATE), JSON.stringify(v2), 'utf8');
   const written = readLedgerOf(HOME_MIGRATE);
   assert.strictEqual(written.version, 2, 'v2 台账已就位');
@@ -444,10 +482,7 @@ const ledgerNumbersOf = (day) => ({
   useHome(HOME_RACE);
   await postPrices(BOOK_OLD);            /* 旧价目表：没有 gamma-z */
   const raceBase = dayOf((await daily()).body);
-  const raceLedger = readLedgerOf(HOME_RACE);
-  raceLedger.version = 2;
-  delete raceLedger.unpricedBackfill;
-  for (const key of Object.keys(raceLedger.days)) delete raceLedger.days[key].unpriced;
+  const raceLedger = asV2Ledger(readLedgerOf(HOME_RACE));
   const v2DayNumbers = ledgerNumbersOf(raceLedger.days[DAY]);
   fs.writeFileSync(ledgerFileOf(HOME_RACE), JSON.stringify(raceLedger), 'utf8');
 
@@ -498,11 +533,8 @@ const ledgerNumbersOf = (day) => ({
   useHome(HOME_LEGACY);
   await postPrices({ 'zzz-x': { peak: { input: 4, cacheRead: 0, cacheWrite: 0, output: 0 }, offPeak: { input: 2, cacheRead: 0, cacheWrite: 0, output: 0 } } });
   await daily();
-  const legacyLedger = readLedgerOf(HOME_LEGACY);
-  legacyLedger.version = 2;
+  const legacyLedger = asV2Ledger(readLedgerOf(HOME_LEGACY));
   delete legacyLedger.priceFingerprint;
-  delete legacyLedger.unpricedBackfill;
-  for (const key of Object.keys(legacyLedger.days)) delete legacyLedger.days[key].unpriced;
   assert.strictEqual(legacyLedger.days[DAY].cost, 0, '前置：v2 台账里这两笔当时都算不出钱');
   fs.writeFileSync(ledgerFileOf(HOME_LEGACY), JSON.stringify(legacyLedger), 'utf8');
 
@@ -972,7 +1004,11 @@ const ledgerNumbersOf = (day) => ({
 
   console.log('');
   console.log('LEDGER KEEP CHECKS PASSED');
-})().catch((error) => {
+})().finally(() => {
+  for (const dir of TEMP_HOMES) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (error) { /* best effort */ }
+  }
+}).catch((error) => {
   console.error('LEDGER KEEP CHECKS FAILED: ' + (error && error.message ? error.message : error));
   console.error(error);
   process.exitCode = 1;

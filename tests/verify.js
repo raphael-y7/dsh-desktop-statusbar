@@ -21,17 +21,64 @@ code = code.replace(marker,
      `rowsPanel` 要导出：它是**唯一**给「标题下色条」定 `dsb-bar` / `dsb-bar-hoverable` 的地方，
      而令牌面板（tokens）走的是另一条渲染路径（meterBar 里类名硬编码），
      想真切到那个三元表达式，只能直接把 rowsPanel 调起来渲染。 */
-  '\t\texports.__test = { segmentView, segmentText, detectLocale, formatDuration, formatSeconds, formatThroughput, SEGMENTS, DEFAULT_SEGMENTS, STORAGE_KEY, DEFAULT_PRICES, snapshot, setConfig, StatusBar, SettingsSection, dropIndexAt, moveItem, creditsPanel, BALANCE_COLORS, creditsLabel, formatCredits, plainBoundsOf, clampPlainLeft, plainFits, creditDisplayName, TOOL_BAR_COLORS, rowsPanel, creditsSort, creditsSortGroup, creditsSortDate, LIST_ROWS_PER_COLUMN_MAX };\n' + marker);
+  '\t\texports.__test = { segmentView, segmentText, priceOf, pickPriceKey, compactModelKey, detectLocale, formatDuration, formatSeconds, formatThroughput, SEGMENTS, DEFAULT_SEGMENTS, STORAGE_KEY, DEFAULT_PRICES, DEFAULT_PRICES_USD, PRICE_VERSION, PRICE_RETIRED_PRUNE_VERSION, REFERENCE_RATE, MODEL_PRESENTATION, MODEL_MANUFACTURERS, DEFAULT_CATALOG_ORDER, normalizeCatalogOrder, snapshot, setConfig, StatusBar, SettingsSection, dropIndexAt, moveItem, creditsPanel, BALANCE_COLORS, creditsLabel, formatCredits, plainBoundsOf, clampPlainLeft, plainFits, creditDisplayName, TOOL_BAR_COLORS, rowsPanel, creditsSort, creditsSortGroup, creditsSortDate, LIST_ROWS_PER_COLUMN_MAX };\n' + marker);
 
 const store = new Map();
 /* 预置一份"乱序 + 只勾四段 + 非默认币种"的旧配置：出厂默认要从这种状态拉回来 */
 const CONFIG_KEY = 'dsh.desktopStatusBar.v1';
 const MESSY_SEGMENTS = ['cost', 'sessionTime', 'status', 'counts'];
+
+/* 官方模型目录数据（docs/official-models.json）：价格库播种 / 目录卡 / 恢复默认的期望来源 */
+const OFFICIAL_CATALOG = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'docs', 'official-models.json'), 'utf8'));
+const OFFICIAL_VENDORS = OFFICIAL_CATALOG.vendors;
+/* 厂商默认顺序 = docs/vendor-intelligence-order.json（Artificial Analysis 智力指数，只算公开可用模型）：
+   那份数据是顺序的唯一来源，客户端内嵌的 MODEL_MANUFACTURERS 与目录分组都必须跟着它。 */
+const AA_VENDOR_ORDER = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'docs', 'vendor-intelligence-order.json'), 'utf8'))
+	.map((one) => one.vendorId);
+const OFFICIAL_NAMES = [];
+	/* 名字顺序按 AA 厂商顺序展开（= 内嵌 MODEL_PRESENTATION 的键序）：
+	   「恢复默认」的 modelOrder 就是按目录键序追加的，顺序期望必须同源 */
+	AA_VENDOR_ORDER.forEach((id) => {
+		OFFICIAL_VENDORS.filter((one) => one.id === id)[0].models.forEach((model) => { OFFICIAL_NAMES.push(model.name); });
+	});
+const catalogTierOf = (tier) => ({
+	input: tier === undefined || tier === null || tier.input === undefined ? null : tier.input,
+	cacheRead: tier === undefined || tier === null || tier.cacheRead === undefined ? null : tier.cacheRead,
+	cacheWrite: tier === undefined || tier === null || tier.cacheWrite === undefined ? null : tier.cacheWrite,
+	output: tier === undefined || tier === null || tier.output === undefined ? null : tier.output
+});
+const catalogEntryOf = (model) => {
+	const tiered = model.tiered === true && model.peak !== undefined && model.peak !== null
+		&& model.offPeak !== undefined && model.offPeak !== null;
+	return {
+		tiered: tiered,
+		currency: model.currency === undefined ? 'CNY' : model.currency,
+		peak: catalogTierOf(tiered === true ? model.peak : model),
+		offPeak: tiered === true ? catalogTierOf(model.offPeak) : null
+	};
+};
+const catalogPriceOf = (model) => {
+	const entry = catalogEntryOf(model);
+	if (entry.tiered === true) return entry;
+	return { tiered: false, currency: entry.currency, peak: entry.peak, offPeak: entry.peak };
+};
+
+	/* v7：期望值里也带基准价（= 官网原值 + 官网币种，单档条目的 offPeak 用 peak 副本） */
+	const catalogEntryWithBase = (model) => {
+		const entry = catalogEntryOf(model);
+		entry.base = {
+			currency: entry.currency,
+			peak: entry.peak,
+			offPeak: entry.tiered === true ? entry.offPeak : Object.assign({}, entry.peak)
+		};
+		return entry;
+	};
 store.set(CONFIG_KEY, JSON.stringify({
 	version: 5, enabled: true, wrap: false,
 	/* task-22 起 `currency` 降级为"**新增条目的默认币种**"（不再是全局计价单位）：迁移时用它给已有条目定币种，
 	   此后的切换只作用被切的那一条，不改写这里，也不改写别的条目。这里种 CNY 与出厂默认一致。 */
-	segments: MESSY_SEGMENTS.slice(), currency: 'CNY', models: {}
+	/* priceVersion 4：不触发官方目录播种，保持这份 fixture 的两条参考价语义（播种另有专门用例） */
+	priceVersion: 4, segments: MESSY_SEGMENTS.slice(), currency: 'CNY', models: {}
 }));
 const fakeWindow = {
 	/* 「去 GitHub 点 star」按钮点下去要开默认浏览器：这里只记下 window.open 收到了什么 */
@@ -59,10 +106,12 @@ let captured = null;
    所以这里既记下来、也支持注销（removeEventListener 从同一份表里删）。
    按事件类型分桶，别的类型（resize / pointer 之类）不受影响。 */
 const docListeners = {};
+const openCatalogVendors = [];
 const sandbox = {
 	window: fakeWindow,
 	document: {
 		querySelector: () => null,
+		querySelectorAll: (selector) => (selector === '.dsb-catalog-vendor[open]' ? openCatalogVendors : []),
 		createElement: () => ({ dataset: {}, style: {}, appendChild() {} }),
 		head: { appendChild() {} },
 		addEventListener: (type, fn) => {
@@ -121,6 +170,7 @@ function hookSlot(init) {
 
 /* 行的假几何：拖动时组件要量各行位置，替身按渲染顺序给递增的 top（每行 40 高） */
 let rowSeq = 0;
+let catalogSeq = 0;
 /* 定位 effect 平时不跑（替身里的 useEffect 只占位），要验气泡坐标的那一段再打开 */
 let runEffects = false;
 /* 气泡面板的宽度与圆圈灰底的左边界：由测试按需改，模拟真实 DOM 量出来的值 */
@@ -184,6 +234,21 @@ const reactStub = {
 				const top = 100 + (at - 1) * 48;
 				return { top: top, height: 40, bottom: top + 40, left: 0, width: 300 };
 			};
+		}
+		/* 厂商 details 的假几何：目录拖拽按它量槽位（每行 40 高、行距 48） */
+		if (typeof node.props.className === 'string' && node.props.className.indexOf('dsb-catalog-vendor') !== -1) {
+			catalogSeq += 1;
+			const at = catalogSeq;
+			const top = 100 + (at - 1) * 48;
+			/* details 的高度模拟“展开模型列表”后的整块（远大于摘要行）；摘要行固定 44px */
+			node.getBoundingClientRect = () => ({ top: top, height: 300, bottom: top + 300, left: 0, width: 300 });
+			node.querySelector = (selector) => (selector === '.dsb-catalog-summary'
+				? {
+					className: 'dsb-catalog-summary',
+					getBoundingClientRect: () => ({ top: top, height: 44, bottom: top + 44, left: 0, width: 300 }),
+					cloneNode: function () { return { __cloned: 'summary', className: this.className }; }
+				}
+				: null);
 		}
 		/* 气泡面板：宽度由 CSS 的 max-content 决定，替身里由 stubTipWidth 给；
 		   同时给一个假的列网格几何，让 toolColumnsOverflow 能按当前渲染树判"横向放不下" */
@@ -341,6 +406,7 @@ const zh = {
 	modelUnknown: '未识别',
 	segContextHint: '当前会话的运行状态与上下文占用。',
 	secSegments: '数据字段', secPrices: '自定义模型价格', secPreview: '预览（示例数据）',
+	secPlatforms: '第三方平台', secPlatformsBadge: '实验性功能',
 	secSegmentsHint: '勾选显示；按住拖动调整顺序。',
 	intro: '接管对话区底部的统计行。勾选要显示的字段、拖动调整顺序或配置模型费用单价。',
 	priceCurrent: '当前会话使用：', priceConfigured: '已配置', priceNotConfigured: '未配置价格，费用段显示横杠占位',
@@ -350,6 +416,27 @@ const zh = {
 	priceInput: '输入(缓存未命中)', priceCacheRead: '输入(缓存命中)', priceOutput: '输出',
 	priceTierPeak: '高峰时段', priceTierOffPeak: '空闲时段', priceTiered: '峰谷计价',
 	priceTierAllDay: '全时段',
+	priceManufacturerDeepseek: 'DeepSeek', priceManufacturerAnthropic: 'Anthropic',
+	priceManufacturerZhipu: '智谱', priceManufacturerAlibaba: '阿里云',
+	priceManufacturerOpenai: 'OpenAI', priceManufacturerMoonshot: '月之暗面',
+	priceManufacturerGoogle: 'Google', priceManufacturerXai: 'xAI',
+	priceManufacturerXiaomi: '小米', priceManufacturerMinimax: 'MiniMax',
+	priceManufacturerStepfun: '阶跃星辰', priceManufacturerMuse: 'Meta',
+	priceManufacturerCustom: '自定义模型',
+	priceModelCount: '{count} 个模型', priceOfficialSource: '官网价格',
+	priceCacheWriteTtl: '缓存写入费按期限区分（{items}）；当前用量不含 TTL，因此未计入自动费用。',
+	priceDeepSeekPeakOutputUnknown: '抓取到的官方价格行未核实高峰输出价，该字段不参与自动计费。',
+	priceZhipuStorageFree: '缓存存储限时免费，单位为元/百万 Token/小时；不等同缓存写入费。',
+	priceQwenCacheUnknown: '阿里官方通用说明：显式缓存命中通常按输入价 10%，隐式命中 20%，显式创建 125%；Qwen 绝对缓存单价未核实，未计自动费用。',
+	priceCatalogTitle: '官方模型目录', priceCatalogSource: '官方报价',
+	priceCatalogRate: '{period}：输入 {input} / 缓存命中 {cacheRead} / 输出 {output} {currency}/百万 Token',
+	priceCatalogRegion: '{region}：输入 ¥{input} / 输出 ¥{output} / 百万 Token',
+	priceCatalogVariant: '{group}：输入 ¥{input} / 缓存命中 ¥{cacheRead} / 输出 ¥{output} / 百万 Token',
+	priceCatalogAudioVariant: '{group} 文本/音频：输入 ¥{input}/¥{audioInput}，命中 ¥{cacheRead}/¥{audioCacheRead}，输出 ¥{output} / 百万 Token',
+	priceCatalogStorage: '缓存存储 ¥{price}/百万 Token/小时（仅展示）',
+	priceCatalogAddOfficial: '添加官方价', priceCatalogAddBlank: '添加空白价格条目',
+	priceCatalogUseRegion: '使用 {region} 价格', priceCatalogUseRate: '按 {period} 价添加为全天价（{currency}）',
+	priceCatalogEdit: '修改已有价格', priceCatalogUnknown: '未核实',
 	priceEdit: '修改', priceSave: '保存', priceCurrency: '币种',
 	secPricesHint: '填写你使用的模型单价。', peakNow: '当前处于{period}', offPeakNow: '当前处于{period}',
 	peakPeriod: '高峰期', offPeakPeriod: '空闲时段',
@@ -438,6 +525,62 @@ const fullSrc = {
 	turnUsage: { input: 29631, cacheRead: 1900000, cacheWrite: 0, output: 41007 },
 	currency: 'CNY'
 };
+const cacheHitPanelValues = (current, calls) => {
+	const view = api.segmentView('cacheHit', {
+		usage: { uncachedInputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0 },
+		sessionUsage: { current: current, calls: calls },
+		subagent: null
+	}, t);
+	const panel = api.rowsPanel(view.tip, null, { current: null }, {
+		id: null, open: () => {}, back: () => {}, rowsPerColumn: 3
+	});
+	return collectByClass(panel, 'dsb-meter-value').map(textOf);
+};
+const unknownCacheCalls = [
+	{ input: 100, cacheWrite: 0 },
+	{ input: 100, cacheRead: null, cacheWrite: 0 },
+	{ input: 100, cacheRead: 25, cacheWrite: 0 }
+];
+[
+	{ input: 100, cacheWrite: 0 },
+	{ input: 100, cacheRead: undefined, cacheWrite: 0 },
+	{ input: 100, cacheRead: null, cacheWrite: 0 }
+].forEach((current) => {
+	assert.deepStrictEqual(cacheHitPanelValues(current, unknownCacheCalls), ['-', '20.000%', '20.000%'],
+		'未上报的本轮缓存命中显示横杠，缺失/null 调用不参与极值');
+});
+assert.deepStrictEqual(cacheHitPanelValues(
+	{ input: 100, cacheRead: 0, cacheWrite: 0 },
+	unknownCacheCalls.concat([{ input: 100, cacheRead: 0, cacheWrite: 0 }])
+), ['0.000%', '20.000%', '0.000%'], '真实 cacheRead=0 保留 0% 并纳入最低命中率');
+console.log('缓存命中回归：undefined/null 显示横杠且不参与极值；真实 0 保留为 0.000%');
+
+	/* task-30：缓存字段没上报的样本不当 0% 命中 —— 极值只统计可信样本；真实 cacheRead=0 仍是真 0% */
+	assert.deepStrictEqual(cacheHitPanelValues(
+		{ input: 100, cacheRead: 0, cacheWrite: 0 },
+		[
+			{ input: 100, cacheWrite: 0 },                    /* 缺 cacheRead → 不可信，跳过 */
+			{ input: 100, cacheRead: '50', cacheWrite: 0 },   /* 非数字 → 跳过 */
+			{ input: 0, cacheRead: 0, cacheWrite: 0 },        /* 空调用 → 跳过 */
+			{ input: 100, cacheRead: 25, cacheWrite: 0 }      /* 20%：唯一可信样本之外的真实高值 */
+		]), ['0.000%', '20.000%', '20.000%'], '缺字段 / 非数字 / 空调用都不参与极值（不会被当成 0%）');
+	assert.deepStrictEqual(cacheHitPanelValues(
+		{ input: 300, cacheRead: 100, cacheWrite: 0 },
+		[
+			{ input: 100, cacheWrite: 0 },
+			{ input: 100, cacheRead: 0, cacheWrite: 0 },      /* 真 0%：保留进最低值 */
+			{ input: 100, cacheRead: 25, cacheWrite: 0 }
+		]), ['25.000%', '20.000%', '0.000%'], '真实上报的 cacheRead=0 仍显示 0%（最低值），本轮 25%');
+	/* 平均口径一致：usage 里没有可信的 cacheReadTokens 时给横杠，不把旧数据当 0% */
+	const cacheHitAvgText = (usage) => api.segmentText('cacheHit', api.segmentView('cacheHit', {
+		usage: usage, sessionUsage: { current: null, calls: [] }, subagent: null
+	}, t), t);
+	assert.strictEqual(cacheHitAvgText({ uncachedInputTokens: 100, cacheWriteTokens: 0, outputTokens: 10 }), '综合命中 - %',
+		'缺 cacheReadTokens 的旧数据：平均命中率给横杠（不算 0%）');
+	assert.strictEqual(cacheHitAvgText({ uncachedInputTokens: 300, cacheReadTokens: 100, cacheWriteTokens: 0, outputTokens: 10 }), '综合命中 25.00%',
+		'有可信字段时平均命中率照常算（100/(300+100) = 25%）');
+
+
 const fullBar = render(fullSrc, allSegs);
 console.log('有数据全段：', fullBar.join(' | '));
 assert.ok(!fullBar.some((x) => x.includes(' -')), 'placeholder leaked into data path');
@@ -471,6 +614,51 @@ assert.strictEqual(api.formatDuration(125000), '2m5s', '125s -> 2m5s');
 assert.strictEqual(api.formatDuration(40400), '40s', '40.4s renders as 40s, no decimal');
 assert.strictEqual(api.formatDuration(45500), '46s', 'rounds to the nearest second');
 assert.strictEqual(api.formatThroughput(12345.6), '12346', 'throughput no k abbreviation');
+
+	/* ---------------------------------------------------- task-28 模型名宽容匹配 */
+	/* 会话里的模型名可能带 provider 前缀、分隔符也不一样：`Claude Opus 5-5` / `claude-opus-5-5` /
+	   `remote-magpie/group/claude-opus-5.5` 都要命中同一个价格键。紧凑串必须完全相等才算命中。 */
+	const modelsBeforeMatch = JSON.parse(JSON.stringify(JSON.parse(store.get(CONFIG_KEY)).models));
+	const orderBeforeMatch = JSON.parse(JSON.stringify(api.snapshot().modelOrder));
+	{
+		const matchBook = {
+			'claude-opus-5.5': { tiered: false, currency: 'USD', feeMultiplier: 0.5, peak: { input: 4, cacheRead: 0.2, cacheWrite: 5, output: 20 }, offPeak: null },
+			'deepseek-v4-pro': { tiered: false, currency: 'CNY', peak: { input: 4, cacheRead: 0.1, cacheWrite: 0, output: 12 }, offPeak: null },
+			'deepseek-flash': { tiered: true, currency: 'CNY', peak: { input: 2, cacheRead: 0.04, cacheWrite: 0, output: 8 }, offPeak: { input: 1, cacheRead: 0.02, cacheWrite: 0, output: 4 } }
+		};
+		api.setConfig({ models: matchBook, modelOrder: ['claude-opus-5.5', 'deepseek-v4-pro', 'deepseek-flash'] });
+		const oracle = api.priceOf('claude-opus-5.5');
+		assert.ok(oracle !== null, '前置：精确键能命中');
+		const samePrice = (one) => JSON.parse(JSON.stringify({ peak: one.peak, offPeak: one.offPeak }));
+		/* 拼接/前缀/分隔符变体都要命中同一价格（含费用倍率） */
+		['Claude Opus 5-5', 'claude-opus-5-5', 'CLAUDE_OPUS_5.5', 'claude opus 5.5',
+			'remote-magpie/group/claude-opus-5.5', 'Remote-Magpie/group/Claude Opus 5-5'].forEach((name) => {
+				const price = api.priceOf(name);
+				assert.ok(price !== null, '宽容匹配应命中：' + name);
+				assert.deepStrictEqual(samePrice(price), samePrice(oracle), '命中同一价格：' + name);
+				assert.strictEqual(price.feeMultiplier, 0.5, '费用倍率同样按条目取：' + name);
+		});
+		assert.strictEqual(api.pickPriceKey(matchBook, 'remote-magpie/group/claude-opus-5.5'), 'claude-opus-5.5',
+			'去 provider 前缀后与价格键紧凑串相等');
+		/* 不误配：紧凑串必须**完全相等**（仅前缀/分隔符差异可容忍） */
+		assert.strictEqual(api.priceOf('deepseek-v4'), null, 'deepseek-v4 不得命中 deepseek-v4-pro');
+		assert.notStrictEqual(api.compactModelKey('deepseek-v4'), api.compactModelKey('deepseek-v4-pro'), '紧凑串不相等（v4 ≠ v4pro）');
+		assert.strictEqual(api.priceOf('remote-magpie/group/deepseek-v4'), null, '带前缀的 v4 同样不命中 v4-pro');
+		assert.strictEqual(api.compactModelKey('Remote-Magpie/Group/Claude Opus 5-5'), 'claudeopus55', '紧凑串：去前缀 + 只留字母数字');
+		assert.strictEqual(api.compactModelKey('---'), '', '纯符号 → 空串（不参与匹配）');
+		assert.strictEqual(api.pickPriceKey({ '': { peak: { input: 1, cacheRead: 0, cacheWrite: 0, output: 0 } } }, '!!!'), null,
+			'纯符号模型名不会命中空键');
+		/* 当前会话模型带前缀：「总计」也要算得出钱（计价走同一套匹配） */
+		const prefixedCalls = [{ at: FIXED_NOW, model: 'remote-magpie/group/deepseek-flash', input: 29631, cacheRead: 1900000, cacheWrite: 0, output: 41007 }];
+		const prefixedSrc = Object.assign({}, fullSrc, {
+			sessionModel: { provider: 'remote-magpie', model: 'remote-magpie/group/deepseek-flash' },
+			sessionUsage: { models: {}, calls: prefixedCalls, current: null, last: null }
+		});
+		assert.ok(render(prefixedSrc, allSegs).some((one) => one.includes('总计 ¥0.23')),
+			'会话模型带 provider 前缀时「总计」仍按同一价格算（¥0.23）');
+	}
+	/* 收尾：恢复用例前的价格库，别污染后面的段 */
+	api.setConfig({ models: modelsBeforeMatch, modelOrder: orderBeforeMatch });
 
 /* ------------------------------------------------------------ 余额异常分支 */
 /* 余额分支要 DeepSeek 会话才渲染（非 DeepSeek 会话里余额整段不出现） */
@@ -978,6 +1166,37 @@ console.log('官方状态栏：按 .dsb-root 认自己，隐藏其余');
 const settings = textOf(renderSettings());
 assert.ok(settings.includes('数据字段'), 'settings section should render');
 assert.ok(settings.includes('按住拖动调整顺序'), 'settings hint should describe drag reorder');
+/* task-20：只有第三方平台区块标题带 x² 式上标角标，其他区块标题不带 */
+const sectionTitles = collectByClass(renderSettings(), 'dsb-sectitle');
+const badgedSectionTitles = sectionTitles
+	.filter((one) => collectByClass(one, 'dsb-experimental-badge').length > 0);
+assert.strictEqual(badgedSectionTitles.length, 1, '只有第三方平台区块标题带上标角标');
+const platformTitle = badgedSectionTitles[0];
+assert.ok(textOf(platformTitle).includes('第三方平台'), '标题左侧是「第三方平台」');
+const platformBadge = collectByClass(platformTitle, 'dsb-experimental-badge');
+assert.strictEqual(platformBadge.length, 1, '标题旁有实验性角标');
+assert.strictEqual(platformBadge[0].type, 'sup', '角标是 <sup> 上标元素');
+assert.strictEqual(textOf(platformBadge[0]), '实验性功能', '角标文案是「实验性功能」');
+assert.ok(textOf(platformTitle).indexOf('第三方平台') < textOf(platformTitle).indexOf('实验性功能'), '角标紧跟在标题文字之后（上标位置）');
+const badgeCss = /\.dsb-settings \.dsb-experimental-badge\{([^}]*)\}/.exec(sourceCss);
+assert.ok(badgeCss !== null && /padding:1px 3px/.test(badgeCss[1]) && /font-size:6px/.test(badgeCss[1]) && /line-height:10px/.test(badgeCss[1]) && /vertical-align:super/.test(badgeCss[1]),
+	'实验性功能胶囊保留胶囊造型（含 1px 3px 左右内边距），字号 6px、行高 10px 且仍为上标');
+assert.strictEqual(collectByClass(renderSettings(), 'dsb-platforms-title').length, 0, '旧的 flex 标题行类已删除');
+console.log('第三方平台标题：标题 + x² 式上标角标（其他区块标题无角标）');
+/* 需求 8：当前会话使用只显示模型名 —— 先取最后一个 "/" 之后的模型名，再走 displayModelName */
+const prefixedModelProps = Object.assign({}, props, {
+	useProjection: (key) => (key === 'desktopStatusbarModel'
+		? { provider: 'remote-magpie', model: 'Remote-Magpie/group/deepseek-Flash' }
+		: undefined)
+});
+const prefixedSettingsText = textOf(withHooks(settingsHooks, () => api.SettingsSection(prefixedModelProps)));
+const currentAt = prefixedSettingsText.indexOf('当前会话使用：');
+assert.ok(currentAt !== -1, '设置页应有当前会话使用那一行');
+assert.ok(prefixedSettingsText.slice(currentAt, currentAt + 32).indexOf('DeepSeek-Flash') !== -1,
+	'设置页当前会话使用应只显示模型名（DeepSeek-Flash），实际：' + prefixedSettingsText.slice(currentAt, currentAt + 48));
+assert.strictEqual(prefixedSettingsText.indexOf('Remote-Magpie'), -1, '不应出现第三方平台前缀');
+assert.strictEqual(prefixedSettingsText.indexOf('remote-magpie'), -1, '不应出现 provider 前缀');
+console.log('当前会话使用：第三方平台前缀已去掉（Remote-Magpie/group/deepseek-Flash → DeepSeek-Flash）');
 assert.ok(!settings.includes('基础'), '设置页不再有「基础」区块');
 assert.ok(!settings.includes('启用状态栏') && !settings.includes('允许换行'), '启用状态栏 / 允许换行 两个开关已移除');
 /* task-19：编辑浮层底部自动滚入改成"按底边差值滚最近的可滚祖先 + 下一帧补一次"，
@@ -988,19 +1207,21 @@ assert.ok(code.includes('scroller.scrollTop = (typeof scroller.scrollTop === "nu
 	'按"底边 + 余量 − 容器可视底边"的差值加 scrollTop');
 assert.ok(code.includes('if (overflow <= 0) return;'), '没被遮住时一动不动（不平白往上滚）');
 assert.ok(code.includes('window.requestAnimationFrame(retry)'), '稳定后补滚一次走 rAF（不是定时器）');
-/* task-21：底边滚入统一成一个钩子 `useRevealBottom(ref, active, extraKey)`，**恰好两处调用**
-   （价格编辑浮层 / 币种菜单）；气泡、跟手浮层、悬停提示有意不接。 */
+/* task-21：底边滚入统一成一个钩子 `useRevealBottom(ref, active, extraKey)`，**恰好四处调用**
+   （价格编辑浮层 / 币种菜单 / 平台编辑区 / 平台模型下拉菜单）；气泡、跟手浮层、悬停提示有意不接。 */
 const revealLines = code.split('\n').filter((one) => one.indexOf('useRevealBottom(') !== -1);
-assert.strictEqual(revealLines.length, 2,
-	'useRevealBottom 恰好两处调用（价格浮层 / 条目币种菜单；顶部默认币种选择器 task-24 已删），实际 ' + revealLines.length);
+assert.strictEqual(revealLines.length, 4,
+	'useRevealBottom 恰好四处调用（价格浮层 / 条目币种菜单 / 平台编辑区 / 平台模型下拉菜单），实际 ' + revealLines.length);
 assert.strictEqual((code.match(/const useRevealBottom = \(ref, active, extraKey\)/g) || []).length, 1,
 	'只有一份实现（不要各写一份）');
-assert.ok(code.includes('useRevealBottom(editPopRef, editing !== null'), '第一处：价格编辑浮层');
+assert.ok(code.includes('useRevealBottom(editPopRef, editing !== null'), '第一处：价格编辑浮层（切卡也重滚，含新增自定义模型）');
 assert.ok(code.includes('useRevealBottom(currencyMenuRef, currencyOpen === true, null)'), '第二处：条目币种菜单');
-const wiredRefs = ['editPopRef', 'currencyMenuRef'];
+assert.ok(code.includes('useRevealBottom(platformEditRef, platformEditing !== null'), '第三处：平台编辑区（添加平台后滚到底部）');
+assert.ok(code.includes('useRevealBottom(platformModelMenuRef, platformModelOpen !== null, platformModelOpen)'), '第四处：平台模型下拉菜单（强制向下、限制在设置页内）');
+const wiredRefs = ['editPopRef', 'currencyMenuRef', 'platformEditRef', 'platformModelMenuRef'];
 revealLines.forEach((one) => {
 	assert.ok(wiredRefs.some((ref) => one.indexOf(ref) !== -1),
-		'useRevealBottom 只允许接在这三个下拉/浮层上，实际这行：' + one.trim());
+		'useRevealBottom 只允许接在这四个下拉/浮层上，实际这行：' + one.trim());
 });
 ['dsb-tip', 'dsb-drag-card', 'dsb-star-tip'].forEach((cls) => {
 	assert.ok(revealLines.every((one) => one.indexOf(cls) === -1),
@@ -1053,6 +1274,19 @@ assert.strictEqual(saved.currency, 'CNY', '恢复默认设置应恢复**默认�
 assert.strictEqual(saved.contextMeter, true, '恢复默认设置应恢复上下文占用开关');
 assert.deepStrictEqual(segmentNames(renderSettings()), factoryLabels, '恢复默认设置后设置页顺序应等于出厂顺序');
 console.log('恢复默认设置后：', saved.segments.join(' → '));
+/* task-10 起「恢复默认」会把官方目录 27 条全部加回；后面的价格卡用例继续按两条参考价基线跑，
+   这里把主 fixture 还原成迁移前的两条参考价（播种 / 找回的完整行为由后面的目录用例覆盖）。 */
+const referenceModels = {};
+Object.keys(api.DEFAULT_PRICES).forEach((name) => {
+	const official = api.DEFAULT_PRICES[name];
+	referenceModels[name] = {
+		tiered: true,
+		currency: 'CNY',
+		peak: JSON.parse(JSON.stringify(official.peak)),
+		offPeak: JSON.parse(JSON.stringify(official.offPeak))
+	};
+});
+api.setConfig({ models: referenceModels, modelOrder: Object.keys(api.DEFAULT_PRICES) });
 
 /* task-25：「恢复默认」**区分两类条目** —— 官方内置（键命中 `DEFAULT_PRICES`）回官方默认价（含被删掉的加回来），
    用户自建（键不在官方表里）逐字段不变。fixture 故意：官方 flash 改乱值 + 切成 USD、官方 v4-pro **删掉**、
@@ -1080,7 +1314,7 @@ console.log('恢复默认设置后：', saved.segments.join(' → '));
 		}
 	};
 	store2.set(CONFIG_KEY, JSON.stringify({
-		version: 5, priceVersion: 2, enabled: true, wrap: false,
+		version: 5, priceVersion: api.PRICE_VERSION, enabled: true, wrap: false,
 		segments: MESSY_SEGMENTS.slice(), hidden: ['counts'],
 		/* `currency` 只是"新增条目的默认币种"；官方顺序那个键**故意排在自建键后面**，验恢复默认会覆盖它 */
 		currency: 'USD', contextMeter: false,
@@ -1150,33 +1384,58 @@ console.log('恢复默认设置后：', saved.segments.join(' → '));
 	/* task-25：官方键回官方默认值、自建键逐字段不变、被删的官方键加回来、顺序 = 官方 + 自建。
 	   vm 出来的对象原型与主域不同，deepStrictEqual 会因此失败 —— 两边都先 JSON 化。 */
 	const plain = (value) => JSON.parse(JSON.stringify(value));
-	assert.deepStrictEqual(Object.keys(afterReset.models).sort(), officialKeys.concat(customKeys).sort(),
-		'恢复默认后价格库 = 官方键 + 自建键（被删掉的官方 v4-pro 加回来了）');
+	const seededNames = OFFICIAL_NAMES.filter((name) => api2.DEFAULT_PRICES[name] === undefined);
+	assert.deepStrictEqual(Object.keys(afterReset.models).sort(), officialKeys.concat(seededNames, customKeys).sort(),
+		'恢复默认后价格库 = 官方键 + 官方目录其余模型 + 自建键（被删掉的官方 v4-pro 也加回来了）');
 	/* ① 官方键：逐字段等于官方默认表（含 tiered / 两档 / 官方 0 与 null），币种回 CNY */
 	for (const name of officialKeys) {
 		assert.deepStrictEqual(plain(afterReset.models[name]),
-			{ tiered: true, currency: 'CNY', peak: plain(api2.DEFAULT_PRICES[name].peak), offPeak: plain(api2.DEFAULT_PRICES[name].offPeak) },
+			{
+				tiered: true, currency: 'CNY',
+				peak: plain(api2.DEFAULT_PRICES[name].peak), offPeak: plain(api2.DEFAULT_PRICES[name].offPeak),
+				/* v7：恢复默认也写基准价（= 官方 CNY 原值） */
+				base: {
+					currency: 'CNY',
+					peak: plain(api2.DEFAULT_PRICES[name].peak),
+					offPeak: plain(api2.DEFAULT_PRICES[name].offPeak)
+				}
+			},
 			'官方条目恢复成官方默认值（' + name + '）');
 	}
-	assert.deepStrictEqual(plain(afterReset.models['deepseek-flash'].peak),
-		{ input: 2, cacheRead: 0.04, cacheWrite: 0, output: 8 }, '官方 flash 回官方 CNY 价');
-	assert.strictEqual(afterReset.models['deepseek-flash'].currency, 'CNY', '官方条目币种回 CNY');
-	assert.strictEqual(afterReset.models['deepseek-flash'].peak.input, 2,
-		'官方模型先前被改成 99 ⇒ 恢复默认后被覆盖回官方值（有意取舍）');
-	assert.ok(afterReset.models['deepseek-v4-pro'] !== undefined, '被删掉的官方条目要加回来');
+	/* 官方目录（MODEL_PRESENTATION）里的其余模型：按官网价全部加回来，NULL 字段保持 null */
+	OFFICIAL_VENDORS.forEach((vendor) => {
+		vendor.models.forEach((model) => {
+			if (api2.DEFAULT_PRICES[model.name] !== undefined) return;
+			const seededEntry = catalogEntryOf(model);
+			seededEntry.base = {
+				currency: seededEntry.currency,
+				peak: seededEntry.peak,
+				offPeak: seededEntry.tiered === true ? seededEntry.offPeak : Object.assign({}, seededEntry.peak)
+			};
+			assert.deepStrictEqual(plain(afterReset.models[model.name]), plain(seededEntry),
+				'恢复默认按官网价加回官方模型（含基准价）：' + model.name);
+		});
+	});
 	assert.deepStrictEqual(plain(afterReset.models['deepseek-v4-pro'].offPeak),
 		{ input: 4.5, cacheRead: 0.15, cacheWrite: 0, output: 13.5 }, '加回来的官方条目就是官方价');
 	/* ② 自建键：逐字段不变（含明确填的 0 与 null、以及它自己的 currency） */
 	for (const name of customKeys) {
-		assert.deepStrictEqual(plain(afterReset.models[name]), plain(modelsInMemory[name]),
+		const stripBase = (one) => { const copy = plain(one); delete copy.base; return copy; };
+		assert.deepStrictEqual(stripBase(afterReset.models[name]), plain(modelsInMemory[name]),
 			'自建条目逐字段不变（' + name + '）');
+		/* v7：恢复默认把自建条目的 base 补成「当前值 + 当前币种」（数值不变） */
+		assert.deepStrictEqual(plain(afterReset.models[name].base), {
+			currency: modelsInMemory[name].currency,
+			peak: plain(modelsInMemory[name].peak),
+			offPeak: plain(modelsInMemory[name].offPeak)
+		}, '自建条目的基准价 = 当前值 + 当前币种（' + name + '）');
 	}
 	assert.strictEqual(afterReset.models['zero-model'].peak.cacheRead, 0, '自建条目明确填的 0 仍是 0');
 	assert.deepStrictEqual(plain(afterReset.models['my-own-model'].peak),
 		{ input: 9, cacheRead: 1, cacheWrite: 0, output: 20 }, '自建条目两档价原样保留');
 	/* ③ 顺序：官方键（官方顺序）在前 + 自建键（原相对顺序）在后 */
-	assert.deepStrictEqual(plain(afterReset.modelOrder), officialKeys.concat(customKeys),
-		'modelOrder = 官方键（官方顺序）在前 + 自建键（原相对顺序）在后');
+	assert.deepStrictEqual(plain(afterReset.modelOrder), officialKeys.concat(seededNames, customKeys),
+		'modelOrder = 官方键 + 官方目录其余模型（目录顺序）+ 自建键（原相对顺序）');
 	console.log('恢复默认：界面配置回默认 · 官方键回官方价（含被删的加回）· 自建键逐字段不变 · 顺序 ' + afterReset.modelOrder.join(' → '));
 }
 
@@ -1257,10 +1516,8 @@ assert.ok(buttonByLabel(cards[0], '修改') !== undefined, '收起后应回到�
 const flash = savedModels()['deepseek-flash'];
 assert.strictEqual(flash.tiered, false, '全天同价标记应写入配置');
 assert.strictEqual(flash.peak.cacheRead, 1.5, '输入(缓存命中) 的值应写入 peak');
-/* 全天同价只影响"用哪一档"（tiered），取消勾选**不丢已填值**：
-   单档显示/使用的就是 peak 那一行（peak → peak 同一行，不存在串档），
-   "只在勾上时清空"是 Lead 的裁决（双向清空会静默丢掉用户没动过的价格）。 */
-assert.strictEqual(flash.offPeak.cacheRead, 0.02, '取消勾选峰谷计价后，空闲价仍保留原值');
+	/* task-25：取消峰谷计价**不丢数据** —— 低谷（offPeak）行的值搬回单档行（计价读 peak），
+	   offPeak 原值留在内部不显示；用户误点勾选再取消也能拿回原价。 */
 
 /* 计价单位（task-22：币种改成**每个条目自带**）：
    ① 条目级选择器在编辑浮层里，切换只换算**被切的那一条**（数值按参考价比例、6 位小数）；
@@ -1345,6 +1602,131 @@ const sectionText = textOf(renderSettings());
 assert.strictEqual(collectByClass(renderSettings(), 'dsb-default-currency').length, 0, '顶部默认币种选择器已删除（task-24）');
 assert.strictEqual(collectByClass(renderSettings(), 'dsb-currency-pick').length, 1, '条目级币种选择器仍在（只是没有文字标签）');
 console.log('计价单位：条目级切换只换算这一条（¥9→$1.334831）· 其它条目逐字段不变 · 顶部选择器只管新增条目的默认币种');
+/* task-17：只有**单一币种价格**的模型（USD-only 官方 / 自建）切币种按今日汇率换算（两位小数）；
+   官方双表（deepseek 两条）仍用官方价（上面已断言）。汇率没拿到过时用内置 REFERENCE_RATE 兜底。 */
+{
+	const RATE = api.REFERENCE_RATE;
+	assert.ok(Number.isFinite(RATE) && RATE > 0, '前置：内置参考汇率可用');
+	const rateSpan = (value) => Math.round(value * RATE * 100) / 100;
+	const modelsBeforeRate = JSON.parse(JSON.stringify(savedModels()));
+	const orderBeforeRate = JSON.parse(JSON.stringify(api.snapshot().modelOrder));
+	api.setConfig({
+		models: Object.assign({}, savedModels(), {
+			'claude-opus-5.5': { tiered: false, currency: 'USD', peak: { input: 4, cacheRead: 0.2, cacheWrite: 5, output: 20 }, offPeak: null },
+			'my-usd-model': { tiered: false, currency: 'USD', peak: { input: 1.5, cacheRead: null, cacheWrite: null, output: 3 }, offPeak: null },
+			'tiny-usd': { tiered: false, currency: 'USD', peak: { input: null, cacheRead: 0.000001, cacheWrite: null, output: null }, offPeak: null }
+		}),
+		modelOrder: orderBeforeRate.concat(['claude-opus-5.5', 'my-usd-model', 'tiny-usd'])
+	});
+	const switchCurrency = (key, code) => {
+		if (collectByClass(cardByKey(priceTree, key), 'dsb-edit-pop')[0] === undefined) {
+			buttonByLabel(cardByKey(priceTree, key), '修改').props.onClick();
+			priceTree = renderSettings();
+		}
+		collectByClass(collectByClass(cardByKey(priceTree, key), 'dsb-edit-pop')[0], 'dsb-select-btn')[0].props.onClick();
+		priceTree = renderSettings();
+		collectByClass(cardByKey(priceTree, key), 'dsb-select-item').filter((one) => textOf(one) === code)[0].props.onClick();
+		priceTree = renderSettings();
+	};
+	priceTree = renderSettings();
+	switchCurrency('claude-opus-5.5', 'CNY');
+	const claudeCny = savedModels()['claude-opus-5.5'];
+	assert.strictEqual(claudeCny.currency, 'CNY', 'USD-only 官方模型切 CNY 后币种为 CNY');
+	assert.deepStrictEqual({ peak: claudeCny.peak },
+		{ peak: { input: rateSpan(4), cacheRead: rateSpan(0.2), cacheWrite: rateSpan(5), output: rateSpan(20) } },
+		'USD-only 官方模型按今日汇率换算到两位小数');
+	assert.deepStrictEqual(numberValues(cardByKey(priceTree, 'claude-opus-5.5')),
+		[String(rateSpan(0.2)), String(rateSpan(4)), String(rateSpan(20))],
+		'编辑气泡里的数字跟着变成换算后的值（不是只改符号）');
+	switchCurrency('claude-opus-5.5', 'USD');
+	const claudeUsd = savedModels()['claude-opus-5.5'];
+	assert.strictEqual(claudeUsd.currency, 'USD', '再切回 USD 币种还原');
+	const CLOUD_ORIGINAL = { input: 4, cacheRead: 0.2, cacheWrite: 5, output: 20 };
+	Object.keys(CLOUD_ORIGINAL).forEach((field) => {
+		assert.ok(Math.abs(claudeUsd.peak[field] - CLOUD_ORIGINAL[field]) <= 0.01,
+			'切回 USD 数值还原（允许两位误差）：' + field);
+	});
+	switchCurrency('my-usd-model', 'CNY');
+	const mineCny = savedModels()['my-usd-model'];
+	assert.strictEqual(mineCny.currency, 'CNY', '自建模型切币种同样按汇率换算');
+	assert.strictEqual(mineCny.peak.input, rateSpan(1.5), '自建模型数值按汇率换算');
+	assert.strictEqual(mineCny.peak.cacheRead, null, '没填的格子换算后仍是 null（不造数）');
+	assert.strictEqual(mineCny.peak.output, rateSpan(3), '自建模型输出价同步换算');
+	switchCurrency('tiny-usd', 'CNY');
+	assert.strictEqual(savedModels()['tiny-usd'].peak.cacheRead, 0, '极小价格按纯两位小数四舍五入（不做最小值兜底）');
+	assert.strictEqual(savedModels()['tiny-usd'].peak.input, null, '换算后 null 仍保持 null');
+	/* 极小价格最能暴露「换算 + 两位小数」的漂移：切回 USD 必须精确还原 0.000001 */
+	switchCurrency('tiny-usd', 'USD');
+	assert.deepStrictEqual(savedModels()['tiny-usd'].peak,
+		{ input: null, cacheRead: 0.000001, cacheWrite: null, output: null },
+		'切回基准币种用 base 原值还原（0.000001 不许被两位小数洗成 0）');
+	/* v7：切回基准币种逐字段**精确**还原（base 钉死，不靠"允许两位误差"） */
+	assert.deepStrictEqual(savedModels()['claude-opus-5.5'].peak, CLOUD_ORIGINAL,
+		'USD-only 官方模型切回 USD = 官方原值（逐字段精确，不受两位小数舍入影响）');
+	/* 再走一个来回：CNY → USD 仍然精确原值（每回都从 base 换算，不拿上一次的换算值再乘） */
+	switchCurrency('claude-opus-5.5', 'CNY');
+	assert.deepStrictEqual(savedModels()['claude-opus-5.5'].peak,
+		{ input: rateSpan(4), cacheRead: rateSpan(0.2), cacheWrite: rateSpan(5), output: rateSpan(20) },
+		'第二次切 CNY：仍从 base 按今日汇率换算');
+	switchCurrency('claude-opus-5.5', 'USD');
+	assert.deepStrictEqual(savedModels()['claude-opus-5.5'].peak, CLOUD_ORIGINAL,
+		'来回切第二次仍是精确原值（基准价钉死、不漂）');
+	switchCurrency('my-usd-model', 'USD');
+	assert.deepStrictEqual(savedModels()['my-usd-model'].peak,
+		{ input: 1.5, cacheRead: null, cacheWrite: null, output: 3 },
+		'自建模型切回 USD = 原值（null 保持 null）');
+	/* 用户改过价并保存后：base 随保存更新，切走再切回 = 保存的值（不是旧值、也不是换算漂移值） */
+	{
+		if (collectByClass(cardByKey(priceTree, 'my-usd-model'), 'dsb-edit-pop')[0] === undefined) {
+			buttonByLabel(cardByKey(priceTree, 'my-usd-model'), '修改').props.onClick();
+			priceTree = renderSettings();
+		}
+		const editFields = collectByClass(collectByClass(cardByKey(priceTree, 'my-usd-model'), 'dsb-edit-pop')[0], 'dsb-field');
+		const editedInput = findInput(editFields[1], 'number');
+		assert.ok(editedInput !== undefined, '找得到编辑框里的输入(未命中缓存)价格');
+		editedInput.props.onChange({ target: { value: '2.5' } });
+		priceTree = renderSettings();
+		buttonByLabel(cardByKey(priceTree, 'my-usd-model'), '保存').props.onClick();
+		priceTree = renderSettings();
+		const savedAfterEdit = savedModels()['my-usd-model'];
+		assert.strictEqual(savedAfterEdit.peak.input, 2.5, '改价保存后价格库里是新值');
+		assert.deepStrictEqual(savedAfterEdit.base,
+			{ currency: savedAfterEdit.currency, peak: savedAfterEdit.peak, offPeak: savedAfterEdit.offPeak },
+			'保存时同步更新 base = 刚保存的数值 + 当前币种');
+		switchCurrency('my-usd-model', 'CNY');
+		switchCurrency('my-usd-model', 'USD');
+		assert.deepStrictEqual(savedModels()['my-usd-model'].peak,
+			{ input: 2.5, cacheRead: null, cacheWrite: null, output: 3 },
+			'改价保存后切走再切回 = 保存的值');
+	}
+	/* 点币种按钮 / 菜单项：必须 stopPropagation（否则事件冒泡到 document 的"点别处"会上收掉气泡） */
+	{
+		priceTree = renderSettings();
+		if (collectByClass(cardByKey(priceTree, 'my-usd-model'), 'dsb-edit-pop')[0] === undefined) {
+			buttonByLabel(cardByKey(priceTree, 'my-usd-model'), '修改').props.onClick();
+			priceTree = renderSettings();
+		}
+		const pickBox = collectByClass(cardByKey(priceTree, 'my-usd-model'), 'dsb-currency-pick')[0];
+		const menuBtn = collectByClass(pickBox, 'dsb-select-btn')[0];
+		const stops = [];
+		const spyEvent = { stopPropagation: () => { stops.push(1); } };
+		menuBtn.props.onClick(spyEvent);
+		priceTree = renderSettings();
+		const cnyItem = collectByClass(cardByKey(priceTree, 'my-usd-model'), 'dsb-select-item').filter((one) => textOf(one) === 'CNY')[0];
+		assert.ok(cnyItem !== undefined, '菜单已展开');
+		cnyItem.props.onClick(spyEvent);
+		assert.strictEqual(stops.length, 2, '币种按钮与菜单项都要 stopPropagation（事件不冒到 document）');
+		priceTree = renderSettings();
+		assert.ok(collectByClass(cardByKey(priceTree, 'my-usd-model'), 'dsb-edit-pop')[0] !== undefined,
+			'点币种菜单项后编辑气泡仍然展开（不会被当点外部收起）');
+	}
+
+	/* 收尾：恢复汇率用例前的价格库，避免污染后续段 */
+	api.setConfig({ models: modelsBeforeRate, modelOrder: orderBeforeRate });
+	priceTree = renderSettings();
+	console.log('币种切换：USD-only 官方/自建按今日汇率换算（两位小数、null 保持、极小值防呆）；deepseek 双表仍用官方价');
+}
+
 
 /* 点别处收起编辑浮层并丢弃草稿：effect 里挂 document click → 落在浮层外就 cancelEdit。
    这里的效果钩子在测试沙箱里是空实现，所以用源码契约守住这两步。 */
@@ -1353,8 +1735,81 @@ assert.ok(code.includes('target.closest(".dsb-model") !== null'), '价格卡里�
 assert.ok(code.includes('cancelEdit();'), '收起时丢弃草稿（不保留改了一半的数字）');
 assert.ok(code.includes('event.stopPropagation();'), '头部按钮拦截冒泡，点保存/修改不会被"点别处"顺手收掉');
 console.log('编辑浮层：点别处收起并丢弃草稿（契约守住）');
+
+	/* task-25：切换「峰谷计价」不再丢价 —— 勾上把单档价搬到低谷行（高峰 ×2 联动），取消再搬回单档行 */
+	{
+		const baseBook = savedModels();
+		api.setConfig({
+			models: Object.assign({}, baseBook, {
+				'toggle-model': { tiered: false, currency: 'CNY', peak: { input: 3, cacheRead: 0.5, cacheWrite: 0, output: 6 }, offPeak: null },
+				/* base 回填用例：库里只有基准价、当前格全空 */
+				'base-only-model': { tiered: false, currency: 'CNY', peak: { input: null, cacheRead: null, cacheWrite: null, output: null }, offPeak: null, base: { currency: 'CNY', peak: { input: 5, cacheRead: 1, cacheWrite: 0, output: 8 }, offPeak: { input: 2.5, cacheRead: 0.5, cacheWrite: 0, output: 4 } } }
+			}),
+			modelOrder: Object.keys(baseBook).concat(['toggle-model', 'base-only-model'])
+		});
+		priceTree = renderSettings();
+		const openEdit = (key) => {
+			if (collectByClass(cardByKey(priceTree, key), 'dsb-edit-pop')[0] === undefined) {
+				buttonByLabel(cardByKey(priceTree, key), '修改').props.onClick();
+				priceTree = renderSettings();
+			}
+		};
+		const tierCheckbox = (key) => findInput(collectByClass(cardByKey(priceTree, key), 'dsb-inline-check')[0], 'checkbox');
+		const tierRows = (key) => collectByClass(cardByKey(priceTree, key), 'dsb-tier')
+			.map((row) => numberValues(row));
+		openEdit('toggle-model');
+		assert.deepStrictEqual(numberValues(cardByKey(priceTree, 'toggle-model')), ['0.5', '3', '6'], '前置：单档价');
+		tierCheckbox('toggle-model').props.onChange({ target: { checked: true } });
+		priceTree = renderSettings();
+		assert.deepStrictEqual(tierRows('toggle-model')[0], ['0.5', '3', '6'], '勾上：原单档价搬到「低谷」行（不是清空）');
+		assert.deepStrictEqual(tierRows('toggle-model')[1], ['1', '6', '12'], '勾上：高峰按低谷 ×2 联动带出');
+		/* 取消：低谷行的值搬回单档行 */
+		tierCheckbox('toggle-model').props.onChange({ target: { checked: false } });
+		priceTree = renderSettings();
+		assert.strictEqual(collectByClass(cardByKey(priceTree, 'toggle-model'), 'dsb-field').length, 3, '取消后回到单档三格');
+		assert.deepStrictEqual(numberValues(cardByKey(priceTree, 'toggle-model')), ['0.5', '3', '6'], '取消：低谷值搬回单档行，价格没丢');
+		/* 两档都填过再取消：单档显示「低谷」值（计价读 peak 单档行） */
+		tierCheckbox('toggle-model').props.onChange({ target: { checked: true } });
+		priceTree = renderSettings();
+		const peakRow = collectByClass(cardByKey(priceTree, 'toggle-model'), 'dsb-tier')[1];
+		const peakInput = findInput(collectByClass(peakRow, 'dsb-field')[1], 'number');
+		peakInput.props.onChange({ target: { value: '9' } });
+		priceTree = renderSettings();
+		tierCheckbox('toggle-model').props.onChange({ target: { checked: false } });
+		priceTree = renderSettings();
+		assert.deepStrictEqual(numberValues(cardByKey(priceTree, 'toggle-model')), ['0.5', '4.5', '6'], '两档填过再取消：单档显示低谷值（改高峰会按 ÷2 联动回低谷）');
+		/* 保存：单档模式只落 peak（= 低谷原值），计价口径不变 */
+		buttonByLabel(cardByKey(priceTree, 'toggle-model'), '保存').props.onClick();
+		priceTree = renderSettings();
+		const savedToggle = savedModels()['toggle-model'];
+		assert.strictEqual(savedToggle.tiered, false, '取消后保存为全天同价');
+		assert.deepStrictEqual(savedToggle.peak, { input: 4.5, cacheRead: 0.5, cacheWrite: 0, output: 6 }, '单档落库的就是低谷行的值（含刚才高峰 ÷2 联动后的 4.5），计价口径不变');
+		/* 空行 + base：勾上时用基准价回填，不造数也不清空 */
+		openEdit('base-only-model');
+		assert.deepStrictEqual(numberValues(cardByKey(priceTree, 'base-only-model')), ['', '', ''], '前置：当前格全空');
+		tierCheckbox('base-only-model').props.onChange({ target: { checked: true } });
+		priceTree = renderSettings();
+		assert.deepStrictEqual(tierRows('base-only-model')[0], ['1', '5', '8'], '空行勾上：低谷行用 base 回填');
+		assert.deepStrictEqual(tierRows('base-only-model')[1], ['2', '10', '16'], '空行勾上：高峰按低谷 ×2 带出');
+		/* 全空且没有 base 的模型：来回切换保持空，不造 0 也不报错 */
+		api.setConfig({ models: Object.assign({}, baseBook, {
+			'empty-model': { tiered: false, currency: 'CNY', peak: { input: null, cacheRead: null, cacheWrite: null, output: null }, offPeak: null }
+		}), modelOrder: Object.keys(baseBook).concat(['empty-model']) });
+		priceTree = renderSettings();
+		openEdit('empty-model');
+		tierCheckbox('empty-model').props.onChange({ target: { checked: true } });
+		priceTree = renderSettings();
+		assert.deepStrictEqual(tierRows('empty-model'), [['', '', ''], ['', '', '']], '空模型勾上：两档仍全空，不造数');
+		tierCheckbox('empty-model').props.onChange({ target: { checked: false } });
+		priceTree = renderSettings();
+		assert.deepStrictEqual(numberValues(cardByKey(priceTree, 'empty-model')), ['', '', ''], '空模型取消：仍全空，不造数');
+		/* 收尾：恢复原价格库，别污染后面的用例 */
+		api.setConfig({ models: baseBook, modelOrder: Object.keys(baseBook) });
+		priceTree = renderSettings();
+	}
+
 assert.strictEqual(flash.peak.cacheWrite, 0, '缓存写入不再显示，字段保留 0');
-assert.strictEqual(flash.peak.output, 8, '未改动的栏位保持原值');
+	assert.strictEqual(flash.peak.output, 4, '未改动的栏位保持「低谷行」的原值（取消勾选搬回的是低谷价）');
 
 /* 未保存的草稿：切到另一个模型即丢弃 */
 buttonByLabel(cards[0], '修改').props.onClick();
@@ -1373,12 +1828,14 @@ priceTree = renderSettings();
 const added = modelCards(priceTree).filter((card) => textOf(collectByClass(card, 'dsb-model-name')[0]) === 'GLM-5.3-Flash')[0];
 assert.ok(added !== undefined, '新模型应按 GLM 全大写规则显示');
 assert.strictEqual(collectByClass(added, 'dsb-field').length, 3, '新模型应默认展开且为单档（3 个输入框）');
+const customGroup = collectByClass(priceTree, 'dsb-catalog-vendor').filter((one) => one.props.key === '__custom')[0];
+assert.ok(customGroup !== undefined && customGroup.props.open === true, '自定义模型分组自动展开（details open）');
 assert.strictEqual(savedModels()['glm-5.3-flash'].tiered, false, '新模型默认不勾峰谷计价');
 assert.ok(savedModels()['glm-5.3-flash'] !== undefined, '新模型应写入配置');
 assert.strictEqual(savedModels()['glm-5.3-flash'].currency, 'CNY', '新增条目带默认币种 CNY（顶部选择器已删除，写死 CNY）');
-assert.strictEqual(collectByClass(priceTree, 'dsb-models').length, 1, '模型列表应有一个容器');
-assert.deepStrictEqual(collectByClass(priceTree, 'dsb-model-name').map(textOf),
-	['DeepSeek-Flash', 'DeepSeek-V4-Pro', 'GLM-5.3-Flash'], '新模型应排在列表最后');
+assert.strictEqual(collectByClass(priceTree, 'dsb-models').length, 2, '只显示已配置模型的厂商组（deepseek）+ 自定义组，共两个平铺模型容器');
+assert.deepStrictEqual(modelCards(priceTree).map((card) => textOf(collectByClass(card, 'dsb-model-name')[0])),
+	['DeepSeek-Flash', 'DeepSeek-V4-Pro', 'GLM-5.3-Flash'], '可计价模型卡应保持配置顺序，新模型应排在最后');
 /* 需求 1：刚新增的条目展开时三个框留空等用户输入，不预填 0 */
 assert.deepStrictEqual(numberValues(added), ['', '', ''],
 	'新条目展开时三个框要留空，实际 ' + JSON.stringify(numberValues(added)));
@@ -1388,7 +1845,7 @@ findInput(priceTree, 'text').props.onChange({ target: { value: '1' } });
 priceTree = renderSettings();
 buttonByLabel(priceTree, '添加').props.onClick();
 priceTree = renderSettings();
-assert.deepStrictEqual(collectByClass(priceTree, 'dsb-model-name').map(textOf),
+assert.deepStrictEqual(modelCards(priceTree).map((card) => textOf(collectByClass(card, 'dsb-model-name')[0])),
 	['DeepSeek-Flash', 'DeepSeek-V4-Pro', 'GLM-5.3-Flash', '1'], '纯数字模型名同样排最后');
 
 /* 需求 C（task-5，本轮按用户实测反馈改口径）：两档所有字段都是空字符串 = 价格先空着
@@ -1408,8 +1865,8 @@ assert.deepStrictEqual(blankSaved.offPeak, { input: null, cacheRead: null, cache
 assert.strictEqual(blankSaved.currency, 'CNY', '新建条目的币种仍是界面默认的 CNY');
 priceTree = renderSettings();
 assert.ok(cardByName(priceTree, '1') !== undefined, '保存后卡片仍留在列表里（不再等于取消添加）');
-assert.deepStrictEqual(collectByClass(priceTree, 'dsb-model-name').map(textOf),
-	['DeepSeek-Flash', 'DeepSeek-V4-Pro', 'GLM-5.3-Flash', '1'], '列表里仍有刚建的那条');
+assert.deepStrictEqual(modelCards(priceTree).map((card) => textOf(collectByClass(card, 'dsb-model-name')[0])),
+	['DeepSeek-Flash', 'DeepSeek-V4-Pro', 'GLM-5.3-Flash', '1'], '用户模型卡片列表仍保留刚建的那条');
 
 /* 明确填一个 0、另一个填 5：条目要写入，填过的格子保数字、没填的格子留 null */
 const numberInputs = (card) => collectByClass(card, 'dsb-field').map((label) => findInput(label, 'number'));
@@ -1452,11 +1909,13 @@ assert.deepStrictEqual(numberValues(cardByName(priceTree, 'DeepSeek-V4-Pro')), p
 	+ JSON.stringify(numberValues(cardByName(priceTree, 'DeepSeek-V4-Pro'))));
 console.log('价格库草稿：新增留空 / 全空保存保留条目 / 明确填 0 保留 / 已有回填真实数值');
 
-/* 用户反馈（bug 2）：新建的自定义模型填了价格、还没点保存就切币种 ⇒ 已填的输入必须留住。
-   切币种本身只该改这一条的币种标记，不能把没保存的草稿值写进价格库、更不能清空输入框。 */
+/* task-17：用户要求只有单一币种价格的模型（含自建）切币种**按今日汇率换算**；
+   刚填还没保存的草稿值也要一起换算（不是只改标记，也不能把输入清空）。 */
 buttonByLabel(cardByKey(priceTree, 'zero-kept'), '修改').props.onClick();
 priceTree = renderSettings();
-const keptBefore = JSON.parse(JSON.stringify(savedModels()['zero-kept']));
+const keptRate = api.REFERENCE_RATE;
+/* 统一口径：纯两位小数四舍五入（与 lib/client.js 的 roundPrice2 一致） */
+const keptSpan = (value) => Math.round(value / keptRate * 100) / 100;
 numberInputs(cardByKey(priceTree, 'zero-kept'))[2].props.onChange({ target: { value: '9' } });   /* 输出=9，还没保存 */
 priceTree = renderSettings();
 const keptPick = collectByClass(collectByClass(cardByKey(priceTree, 'zero-kept'), 'dsb-edit-pop')[0], 'dsb-currency-pick')[0];
@@ -1466,22 +1925,406 @@ priceTree = renderSettings();
 collectByClass(priceTree, 'dsb-select-item').filter((one) => textOf(one) === 'USD')[0].props.onClick();
 priceTree = renderSettings();
 const keptShown = numberValues(cardByKey(priceTree, 'zero-kept'));
-assert.deepStrictEqual(keptShown, ['0', '5', '9'],
-	'切币种后，已填还没保存的价格必须原样留在框里，实际 ' + JSON.stringify(keptShown));
+assert.deepStrictEqual(keptShown, ['0', String(keptSpan(5)), String(keptSpan(9))],
+	'切币种后框里的数字按今日汇率换算（含没保存的输入），实际 ' + JSON.stringify(keptShown));
 const keptAfter = savedModels()['zero-kept'];
-assert.strictEqual(keptAfter.currency, 'USD', '切币种只改这一条的币种标记');
-assert.deepStrictEqual({ peak: keptAfter.peak, offPeak: keptAfter.offPeak },
-	{ peak: keptBefore.peak, offPeak: keptBefore.offPeak },
-	'切币种不该把没保存的草稿值写进价格库');
+assert.strictEqual(keptAfter.currency, 'USD', '切币种把这一条改成目标币种');
+assert.deepStrictEqual(keptAfter.peak, { input: keptSpan(5), cacheRead: 0, cacheWrite: null, output: keptSpan(9) },
+	'写回价格库的数值也按汇率换算（没保存的输入一并参与）');
 buttonByLabel(cardByKey(priceTree, 'zero-kept'), '保存').props.onClick();
 const keptSaved = savedModels()['zero-kept'];
-assert.strictEqual(keptSaved.peak.output, 9, '点保存后没保存的输入才落库');
-assert.strictEqual(keptSaved.peak.input, 5, '同一档其它格保持原值');
+assert.strictEqual(keptSaved.peak.output, keptSpan(9), '保存后落库的就是换算后的值');
+assert.strictEqual(keptSaved.peak.input, keptSpan(5), '同一档其它格同步换算');
 assert.strictEqual(keptSaved.peak.cacheRead, 0, '明确填过的 0 仍是数字 0');
 assert.strictEqual(keptSaved.currency, 'USD', '落库时带上切换后的币种');
-console.log('切币种保住未保存的输入：自建条目换币种只改标记、草稿原样留下、点保存才落库');
+console.log('切币种按今日汇率换算：自建条目连同未保存的草稿值一起换算（两位小数）并写回价格库');
 
 console.log('价格库交互：折叠 / 峰谷 / 草稿 / 顺序全部通过');
+
+/* task-10/16：官方模型默认全部加入价格表（v4 一次性播种），目录里直接显示价格卡；
+   不再有「点名字加入」；删除后「恢复默认」找回。数据源 docs/official-models.json（27 条 / 10 厂商，Kimi K3 与 Fable 5.2 已收录）。 */
+{
+	const catalogPlain = (value) => JSON.parse(JSON.stringify(value));
+	/* ① 内嵌目录必须与数据逐字段一致（含厂商顺序） */
+	const catalogExpected = {};
+	OFFICIAL_VENDORS.forEach((vendor) => {
+		vendor.models.forEach((model) => {
+			catalogExpected[model.name] = { manufacturer: vendor.id, price: catalogPriceOf(model) };
+		});
+	});
+	assert.strictEqual(api.PRICE_VERSION, 8, '价格库迁移版本应为 8（v4 播种 / v5 清理 / v6 补播 / v7 基准价 / v8 补 Fable 5.2）');
+	assert.deepStrictEqual(catalogPlain(api.MODEL_MANUFACTURERS), AA_VENDOR_ORDER,
+		'厂商顺序必须 = AA 智力指数顺序（docs/vendor-intelligence-order.json）');
+	assert.deepStrictEqual(catalogPlain(api.MODEL_MANUFACTURERS).slice().sort(), OFFICIAL_VENDORS.map((one) => one.id).sort(),
+		'AA 顺序里的厂商集合必须与官方目录数据一致（不许漏也不许多）');
+	assert.deepStrictEqual(catalogPlain(api.MODEL_PRESENTATION), catalogExpected,
+		'内嵌目录必须与 docs/official-models.json 逐字段一致');
+	assert.strictEqual(OFFICIAL_NAMES.length, 27, '数据应为 27 条官方模型');
+
+	/* ② 隔离沙箱：模拟老用户（priceVersion 3）→ 加载时按 v4 播种；已有条目一律不动 */
+	const oldConfig = JSON.stringify({
+		version: 6,
+		priceVersion: 3,
+		currency: 'CNY',
+		contextMeter: true,
+		priceConfigured: true,
+		segments: FACTORY_ORDER.slice(),
+		hidden: [],
+		models: {
+			'deepseek-flash': {
+				tiered: true, currency: 'CNY', feeMultiplier: 2,
+				peak: { input: 99, cacheRead: 0.04, cacheWrite: 0, output: 8 },
+				offPeak: { input: 1, cacheRead: 0.02, cacheWrite: 0, output: 4 }
+			},
+			'my-catalog-model': {
+				tiered: false, currency: 'USD', feeMultiplier: 3,
+				peak: { input: 7, cacheRead: 0.7, cacheWrite: 0, output: 11 },
+				offPeak: { input: 3.5, cacheRead: 0.35, cacheWrite: 0, output: 5.5 }
+			}
+		},
+		modelOrder: ['deepseek-flash', 'my-catalog-model'],
+		holidayDays: []
+	});
+	const store3 = new Map([[CONFIG_KEY, oldConfig]]);
+	let captured3 = null;
+	const window3 = Object.assign({}, fakeWindow, {
+		opened: [],
+		localStorage: {
+			getItem: (k) => (store3.has(k) ? store3.get(k) : null),
+			setItem: (k, v) => { store3.set(k, v); },
+			removeItem: (k) => { store3.delete(k); }
+		}
+	});
+	window3.__ModuleLoader__ = { load: (entry) => { captured3 = entry; } };
+	const sandbox3 = {
+		window: window3,
+		document: {
+			querySelector: () => null,
+			createElement: () => ({ dataset: {}, style: {}, appendChild() {} }),
+			head: { appendChild() {} },
+			addEventListener: () => {}, removeEventListener: () => {}
+		},
+		console, Promise, Date, Math, JSON, Object, Array, Number, String, Boolean, Symbol, Set, Map, Error,
+		setTimeout: () => 0, clearTimeout: () => {}
+	};
+	sandbox3.globalThis = sandbox3;
+	vm.createContext(sandbox3);
+	vm.runInContext(code, sandbox3, { filename: 'client.js' });
+	const api3 = captured3.factory((name) => {
+		if (name === 'react') return reactStub;
+		throw new Error('unexpected require: ' + name);
+	}).__test;
+	const saved3 = () => JSON.parse(store3.get(CONFIG_KEY)).models;
+	assert.deepStrictEqual(catalogPlain(api3.snapshot().catalogOrder), AA_VENDOR_ORDER.concat(['__custom']),
+		'旧配置没有 catalogOrder → 默认补齐（10 厂商 + 自定义组末尾）');
+	assert.deepStrictEqual(catalogPlain(api3.DEFAULT_CATALOG_ORDER), AA_VENDOR_ORDER.concat(['__custom']),
+		'DEFAULT_CATALOG_ORDER 应等于厂商顺序 + __custom');
+	const normalizedOrder = toHost(api3.normalizeCatalogOrder(['zhipu', 'unknown', 'zhipu', '__custom', 'deepseek']));
+	assert.deepStrictEqual(normalizedOrder.slice(0, 3), ['zhipu', '__custom', 'deepseek'], 'catalogOrder 迁移保留用户顺序');
+	assert.strictEqual(normalizedOrder.length, 11, 'catalogOrder 覆盖 10 厂商 + __custom');
+	assert.strictEqual(normalizedOrder.indexOf('unknown'), -1, 'catalogOrder 丢弃未知项');
+	assert.strictEqual(normalizedOrder.filter((id) => id === 'zhipu').length, 1, 'catalogOrder 去重');
+	const seeded = api3.snapshot().models;
+	assert.strictEqual(api3.snapshot().priceVersion, 8, '迁移后价格库版本应为 8');
+	OFFICIAL_NAMES.forEach((name) => {
+		assert.ok(seeded[name] !== undefined, '官方模型应默认加入价格库：' + name);
+	});
+	assert.deepStrictEqual(catalogPlain(seeded['deepseek-flash']), {
+		tiered: true, currency: 'CNY', feeMultiplier: 2,
+		peak: { input: 99, cacheRead: 0.04, cacheWrite: 0, output: 8 },
+		offPeak: { input: 1, cacheRead: 0.02, cacheWrite: 0, output: 4 },
+		/* v7：迁移给缺 base 的旧条目补「当前值 + 当前币种」 */
+		base: { currency: 'CNY', peak: { input: 99, cacheRead: 0.04, cacheWrite: 0, output: 8 }, offPeak: { input: 1, cacheRead: 0.02, cacheWrite: 0, output: 4 } },
+	}, '用户改过的官方条目迁移时不许覆盖（含 feeMultiplier）');
+	assert.deepStrictEqual(catalogPlain(seeded['my-catalog-model']), {
+		tiered: false, currency: 'USD', feeMultiplier: 3,
+		peak: { input: 7, cacheRead: 0.7, cacheWrite: 0, output: 11 },
+		offPeak: { input: 3.5, cacheRead: 0.35, cacheWrite: 0, output: 5.5 },
+		base: { currency: 'USD', peak: { input: 7, cacheRead: 0.7, cacheWrite: 0, output: 11 }, offPeak: { input: 3.5, cacheRead: 0.35, cacheWrite: 0, output: 5.5 } },
+	}, '自建条目迁移时原样保留（含 feeMultiplier）');
+	assert.deepStrictEqual(catalogPlain(seeded['GLM-5.3']), {
+		tiered: false, currency: 'CNY',
+		peak: { input: 8, cacheRead: 2, cacheWrite: 0, output: 28 },
+		offPeak: { input: 8, cacheRead: 2, cacheWrite: 0, output: 28 },
+		base: { currency: 'CNY', peak: { input: 8, cacheRead: 2, cacheWrite: 0, output: 28 }, offPeak: { input: 8, cacheRead: 2, cacheWrite: 0, output: 28 } },
+	}, '未配置过的官方模型按官网价播种（normalizeModels 会把单档 offPeak 归一）');
+	assert.strictEqual(seeded['qwen3.8-flash'].peak.cacheRead, null, '官网未公布的字段保持 null');
+	assert.strictEqual(seeded['deepseek-v4-pro'].peak.input, 9,
+		'DEFAULT_PRICES 里的键沿用内嵌 CNY 参考价（与恢复默认一致）');
+
+
+	/* ②b v6 补播（老用户自动看到新模型）：priceVersion=5 的价格库（官方目录 27 条里缺 kimi-k3）
+	   迁移后自动补上 kimi-k3，已有条目（用户价 / feeMultiplier）一律不动，已下架模型不会被加回来。 */
+	const v6Book = {};
+	OFFICIAL_VENDORS.forEach((vendor) => {
+		vendor.models.forEach((model) => {
+			if (model.name === 'kimi-k3') return;
+			v6Book[model.name] = catalogEntryOf(model);
+		});
+	});
+	v6Book['deepseek-flash'] = {
+		tiered: true, currency: 'CNY', feeMultiplier: 2,
+		peak: { input: 99, cacheRead: 0.04, cacheWrite: 0, output: 8 },
+		offPeak: { input: 1, cacheRead: 0.02, cacheWrite: 0, output: 4 }
+	};
+	v6Book['my-catalog-model'] = {
+		tiered: false, currency: 'USD', feeMultiplier: 3,
+		peak: { input: 7, cacheRead: 0.7, cacheWrite: 0, output: 11 },
+		offPeak: { input: 3.5, cacheRead: 0.35, cacheWrite: 0, output: 5.5 }
+	};
+	const store6 = new Map([[CONFIG_KEY, JSON.stringify({
+		version: 6, priceVersion: 5, currency: 'CNY', models: v6Book,
+		modelOrder: Object.keys(v6Book), holidayDays: []
+	})]]);
+	let captured6 = null;
+	const window6 = Object.assign({}, fakeWindow, {
+		opened: [],
+		localStorage: {
+			getItem: (k) => (store6.has(k) ? store6.get(k) : null),
+			setItem: (k, v) => { store6.set(k, v); },
+			removeItem: (k) => { store6.delete(k); }
+		}
+	});
+	window6.__ModuleLoader__ = { load: (entry) => { captured6 = entry; } };
+	const sandbox6 = {
+		window: window6,
+		document: {
+			querySelector: () => null,
+			createElement: () => ({ dataset: {}, style: {}, appendChild() {} }),
+			head: { appendChild() {} },
+			addEventListener: () => {}, removeEventListener: () => {}
+		},
+		console, Promise, Date, Math, JSON, Object, Array, Number, String, Boolean, Symbol, Set, Map, Error,
+		setTimeout: () => 0, clearTimeout: () => {}
+	};
+	sandbox6.globalThis = sandbox6;
+	vm.createContext(sandbox6);
+	vm.runInContext(code, sandbox6, { filename: 'client.js' });
+	const api6 = captured6.factory((name) => {
+		if (name === 'react') return reactStub;
+		throw new Error('unexpected require: ' + name);
+	}).__test;
+	const backfilled = api6.snapshot().models;
+	assert.strictEqual(api6.snapshot().priceVersion, 8, 'v5 → v8 迁移后版本号升到 8');
+	assert.deepStrictEqual(catalogPlain(backfilled['kimi-k3']), {
+		tiered: false, currency: 'CNY',
+		peak: { input: 20, cacheRead: 2, cacheWrite: 20, output: 100 },
+		offPeak: { input: 20, cacheRead: 2, cacheWrite: 20, output: 100 },
+		/* 播种时就带基准价 = 官网原值 + 官网币种 */
+		base: { currency: 'CNY', peak: { input: 20, cacheRead: 2, cacheWrite: 20, output: 100 }, offPeak: { input: 20, cacheRead: 2, cacheWrite: 20, output: 100 } },
+	}, 'v6 补播：缺失的 kimi-k3 按官网价补进价格库');
+	assert.deepStrictEqual(catalogPlain(backfilled['deepseek-flash']), {
+		tiered: true, currency: 'CNY', feeMultiplier: 2,
+		peak: { input: 99, cacheRead: 0.04, cacheWrite: 0, output: 8 },
+		offPeak: { input: 1, cacheRead: 0.02, cacheWrite: 0, output: 4 },
+		base: { currency: 'CNY', peak: { input: 99, cacheRead: 0.04, cacheWrite: 0, output: 8 }, offPeak: { input: 1, cacheRead: 0.02, cacheWrite: 0, output: 4 } },
+	}, 'v6 补播不动用户改过的官方条目（含 feeMultiplier）');
+	assert.deepStrictEqual(catalogPlain(backfilled['my-catalog-model']), {
+		tiered: false, currency: 'USD', feeMultiplier: 3,
+		peak: { input: 7, cacheRead: 0.7, cacheWrite: 0, output: 11 },
+		offPeak: { input: 3.5, cacheRead: 0.35, cacheWrite: 0, output: 5.5 },
+		base: { currency: 'USD', peak: { input: 7, cacheRead: 0.7, cacheWrite: 0, output: 11 }, offPeak: { input: 3.5, cacheRead: 0.35, cacheWrite: 0, output: 5.5 } },
+	}, 'v6 补播不动自建条目');
+	assert.strictEqual(backfilled['GLM-5.2'], undefined, 'v6 补播不会把已下架的官方模型加回来');
+	assert.deepStrictEqual(Object.keys(backfilled).sort(), OFFICIAL_NAMES.concat(['my-catalog-model']).sort(),
+		'v6 补播只补当前官方目录缺失项：27 条官方 + 1 条自建');
+	console.log('v6 补播：v5 价格库自动补上 kimi-k3（27 条），用户条目不动、已下架模型不回流');
+
+	/* ②c v8 补播（2026-11-10）：老用户 priceVersion=7 的价格库自动补上 Claude Fable 5.2；
+	   用户已有条目（改过的价 / feeMultiplier）逐字段不动，已下架的旧模型不会被加回。 */
+	const v8Book = {};
+	const V8_DELETED_OFFICIAL = 'GLM-5.3';
+	OFFICIAL_VENDORS.forEach((vendor) => {
+		vendor.models.forEach((model) => {
+			if (model.name === 'claude-fable-5.2' || model.name === V8_DELETED_OFFICIAL) return;
+			v8Book[model.name] = catalogEntryWithBase(model);
+		});
+	});
+	v8Book['claude-fable-5.1'] = {
+		tiered: false, currency: 'USD', feeMultiplier: 2,
+		peak: { input: 99, cacheRead: 0.25, cacheWrite: 12.5, output: 50 },
+		offPeak: { input: 99, cacheRead: 0.25, cacheWrite: 12.5, output: 50 },
+		base: {
+			currency: 'USD',
+			peak: { input: 99, cacheRead: 0.25, cacheWrite: 12.5, output: 50 },
+			offPeak: { input: 99, cacheRead: 0.25, cacheWrite: 12.5, output: 50 }
+		}
+	};
+	const storeV8 = new Map([[CONFIG_KEY, JSON.stringify({
+		version: 6, priceVersion: 7, currency: 'CNY', models: v8Book,
+		modelOrder: Object.keys(v8Book), holidayDays: []
+	})]]);
+	let capturedV8 = null;
+	const windowV8 = Object.assign({}, fakeWindow, {
+		opened: [],
+		localStorage: {
+			getItem: (k) => (storeV8.has(k) ? storeV8.get(k) : null),
+			setItem: (k, v) => { storeV8.set(k, v); },
+			removeItem: (k) => { storeV8.delete(k); }
+		}
+	});
+	windowV8.__ModuleLoader__ = { load: (entry) => { capturedV8 = entry; } };
+	const sandboxV8 = {
+		window: windowV8,
+		document: {
+			querySelector: () => null,
+			createElement: () => ({ dataset: {}, style: {}, appendChild() {} }),
+			head: { appendChild() {} },
+			addEventListener: () => {}, removeEventListener: () => {}
+		},
+		console, Promise, Date, Math, JSON, Object, Array, Number, String, Boolean, Symbol, Set, Map, Error,
+		setTimeout: () => 0, clearTimeout: () => {}
+	};
+	sandboxV8.globalThis = sandboxV8;
+	vm.createContext(sandboxV8);
+	vm.runInContext(code, sandboxV8, { filename: 'client.js' });
+	const apiV8 = capturedV8.factory((name) => {
+		if (name === 'react') return reactStub;
+		throw new Error('unexpected require: ' + name);
+	}).__test;
+	const upgraded = apiV8.snapshot().models;
+	const fable52 = OFFICIAL_VENDORS.filter((one) => one.id === 'anthropic')[0].models.filter((one) => one.name === 'claude-fable-5.2')[0];
+	const fable52Price = catalogPriceOf(fable52);
+	fable52Price.base = { currency: fable52Price.currency, peak: fable52Price.peak, offPeak: fable52Price.offPeak };
+	assert.strictEqual(apiV8.snapshot().priceVersion, 8, 'v7 → v8 迁移后版本号升到 8');
+	assert.deepStrictEqual(catalogPlain(upgraded['claude-fable-5.2']), catalogPlain(fable52Price),
+		'v8 补播：老用户 priceVersion 7 自动出现 Claude Fable 5.2（官网价 + 基准价）');
+	assert.deepStrictEqual(catalogPlain(upgraded['claude-fable-5.1']), catalogPlain(v8Book['claude-fable-5.1']),
+		'v8 补播不覆盖用户已有条目（fable 5.1 的改价 + feeMultiplier 保留）');
+	assert.strictEqual(upgraded['GLM-5.2'], undefined, 'v8 补播不会把已下架的旧模型加回来');
+	assert.strictEqual(upgraded[V8_DELETED_OFFICIAL], undefined, 'v8 补播不会把用户主动删除的当前官方模型加回来');
+	assert.deepStrictEqual(Object.keys(upgraded).sort(), OFFICIAL_NAMES.filter((name) => name !== V8_DELETED_OFFICIAL).sort(),
+		'v8 补播只补本次新增的 Fable 5.2，不重播整个官方目录');
+	console.log('v8 补播：priceVersion 7 老用户自动出现 Fable 5.2，已有价格/删除项不被覆盖或加回');
+
+	/* ③ 目录渲染：10 厂商按 AA 智力指数排序、每个官方模型直接是价格卡，没有可点名字 */
+	const hooks3 = makeHooks();
+	const catalogTree = withHooks(hooks3, () => api3.SettingsSection(props));
+	const catalogVendors = collectByClass(catalogTree, 'dsb-catalog-vendor');
+	assert.deepStrictEqual(catalogVendors.map((one) => one.props.key), AA_VENDOR_ORDER.concat(['__custom']),
+		'目录按 AA 智力指数顺序分组（自定义组在最后）');
+	assert.strictEqual(collectByClass(catalogTree, 'dsb-catalog-pick').length, 0, '目录里不再有可点模型名');
+	/* 用户第 8 轮：目录标题与「N 个模型」计数一并删掉 */
+	assert.strictEqual(collectByClass(catalogTree, 'dsb-catalog-title').length, 0, '「官方模型目录」标题已删除');
+	assert.strictEqual(collectByClass(catalogTree, 'dsb-catalog-count').length, 0, '「N 个模型」计数已删除');
+	assert.strictEqual(textOf(catalogTree).indexOf('官方模型目录'), -1, '界面上不出现「官方模型目录」');
+	assert.strictEqual(textOf(catalogTree).indexOf('个模型'), -1, '界面上不出现「个模型」');
+	const catalogVendorByKey = (tree, key) => collectByClass(tree, 'dsb-catalog-vendor').filter((one) => one.props.key === key)[0];
+	OFFICIAL_VENDORS.forEach((vendor) => {
+		const node = catalogVendorByKey(catalogTree, vendor.id);
+		assert.ok(node !== undefined, '厂商分组缺失：' + vendor.id);
+		const names = vendor.models.map((one) => one.name);
+		assert.deepStrictEqual(collectByClass(node, 'dsb-model').map((one) => one.props.key), names,
+			'厂商组里按数据顺序列出该厂商的官方模型卡：' + vendor.id);
+		names.forEach((name) => {
+			const card = collectByClass(node, 'dsb-model').filter((one) => one.props.key === name)[0];
+			assert.ok(buttonByLabel(card, t('priceEdit')) !== undefined, '价格卡有「修改」：' + name);
+			assert.ok(buttonByLabel(card, t('priceRemove')) !== undefined, '价格卡有「删除」：' + name);
+		});
+		assert.strictEqual(collectByClass(node, 'dsb-catalog-pick').length, 0, '组内无点名字按钮：' + vendor.id);
+		assert.strictEqual(collectByClass(node, 'dsb-catalog-source').length, 0, '不再有来源链接：' + vendor.id);
+		assert.strictEqual(collectByClass(node, 'dsb-catalog-rate').length, 0, '不再有费率说明：' + vendor.id);
+		assert.strictEqual(collectByClass(node, 'dsb-catalog-actions').length, 0, '不再有添加按钮容器：' + vendor.id);
+		assert.strictEqual(collectByClass(node, 'dsb-action').length, names.length * 2, '每张卡只有修改/删除：' + vendor.id);
+	});
+	const customVendor3 = catalogVendorByKey(catalogTree, '__custom');
+	assert.ok(customVendor3 !== undefined, '自建模型进入自定义分组');
+	assert.deepStrictEqual(collectByClass(customVendor3, 'dsb-model').map((one) => one.props.key), ['my-catalog-model']);
+	assert.strictEqual(findInput(catalogTree, 'text').props.placeholder, t('priceNewModel'), '自定义模型输入框保留');
+
+	/* ④ 删除 → 行消失；恢复默认 → 按官网价找回，自建条目与 feeMultiplier 保留 */
+	const zhipuNode = catalogVendorByKey(catalogTree, 'zhipu');
+	const glmCard = collectByClass(zhipuNode, 'dsb-model').filter((one) => one.props.key === 'GLM-5.3')[0];
+	buttonByLabel(glmCard, t('priceRemove')).props.onClick();
+	assert.strictEqual(saved3()['GLM-5.3'], undefined, '删除后价格库里不再有该官方模型');
+	let nextTree = withHooks(hooks3, () => api3.SettingsSection(props));
+	assert.deepStrictEqual(collectByClass(catalogVendorByKey(nextTree, 'zhipu'), 'dsb-model').map((one) => one.props.key),
+		['GLM-5.3-Flash', 'GLM-5.3-FlashX'], '被删除的官方模型不再显示');
+	const resetBtn3 = (function find(node) {
+		let found = null;
+		(function walk(n) {
+			if (found !== null || n === null || n === undefined || typeof n !== 'object') return;
+			if (Array.isArray(n)) { n.forEach(walk); return; }
+			if (n.type === 'button' && textOf(n) === t('reset')) { found = n; return; }
+			walk(n.children);
+		})(node);
+		return found;
+	})(nextTree);
+	assert.ok(resetBtn3 !== null, '恢复默认按钮仍在');
+	resetBtn3.props.onClick();
+	nextTree = withHooks(hooks3, () => api3.SettingsSection(props));
+	const glmModel = OFFICIAL_VENDORS.filter((one) => one.id === 'zhipu')[0].models.filter((one) => one.name === 'GLM-5.3')[0];
+	assert.deepStrictEqual(catalogPlain(saved3()['GLM-5.3']), catalogPlain(catalogEntryWithBase(glmModel)),
+		'恢复默认把删掉的官方模型按官网价找回');
+	assert.ok(saved3()['my-catalog-model'] !== undefined, '恢复默认保留自建条目');
+	assert.strictEqual(saved3()['my-catalog-model'].feeMultiplier, 3, '恢复默认保留自建条目的费用倍率');
+	assert.deepStrictEqual(collectByClass(catalogVendorByKey(nextTree, 'zhipu'), 'dsb-model').map((one) => one.props.key),
+		['GLM-5.3', 'GLM-5.3-Flash', 'GLM-5.3-FlashX'], '恢复默认后目录行回来');
+	console.log('目录播种：27 条官方模型默认在价格表；目录只有价格卡；删除后行消失；恢复默认找回');
+}
+
+/* 需求 6：用户要求删除的两条官方默认模型（MiniMax-M3.1-Flash / step-5-preview）
+   要从老用户 config.models 里清掉。v8 起 PRICE_RETIRED_PRUNE_VERSION 与 PRICE_VERSION 同步，
+   价格库版本 7 的老用户升级时清理一次。 */
+{
+	const staleBook = {
+		'MiniMax-M3.1-Flash': {
+			tiered: false, currency: 'CNY',
+			peak: { input: 1, cacheRead: 0, cacheWrite: 0, output: 2 },
+			offPeak: { input: 1, cacheRead: 0, cacheWrite: 0, output: 2 }
+		},
+		'step-5-preview': {
+			tiered: false, currency: 'CNY',
+			peak: { input: 3, cacheRead: 0, cacheWrite: 0, output: 6 },
+			offPeak: { input: 3, cacheRead: 0, cacheWrite: 0, output: 6 }
+		},
+		'my-custom-model': {
+			tiered: false, currency: 'USD',
+			peak: { input: 7, cacheRead: 0, cacheWrite: 0, output: 9 },
+			offPeak: { input: 7, cacheRead: 0, cacheWrite: 0, output: 9 }
+		}
+	};
+	const storeRetired = new Map([[CONFIG_KEY, JSON.stringify({
+		version: 6, priceVersion: api.PRICE_VERSION - 1, currency: 'CNY',
+		models: staleBook, modelOrder: Object.keys(staleBook), holidayDays: []
+	})]]);
+	let capturedRetired = null;
+	const windowRetired = Object.assign({}, fakeWindow, {
+		opened: [],
+		localStorage: {
+			getItem: (k) => (storeRetired.has(k) ? storeRetired.get(k) : null),
+			setItem: (k, v) => { storeRetired.set(k, v); },
+			removeItem: (k) => { storeRetired.delete(k); }
+		}
+	});
+	windowRetired.__ModuleLoader__ = { load: (entry) => { capturedRetired = entry; } };
+	const sandboxRetired = {
+		window: windowRetired,
+		document: {
+			querySelector: () => null,
+			createElement: () => ({ dataset: {}, style: {}, appendChild() {} }),
+			head: { appendChild() {} },
+			addEventListener: () => {}, removeEventListener: () => {}
+		},
+		console, Promise, Date, Math, JSON, Object, Array, Number, String, Boolean, Symbol, Set, Map, Error,
+		setTimeout: () => 0, clearTimeout: () => {}
+	};
+	sandboxRetired.globalThis = sandboxRetired;
+	vm.createContext(sandboxRetired);
+	vm.runInContext(code, sandboxRetired, { filename: 'client.js' });
+	const apiRetired = capturedRetired.factory((name) => {
+		if (name === 'react') return reactStub;
+		throw new Error('unexpected require: ' + name);
+	}).__test;
+	assert.strictEqual(apiRetired.PRICE_VERSION, 8, '价格库迁移版本应为 8');
+	assert.strictEqual(apiRetired.PRICE_RETIRED_PRUNE_VERSION, 8, '清理门槛应为 8');
+	assert.strictEqual(apiRetired.snapshot().priceVersion, 8, 'v7 → v8 迁移后价格库版本升到 8');
+	const pruned = apiRetired.snapshot().models;
+	assert.strictEqual(pruned['MiniMax-M3.1-Flash'], undefined, 'MiniMax-M3.1-Flash 应从老用户价格库清掉');
+	assert.strictEqual(pruned['step-5-preview'], undefined, 'step-5-preview 应从老用户价格库清掉');
+	assert.ok(pruned['my-custom-model'] !== undefined, '用户自建条目不受影响');
+	console.log('价格库迁移：MiniMax-M3.1-Flash / step-5-preview 已从老用户配置清除（v7 → v8 清理一次）');
+}
 
 /* ------------------------------------------- 段勾选：取消勾选后留在原位 */
 settingsHooks.values.length = 0;
@@ -1552,6 +2395,84 @@ assert.deepStrictEqual(JSON.parse(store.get(CONFIG_KEY)).segments,
 assert.strictEqual(collectByClass(renderSettings(), 'dsb-drag-card').length, 0, '松手后浮层收掉');
 console.log('拖动：浮层跟手 / 原位留影 / 松手才落盘');
 
+/* ------------------------------------------------ 价格目录厂商拖拽 + 把手无悬停文案 */
+settingsHooks.values.length = 0;
+catalogSeq = 0;
+let catalogDragTree = renderSettings();
+let catalogVendorNodes = collectByClass(catalogDragTree, 'dsb-catalog-vendor');
+const firstCatalogKey = catalogVendorNodes[0].props.key;
+const secondCatalogKey = catalogVendorNodes[1].props.key;
+const beforeCatalogOrder = JSON.parse(store.get(CONFIG_KEY)).catalogOrder.slice();
+const firstCatalogNode = catalogVendorNodes[0];
+const firstCatalogTop = firstCatalogNode.getBoundingClientRect().top;
+const catalogHandles = collectByClass(catalogDragTree, 'dsb-catalog-handle');
+assert.strictEqual(catalogHandles.length, catalogVendorNodes.length, '每个厂商一个 6 点拖拽把手');
+catalogHandles.forEach((one) => assert.strictEqual(one.props.title, undefined, '厂商把手不允许 title 悬停文案'));
+collectByClass(catalogDragTree, 'dsb-handle').forEach((one) => {
+	assert.strictEqual(one.props.title, undefined, '所有 6 点把手都不允许 title 悬停文案');
+});
+firstCatalogNode.props.onPointerDown({
+	button: 0, clientY: firstCatalogTop + 20, pointerId: 11,
+	target: { tagName: 'SPAN', className: 'dsb-handle dsb-catalog-handle' }, currentTarget: {}
+});
+catalogDragTree = renderSettings();
+assert.strictEqual(collectByClass(catalogDragTree, 'dsb-drag-card').length, 1, '厂商拖拽浮层复用 .dsb-drag-card 毛玻璃节点');
+	const catalogDragCard = collectByClass(catalogDragTree, 'dsb-drag-card')[0];
+	assert.ok(String(catalogDragCard.props.className).indexOf('dsb-catalog-drag-card') !== -1, '厂商拖拽浮层带 dsb-catalog-drag-card 专属类');
+	assert.strictEqual(catalogDragCard.props.style.height, '44px', '厂商拖拽浮层高度=摘要行 44px（不是整个 details 的高度）');
+	assert.ok(String(catalogDragCard.props.className).indexOf('dsb-catalog-drag-ghost') !== -1, '厂商拖拽浮层带 dsb-catalog-drag-ghost 类');
+	assert.strictEqual(catalogDragCard.props.style.width, '300px', '浮层宽度取摘要行 rect.width');
+	assert.ok(catalogDragCard.__ghost !== undefined && catalogDragCard.__ghost.__cloned === 'summary', '浮层挂载的是 summary.cloneNode(true) 的克隆节点');
+	assert.ok(String(catalogDragCard.props.className).split(' ').indexOf('dsb-settings') !== -1, '浮层 wrapper 挂 dsb-settings 作用域类（克隆体才能命中 .dsb-settings .dsb-catalog-summary / .dsb-handle 全部原行样式）');
+	assert.strictEqual(catalogDragCard.__ghost.className, 'dsb-catalog-summary', '克隆体保留 .dsb-catalog-summary 类（原行 summary 原样克隆）');
+	assert.strictEqual(catalogDragCard.props.style.fontSize, undefined, '外层不写内联字号（不重置 clone 内部排版）');
+	assert.strictEqual(catalogDragCard.props.style.padding, undefined, '外层不写内联 padding（不重置 clone 内部排版）');
+catalogVendorNodes = collectByClass(catalogDragTree, 'dsb-catalog-vendor');
+const draggedCatalogNode = catalogVendorNodes.filter((one) => one.props.key === firstCatalogKey)[0];
+draggedCatalogNode.props.onPointerMove({ clientY: firstCatalogTop + 90 });
+catalogDragTree = renderSettings();
+catalogVendorNodes = collectByClass(catalogDragTree, 'dsb-catalog-vendor');
+assert.deepStrictEqual(catalogVendorNodes.slice(0, 2).map((one) => one.props.key), [secondCatalogKey, firstCatalogKey],
+	'拖动中目录按落点换位');
+assert.deepStrictEqual(JSON.parse(store.get(CONFIG_KEY)).catalogOrder, beforeCatalogOrder, '拖动过程中不落盘');
+const draggedCatalogNode2 = catalogVendorNodes.filter((one) => one.props.key === firstCatalogKey)[0];
+draggedCatalogNode2.props.onPointerUp({});
+const savedCatalogOrder = JSON.parse(store.get(CONFIG_KEY)).catalogOrder;
+assert.ok(savedCatalogOrder.indexOf(secondCatalogKey) < savedCatalogOrder.indexOf(firstCatalogKey),
+	'松手才写 catalogOrder（重排后第二行应排到第一行之前）');
+assert.strictEqual(collectByClass(renderSettings(), 'dsb-drag-card').length, 0, '厂商拖拽松手后浮层收掉');
+console.log('厂商目录拖动：把手起浮层 / 拖动换位 / 松手写 catalogOrder / 所有把手无 title');
+
+/* 厂商目录：点目录外收起全部展开项，点目录内不关 */
+{
+	const clickBefore = (docListeners.click === undefined ? [] : docListeners.click).slice();
+	settingsHooks.values.length = 0;
+	/* useEffect 替身默认不跑；这里显式开启，才能拿到组件注册在 document 上的 click 回调 */
+	runEffects = true;
+	renderSettings();
+	runEffects = false;
+	const added = (docListeners.click === undefined ? [] : docListeners.click)
+		.filter((fn) => clickBefore.indexOf(fn) === -1);
+	assert.strictEqual(added.length, 1, '设置页应挂且只挂一个厂商目录 click 监听，实际 ' + added.length + ' 个');
+	const onCatalogDocClick = added[0];
+	const v1 = { open: true };
+	const v2 = { open: true };
+	openCatalogVendors.push(v1, v2);
+	const inside = { closest: (selector) => (selector === '.dsb-price-catalog' ? {} : null) };
+	onCatalogDocClick({ target: inside });
+	assert.strictEqual(v1.open, true, '点目录内不关闭厂商分组');
+	assert.strictEqual(v2.open, true, '点目录内不关闭第二个厂商分组');
+	const outside = { closest: () => null };
+	onCatalogDocClick({ target: outside });
+	assert.strictEqual(v1.open, false, '点目录外关闭厂商分组');
+	assert.strictEqual(v2.open, false, '点目录外关闭全部展开的厂商分组');
+	openCatalogVendors.length = 0;
+	(docListeners.click === undefined ? [] : docListeners.click.slice()).forEach((fn) => {
+		if (clickBefore.indexOf(fn) === -1) sandbox.document.removeEventListener('click', fn);
+	});
+	console.log('厂商目录：点目录外收起全部展开项；点目录内不关');
+}
+
 /* ------------------------------------------------ 跟手浮层必须 portal 到 body */
 /* 实测 2026-10-07（真机 + 无头 Chrome 复现）：壁纸引擎给设置面板挂了 backdrop-filter
    （body[data-we-glass-window] [role="dialog"]:has([data-slot="settings.section"])），
@@ -1600,7 +2521,10 @@ console.log('拖动：浮层跟手 / 原位留影 / 松手才落盘');
 }
 
 /* 指针已被系统吞掉（微信截屏那种）：左键其实已松开，再收到移动就按取消处理 */
+settingsHooks.values.length = 0;
 const keptOrder = JSON.parse(store.get(CONFIG_KEY)).segments;
+dragTree = renderSettings();
+dragRows = collectByClass(dragTree, 'dsb-row');
 rowByKey(dragRows, 'status').props.onPointerDown({
 	button: 0, clientY: 160, pointerId: 2,
 	target: { tagName: 'SPAN', className: 'dsb-handle' },
@@ -1615,25 +2539,15 @@ assert.deepStrictEqual(JSON.parse(store.get(CONFIG_KEY)).segments, keptOrder, '�
 console.log('拖动被打断：回原位，不落盘');
 
 /* 底部只剩「去 GitHub 点 star」+「恢复默认设置」（恢复默认在后），版本号贴右；
-   「更新节假峰谷」已挪到价格卡「当前会话使用」那一行的右端 */
+   设置页不再有「更新节假峰谷」按钮（改为每年 12/31 自动更新，见 StatusBar 时钟 effect） */
 const footTree = renderSettings();
 const foot = collectByClass(footTree, 'dsb-foot')[0];
 assert.ok(foot !== undefined, '底部区存在');
 assert.deepStrictEqual(collectByClass(foot, 'dsb-action').map((one) => one.props.key), ['__star', '__reset'],
 	'底部按钮顺序：去 GitHub / 恢复默认（恢复默认在后）');
-const currentAct = collectByClass(footTree, 'dsb-current-act')[0];
-assert.ok(currentAct !== undefined, '价格卡那一行右端有动作区');
-assert.deepStrictEqual(collectByClass(currentAct, 'dsb-action').map((one) => one.props.key), ['__holiday'],
-	'「更新节假峰谷」在价格卡的当前会话行里');
-/* 点一下后的状态提示要排在按钮**前面** —— 它出现时按钮右边界不动（按钮钉在卡右端）；
-   按钮不挂 title，悬停不弹气泡 */
-const holidayBtn = collectByClass(currentAct, 'dsb-action')[0];
-assert.strictEqual(holidayBtn.props.title, undefined, '按钮不挂 title（悬停不弹气泡）');
-holidayBtn.props.onClick();
-const actedTree = renderSettings();
-const actedAct = collectByClass(actedTree, 'dsb-current-act')[0];
-assert.deepStrictEqual(actedAct.children.map((one) => one.props.key), ['__holidaystatus', '__holiday'],
-	'状态提示在按钮前面（实际 ' + JSON.stringify(actedAct.children.map((one) => one.props.key)) + '）');
+assert.strictEqual(collectByClass(footTree, 'dsb-current-act').length, 0, '价格卡行右端不再有动作区');
+assert.strictEqual(textOf(footTree).indexOf('更新节假峰谷'), -1, '设置页不再出现「更新节假峰谷」');
+assert.strictEqual(textOf(footTree).indexOf('已写入'), -1, '设置页不再出现节假日状态文案');
 const star = buttonByLabel(footTree, 'GitHub支持');
 assert.ok(star !== undefined, 'GitHub 支持按钮文案与词条一致');
 /* 悬停提示：毛玻璃沿用 .dsb-tip，文字是那句邀请，左边界贴按钮左边界（left:0 由样式保证） */
@@ -1649,7 +2563,7 @@ fakeWindow.opened.length = 0;
 star.props.onClick();
 assert.deepStrictEqual(fakeWindow.opened, [['https://github.com/raphael-y7/dsh-desktop-statusbar', '_blank']],
 	'点 star 按钮开项目主页（实际 ' + JSON.stringify(fakeWindow.opened) + '）');
-console.log('底部：去 GitHub + 恢复默认（后者在后）；更新节假峰谷在价格卡行右端；star 点击开项目主页');
+console.log('底部：去 GitHub + 恢复默认（后者在后）；更新节假峰谷按钮已删除；star 点击开项目主页');
 
 /* 会话数据气泡：三行都能点开下钻（技能注入 / 工具调用 / 压缩次数）。
    点开是同一个气泡换内容 —— 标题变成子视图名、内容换成明细列表，点标题回上一层。
@@ -2083,17 +2997,19 @@ const hovEvent = (x, y) => ({ stopPropagation() {}, clientX: x, clientY: y });
 hovSegs[0].props.onMouseEnter(hovEvent(200, 500));
 const hoverTree = paintHover();
 assert.strictEqual(collectByClass(hoverTree, 'dsb-hovercard').length, 0, '悬停不再弹气泡');
-const plain = collectByClass(hoverTree, 'dsb-hover-plain')[0];
+const collectVisibleHoverPlain = (tree) => collectByClass(tree, 'dsb-hover-plain').filter((node) =>
+	String(node.props.className).split(' ').indexOf('dsb-hover-plain-probe') === -1);
+const plain = collectVisibleHoverPlain(hoverTree)[0];
 assert.ok(plain !== undefined, '悬停后出现纯文字提示');
 assert.strictEqual(textOf(plain), 'read 58.33%', '纯文字内容 = 工具名 + 占比（read 7/12，两位小数），实际 ' + textOf(plain));
 assert.strictEqual(plain.props.onClick, undefined, '文字提示不可点、不拦截鼠标');
 /* 在同一个色段里横向移动：提示不消失、内容不变（onHoverMove 直接改 DOM 坐标，不触发重渲染） */
 hovSegs[0].props.onMouseMove(hovEvent(260, 500));
-assert.strictEqual(collectByClass(paintHover(), 'dsb-hover-plain').length, 1, '段内移动时提示保持存在、不闪断');
-assert.strictEqual(textOf(collectByClass(paintHover(), 'dsb-hover-plain')[0]), 'read 58.33%',
+assert.strictEqual(collectVisibleHoverPlain(paintHover()).length, 1, '段内移动时提示保持存在、不闪断');
+assert.strictEqual(textOf(collectVisibleHoverPlain(paintHover())[0]), 'read 58.33%',
 	'段内移动后提示内容不变');
 hovSegs[1].props.onMouseEnter(hovEvent(400, 500));
-assert.strictEqual(textOf(collectByClass(paintHover(), 'dsb-hover-plain')[0]), 'edit 25.00%',
+assert.strictEqual(textOf(collectVisibleHoverPlain(paintHover())[0]), 'edit 25.00%',
 	'第二段 = edit 3/12 = 25.00%');
 console.log('工具彩条悬停提示：read 58.33% / edit 25.00%（无气泡、跟鼠标、段内移动不闪断）');
 
@@ -2155,6 +3071,35 @@ assert.ok(wiringSource.slice(backAt, backAt + 300).indexOf('setHoverPlainOff(fal
 	'从子视图返回（back）时必须复位 hoverPlainOff');
 console.log('悬停接线：hoverSuppressed = hoverPlainOff；置 true 与四条复位路径（放得下 / 关气泡 / 换字段 / 进出子视图）都在');
 
+	/* task-37：悬停文字必须 Portal 到 document.body，且 z-index 高于气泡面板（105）——
+	   否则它会被 body 级的气泡整块盖住，界面表现就是「悬停什么都不显示」。 */
+	assert.ok(wiringSource.indexOf('createPortal(hoverPlainNode, document.body)') !== -1,
+		'悬停文字必须 Portal 到 document.body（与气泡面板同一套 Portal 路径）');
+	const plainZ = /\.dsb-hover-plain\{[^}]*z-index:(\d+)/.exec(code);
+	const tipZ = /\.dsb-tip\{[^}]*z-index:(\d+)/.exec(code);
+	assert.ok(plainZ !== null && tipZ !== null, '找不到 .dsb-hover-plain / .dsb-tip 的 z-index');
+	assert.ok(Number(plainZ[1]) > Number(tipZ[1]),
+		'悬停文字 z-index（' + plainZ[1] + '）必须高于气泡面板（' + tipZ[1] + '）');
+
+/* task-35：悬停文字画在**气泡内部** —— 水平夹在气泡边界内 8px、垂直也夹在气泡矩形内 */
+	assert.ok(wiringSource.indexOf('const bounds = plainBoundsOf(titleBox, panelBox, window.innerWidth);') !== -1,
+		'可用范围 = 标题右边界+间距 → 气泡右边界-8（提示不压标题、不出气泡）');
+	assert.ok(wiringSource.indexOf('headBox.top + headBox.height / 2 - textHeight / 2') !== -1,
+		'垂直位置 = 标题行垂直中心（同一行居中对齐）');
+
+/* 恢复路径（用户实测「完全不弹提示」的根因）：气泡**自己**变长 / 变宽也必须重测。
+   旧实现只有 window resize 会 bump tipTick，气泡内容变多撑宽面板后没有任何信号，
+   于是一次「放不下」就把本次会话的整组悬停永久关死。 */
+assert.ok(/new ResizeObserver\(/.test(wiringSource), '必须用 ResizeObserver 盯气泡尺寸变化');
+const observerAt2 = wiringSource.indexOf('new ResizeObserver(');
+const observerSlice = wiringSource.slice(observerAt2, observerAt2 + 260);
+assert.ok(/setTipTick\(/.test(observerSlice), 'ResizeObserver 回调必须 bump tipTick 触发重测，实际片段：' + observerSlice.slice(0, 160));
+assert.ok(observerSlice.indexOf('observer.observe(') !== -1, '必须 observe 气泡节点，否则收不到尺寸变化');
+assert.ok(/observer\.disconnect\(\)/.test(wiringSource), '气泡关闭时必须 disconnect，别留观察者');
+assert.ok(/if \(hoverPlainOff === true\) setHoverPlainOff\(false\);/.test(wiringSource),
+	'重新量出「放得下」时必须复位 hoverPlainOff —— 缺这条就是用户实测的永久静音');
+console.log('悬停恢复：ResizeObserver 盯气泡尺寸 → tipTick 重测 → 放得下时整组恢复（不再永久静音）');
+
 /* ---------------------------------------------- 悬停文字放不下就不显示（取代缩放）
    用户拍板：工具名很长、气泡不够长时，**所有**工具名的悬停提示一律不出现，
    不是只关掉那个超长的、也不是缩小硬塞进去。所以这里守两件事：
@@ -2166,13 +3111,13 @@ console.log('悬停接线：hoverSuppressed = hoverPlainOff；置 true 与四条
 const codeNoComments = code
 	.replace(/\/\*[\s\S]*?\*\//g, '')
 	.replace(/(^|[^:'"\\])\/\/[^\n]*/g, '$1');
-const fitBoundsForPlain = api.plainBoundsOf({ right: 60 }, { right: 400 }, 1280);   /* 可用 67..400 = 333 */
-assert.strictEqual(api.plainFits(333, fitBoundsForPlain, 1280), true, '刚好放满：算放得下');
+	const fitBoundsForPlain = api.plainBoundsOf({ right: 120 }, { left: 0, right: 400 }, 1280);   /* 可用 132..392 = 260 */
+assert.strictEqual(api.plainFits(260, fitBoundsForPlain, 1280), true, '刚好放满：算放得下');
 assert.strictEqual(api.plainFits(100, fitBoundsForPlain, 1280), true, '明显放得下：算放得下');
-assert.strictEqual(api.plainFits(334, fitBoundsForPlain, 1280), false,
+assert.strictEqual(api.plainFits(261, fitBoundsForPlain, 1280), false,
 	'多 1px 就放不下 → 返回 false（提示该关掉，不是缩小）');
 assert.strictEqual(api.plainFits(600, fitBoundsForPlain, 1280), false,
-	'长 MCP 工具名（自然宽 600 > 可用 333）→ 放不下');
+	'长 MCP 工具名（自然宽 600 > 可用 260）→ 放不下');
 /* 退化输入一律当"放得下"：量不出来就别关，宁可显示也不误伤 */
 assert.strictEqual(api.plainFits(0, fitBoundsForPlain, 1280), true, '宽度为 0（还没量到）→ 当放得下');
 assert.strictEqual(api.plainFits(NaN, fitBoundsForPlain, 1280), true, '宽度是 NaN → 当放得下');
@@ -2187,7 +3132,7 @@ assert.strictEqual(/transform:\s*"scale\(/.test(codeNoComments), false,
 assert.strictEqual(/hoverPos\.scale/.test(codeNoComments), false,
 	'hoverPos 不再携带 scale 字段（缩放状态已移除）');
 /* 判据必须走 plainFits：找到调用处，确认它决定的是"关掉"而不是"缩小" */
-const fitsCallAt = codeNoComments.indexOf('plainFits(layoutWidth');
+const fitsCallAt = codeNoComments.search(/plainFits\(\s*[A-Za-z_$][\w$]*\s*,\s*bounds\s*,\s*window\.innerWidth\s*\)/);
 assert.ok(fitsCallAt !== -1, '定位 effect 里必须调用 plainFits 判断放不放得下');
 const fitsCall = codeNoComments.slice(fitsCallAt, fitsCallAt + 400);
 assert.ok(fitsCall.indexOf('setHoverPlainOff(true)') !== -1,
@@ -2198,32 +3143,32 @@ stubHoverPlainWidth = 60;
 stubBarWidth = 273;
 stubHeadlineWidth = 60;
 
-/* 悬停文字的水平夹取：左 = 标题右边界 + 1ch；右 = **色条本身**的右边界（不是气泡右边界） */
+/* 悬停文字的可用范围：左 = 标题文字右边界 + 间距（不压标题），右 = 气泡右边界 - 8 */
 /* 注意：这些对象来自 vm 沙箱，原型与本进程不同，用跨 realm 安全的 JSON 比较 */
-const bounds = api.plainBoundsOf({ right: 120 }, { right: 400 }, 1280);
-assert.strictEqual(JSON.stringify(bounds), JSON.stringify({ min: 127, max: 400 }),
-	'范围 = 标题右边界 + 1ch（7px） ~ 色条右边界');
-const boundsViewport = api.plainBoundsOf({ right: 120 }, { right: 2000 }, 1280);
-assert.strictEqual(JSON.stringify(boundsViewport), JSON.stringify({ min: 127, max: 1272 }), '色条右边界超过视口时按视口夹');
-assert.strictEqual(JSON.stringify(api.plainBoundsOf(null, null, 1280)), JSON.stringify({ min: 8, max: 1272 }),
-	'两个边界都拿不到时退回「只夹视口」的范围');
-assert.strictEqual(api.clampPlainLeft(0, 60, bounds, 1280), 127, '离标题至少 1ch、不压标题');
-assert.strictEqual(api.clampPlainLeft(500, 60, bounds, 1280), 340, '文字右边界不越过色条右边界（400-60）');
-assert.strictEqual(api.clampPlainLeft(300, 60, null, 1280), 300, '没有范围时只夹视口');
-/* 退化分支：**没有视口宽度**（`viewportWidth <= 0`）。
-   上面三条都传了 1280，所以 `viewMax` 永远不是 null，两条退化分支一拍没走到：
-   · `clampPlainLeft` 的 `if (max === null) return Math.max(min, centered)`（原值返回）
-   · `plainBoundsOf` 的 `if (max < min) return null`（区间为负）
-   实测这两个分支写错时测试仍全绿（审查 C 的 P1 / P2）。 */
-assert.strictEqual(api.clampPlainLeft(500, 60, null, 0), 500,
-	'没有视口、没有范围：left 原样返回居中值（不能贴死在左边界）');
-assert.strictEqual(api.clampPlainLeft(3, 60, null, 0), 8,
-	'没有视口时仍要守住左边距 8px，实际 ' + api.clampPlainLeft(3, 60, null, 0));
-assert.strictEqual(api.plainBoundsOf(null, null, 0), null,
-	'没有标题、没有色条、没有视口：返回 null（不要编一个假范围出来）');
-assert.strictEqual(api.plainBoundsOf({ right: 400 }, { right: 300 }, 1280), null,
-	'标题右边界已越过色条右边界（区间为负）：返回 null，交给夹取兜底');
-console.log('悬停文字水平夹取：左=标题右边界+1ch / 右=色条右边界');
+const bounds = { min: 132, max: 392 };
+	assert.strictEqual(JSON.stringify(api.plainBoundsOf({ right: 120 }, { left: 0, right: 400 }, 1280)), JSON.stringify({ min: 132, max: 392 }),
+		'范围 = 标题右边界+12 → 气泡右边界-8');
+	assert.strictEqual(JSON.stringify(api.plainBoundsOf(null, { left: 0, right: 400 }, 1280)), JSON.stringify({ min: 8, max: 392 }),
+		'拿不到标题：左边界退回气泡内边距 8');
+	assert.strictEqual(JSON.stringify(api.plainBoundsOf({ right: 120 }, { left: 0, right: 5000 }, 1280)), JSON.stringify({ min: 132, max: 1272 }),
+		'气泡右边界超过视口时按视口夹');
+	assert.strictEqual(api.plainBoundsOf({ right: 120 }, null, 1280), null,
+		'拿不到气泡几何：返回 null（交给夹取/视口兜底）');
+	assert.strictEqual(api.plainBoundsOf(null, { left: 400, right: 300 }, 1280), null,
+		'气泡右边界已越过左边界（区间为负）：返回 null');
+	assert.strictEqual(api.plainBoundsOf({ right: 400 }, { left: 0, right: 300 }, 1280), null,
+		'标题右边界越过气泡右边界（无处可放）：返回 null');
+
+/* clampPlainLeft：夹进给定范围（没有范围时只夹视口） */
+	assert.strictEqual(api.clampPlainLeft(0, 60, bounds, 1280), 132, '夹进范围左边界、不压标题');
+	assert.strictEqual(api.clampPlainLeft(500, 60, bounds, 1280), 332, '文字右边界不越过范围右边界（392-60）');
+	assert.strictEqual(api.clampPlainLeft(300, 60, null, 1280), 300, '没有范围时只夹视口');
+/* 退化分支：没有视口宽度（viewportWidth <= 0）时两句兜底必须都走到 */
+	assert.strictEqual(api.clampPlainLeft(500, 60, null, 0), 500,
+		'没有视口、没有范围：left 原样返回居中值（不能贴死在左边界）');
+	assert.strictEqual(api.clampPlainLeft(3, 60, null, 0), 8,
+		'没有视口时仍要守住左边距 8px，实际 ' + api.clampPlainLeft(3, 60, null, 0));
+console.log('悬停文字范围：标题右边界+间距 → 气泡右边界-8；垂直与标题行居中对齐');
 
 /* 悬停文字「放不下就整组不显示」的断言见本文件前面那段（搜 plainFits）：
    缩放功能已被移除，这里不再有"缩小到能放下"的用例。 */
@@ -2529,23 +3474,14 @@ console.log('总计记账：指纹上限跨拍不重复计费（4000 条 = MAX_C
 /* 用例改了模块级价格库，还回去（后面的设置页用例仍按出厂价跑） */
 api.setConfig({ models: TICK_BASE_MODELS });
 
-/* 抓不到「下一年」的安排（官方还没发布，host 回空 days）：状态行照常显示已写入的本年数量，
-   不出现"国务院还没发布 X 年放假安排"那句。抓取回包是异步的，等一拍再断言。 */
-fakeWindow.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({ days: [] }) });
+/* 需求 9：设置页不再有「更新节假峰谷」按钮与状态文案（改为 StatusBar 时钟自动更新，
+   时机与写配置行为由 verify-holiday-update.js 覆盖）。 */
 const quietTree = freshSettings();
-collectByClass(collectByClass(quietTree, 'dsb-current-act')[0], 'dsb-action')[0].props.onClick();
-renderSettings();
-setImmediate(() => {
-	const settled = renderSettings();
-	const hint = collectByClass(settled, 'dsb-hint').filter((one) => one.props.key === '__holidaystatus')[0];
-	assert.ok(hint !== undefined, '状态行出现');
-	const text = textOf(hint);
-	assert.ok(/^已写入 \d{4} 年 \d+ 个节假日$/.test(text), '未发布时显示已写入的本年数量，实际 ' + text);
-	assert.strictEqual(text.indexOf('国务院'), -1, '不出现"国务院还没发布"那句');
-	console.log('下一年未发布：状态行显示本年已写入数量（' + text + '）');
-
-	console.log('\nALL CHECKS PASSED');
-});
+assert.strictEqual(collectByClass(quietTree, 'dsb-current-act').length, 0, '设置页不再有节假日动作区');
+assert.strictEqual(textOf(quietTree).indexOf('更新节假峰谷'), -1, '设置页不再出现「更新节假峰谷」');
+assert.strictEqual(textOf(quietTree).indexOf('已写入'), -1, '设置页不再出现节假日状态文案');
+console.log('节假日：设置页按钮与状态文案已删除（改为每年 12/31 自动更新）');
+console.log('\nALL CHECKS PASSED');
 
 
 

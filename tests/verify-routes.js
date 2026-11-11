@@ -3,14 +3,17 @@
  * 回归护栏：曾经因为把 prices 分支插到 `const url = ...` 之前，
  * handler 抛 ReferenceError，把余额接口一起打挂（前端只剩一个横杠）。
  */
+const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
+const os = require('os');
 
 const PLUGIN = path.join(__dirname, '..', 'lib', 'index.js');
 
 /* 台账 v3 起 POST /api/prices 会读台账并落盘（结算欠账）。这里必须把 DSH_HOME 指到
    tests/ 下的隔离目录，否则测试会改写这台机器上的真实台账 ~/.dsh/dsh-status-bar/ 。 */
-process.env.DSH_HOME = path.join(__dirname, '.dsh-test-home');
+const TEMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-test-home-'));
+process.env.DSH_HOME = TEMP_HOME;
 
 /* 假 ctx 不会跑 effect 的 cleanup，插件的用量刷新定时器会把进程吊住不退出：让它别真的起定时器 */
 globalThis.setInterval = () => 0;
@@ -144,7 +147,9 @@ globalThis.setInterval = () => 0;
 	console.log('开发模式探测路由已删除（404）OK');
 
 	console.log('\nHOST ROUTE CHECKS PASSED');
-})().catch((error) => {
+})().finally(() => {
+	try { fs.rmSync(TEMP_HOME, { recursive: true, force: true }); } catch (error) { /* best effort */ }
+}).catch((error) => {
 	console.error('HOST ROUTE CHECKS FAILED:', error && error.message ? error.message : error);
 	process.exitCode = 1;
 });

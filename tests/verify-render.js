@@ -136,20 +136,6 @@ function renderTree() {
 	return api.SettingsSection({ t: (key) => key });
 }
 
-/** 当前渲染出的所有类名。 */
-function renderClasses() {
-	const tree = renderTree();
-	const out = { classes: [], texts: [] };
-	(function collect(node) {
-		if (node === null || node === undefined || node === false) return;
-		if (Array.isArray(node)) { node.forEach(collect); return }
-		if (typeof node !== 'object') { out.texts.push(String(node)); return }
-		if (typeof node.props?.className === 'string') out.classes.push(node.props.className);
-		if (node.children !== undefined) collect(node.children);
-	})(tree);
-	return out;
-}
-
 (async () => {
 
 	/* ① 默认（非开发模式）：**一个开发模式相关的可见元素都不该有** */

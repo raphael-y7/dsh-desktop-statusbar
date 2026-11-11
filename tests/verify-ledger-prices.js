@@ -18,9 +18,10 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const assert = require('assert');
+const os = require('os');
 
 const INDEX = path.join(__dirname, '..', 'lib', 'index.js');
-const HOME = path.join(__dirname, '.dsh-test-home');
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-test-home-'));
 
 globalThis.setInterval = () => 0;
 
@@ -229,7 +230,9 @@ BOOK_TRIPLED['Deepseek-V4.1-Flash'] = {
 
   console.log('');
   console.log('LEDGER PRICE CHECKS PASSED');
-})().catch((error) => {
+})().finally(() => {
+	try { fs.rmSync(HOME, { recursive: true, force: true }); } catch (error) { /* best effort */ }
+}).catch((error) => {
   console.error('LEDGER PRICE CHECKS FAILED: ' + (error && error.message ? error.message : error));
   process.exitCode = 1;
 });

@@ -12,7 +12,9 @@ CHANGELOG.md
 
 # 测试随仓库一起保存：重装或换机不会丢，以后改动也有回归保护。
 # 但测试运行时生成的隔离数据目录（每次跑都会重建）不提交，否则每跑一次都会多出一批改动。
-tests/.dsh-test-home*/
+# 统一覆盖 tests/.dsh-test-home*、tests/.dsh-relay-security-<pid>、tests/.dsh-replay-home 等
+# 所有测试临时目录（旧规则只挡了 .dsh-test-home*，漏掉 relay-security 每进程一份的泄漏）。
+tests/.dsh-*/
 
 # _diag/ 是一次性审查报告与排查脚本（含历史版本源码副本），不入库。
 # 它也不会进 npm 包（package.json 的 files 字段没有它），但留在仓库里容易被 git add -A 带进提交。

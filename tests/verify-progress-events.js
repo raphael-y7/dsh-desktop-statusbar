@@ -18,14 +18,17 @@
  *
  * 用法：node tests/verify-progress-events.js
  */
+const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
+const os = require('os');
 
 const INDEX = path.join(__dirname, '..', 'lib', 'index.js');
 
 /* apply() 会预热扫一次台账（读会话日志、必要时落盘）：把 DSH_HOME 指到隔离目录，
    别碰这台机器上真实的 ~/.dsh/dsh-status-bar/ */
-process.env.DSH_HOME = path.join(__dirname, '.dsh-test-home-progress');
+const TEMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-test-home-progress-'));
+process.env.DSH_HOME = TEMP_HOME;
 
 /* 假 ctx 不会跑 effect 的 cleanup，插件里的定时器会吊住进程：让它别真的起定时器 */
 globalThis.setInterval = () => 0;
@@ -227,7 +230,9 @@ const applyAll = (proj, state, events) => events.reduce((one, event) => proj.app
 		compacts: state.compacts
 	}));
 	console.log('\nPROGRESS EVENT CHECKS PASSED');
-})().catch((error) => {
+})().finally(() => {
+	try { fs.rmSync(TEMP_HOME, { recursive: true, force: true }); } catch (error) { /* best effort */ }
+}).catch((error) => {
 	console.error('PROGRESS EVENT CHECKS FAILED:', error && error.message ? error.message : error);
 	process.exitCode = 1;
 });
