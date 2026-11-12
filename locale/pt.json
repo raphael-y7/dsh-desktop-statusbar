@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Barra de Estado do Ambiente de Trabalho",
+    "description": "Substitui a linha de estatísticas por baixo da conversa do ambiente de trabalho do DSH por uma barra de estado configurável: 9 campos opcionais reordenáveis, mais o anel de contexto no início da barra, estimativas oficiais de custo de ponta/fora de ponta, preços de modelos personalizados e saldo da conta."
+  }
+}
