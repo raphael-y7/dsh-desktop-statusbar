@@ -93,6 +93,7 @@ function loadPlugin(locale, config, presets) {
       removeItem: (k) => { store.delete(k); }
     },
     innerWidth: 1200, innerHeight: 900,
+    __DSH_STATUSBAR_TEST__: true,
     setInterval: () => 0, clearInterval: () => {}, setTimeout: () => 0, clearTimeout: () => {},
     addEventListener: () => {}, removeEventListener: () => {},
     fetch: () => Promise.resolve({ json: () => Promise.resolve({}) })
@@ -227,13 +228,13 @@ function settingsShot(locale) {
 function pricingShot(locale) {
   /* SettingsSection 里 useState 的顺序（组件加了 hook 就要回来重数一遍）：
      0 drag / 1 newModel / 2 hostModel / 3 editing / 4 draft /
-     5 catalogNotice / 6 platformModelOpen / 7 catalogDrag / 8 currencyOpen /
-     9 platformEditing / 10 platformDraft / 11 platformNotice / 12 newPlatform /
-     13 platformErrors。
+     5 catalogNotice / 6 platformModelOpen / 7 currencyOpen /
+     8 platformEditing / 9 platformDraft / 10 platformNotice / 11 newPlatform /
+     12 platformPopUp / 13 platformMenuSpec。
      开发模式状态来自模块级快照；重复添加 / 倍率校验失败的提示由 catalogNotice 管理；
-     9-13 是「第三方平台」区块（平台编辑 / 草稿 / 校验提示 / 新平台名输入 / 字段级错误）。
-     pricingShot 的 presets 固定为 editing=3、draft=4、currencyOpen=8。
-     旧的 presets[7] 会命中 catalogDrag，币种下拉将无法按截图预设收起。
+     8-13 是「第三方平台」区块（平台编辑 / 草稿 / 校验提示 / 新平台名输入 / 编辑气泡方向 / 模型下拉定位）。
+     pricingShot 的 presets 固定为 editing=3、draft=4、currencyOpen=7。
+     币种下拉必须收在 presets[7]（currencyOpen），否则展开会压住右边那列输入框。
      历史上的坑：hook 顺序变化时截图 presets 未同步，会造成编辑区不展开或草稿注入错误状态。
      教训：**下标是脆的**，加 hook 必须回来重数，并用 `node tools/shot.cjs` 实际生成一次确认。 */
   const presets = [];
@@ -254,7 +255,7 @@ function pricingShot(locale) {
       peak: { input: '2', cacheRead: '0.04', cacheWrite: '0', output: '8' },
       offPeak: { input: '1', cacheRead: '0.02', cacheWrite: '0', output: '4' }
     };
-  presets[8] = false;   /* 币种下拉收起：展开会压住右边那列输入框 */
+  presets[7] = false;   /* 币种下拉收起：展开会压住右边那列输入框 */
   const loaded = loadPlugin(locale, locale === 'en' ? SETTINGS_USD : SETTINGS_CONFIG, presets);
   const t = translator(loaded.shot, locale);
   const tree = loaded.shot.SettingsSection({
@@ -378,9 +379,13 @@ function shoot(locale, scene) {
   console.log('→ ' + path.relative(ROOT, file) + '  ' + Math.round(size / 1024) + ' KB');
 }
 
-const onlyLocale = process.argv[2];
-const onlyScene = process.argv[3];
-const locales = onlyLocale === undefined ? ['zh', 'en'] : [onlyLocale];
-const scenes = onlyScene === undefined ? ['status', 'settings', 'pricing'] : [onlyScene];
-locales.forEach((locale) => scenes.forEach((scene) => shoot(locale, scene)));
-console.log('截图完成');
+if (require.main === module) {
+  const onlyLocale = process.argv[2];
+  const onlyScene = process.argv[3];
+  const locales = onlyLocale === undefined ? ['zh', 'en'] : [onlyLocale];
+  const scenes = onlyScene === undefined ? ['status', 'settings', 'pricing'] : [onlyScene];
+  locales.forEach((locale) => scenes.forEach((scene) => shoot(locale, scene)));
+  console.log('截图完成');
+}
+
+module.exports = { loadPlugin: loadPlugin, translator: translator };

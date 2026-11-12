@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Barra de estado de escritorio",
+    "description": "Sustituye la línea de estadísticas bajo la conversación del escritorio de DSH por una barra de estado configurable: 9 campos opcionales reordenables más el anillo de contexto al inicio de la barra, estimaciones oficiales de coste en horas punta y valle, precios personalizados de modelos y saldo de la cuenta."
+  }
+}

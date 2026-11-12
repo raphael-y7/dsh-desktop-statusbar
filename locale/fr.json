@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Barre d'état de bureau",
+    "description": "Remplace la ligne de statistiques sous la conversation du bureau DSH par une barre d'état configurable : 9 champs facultatifs réorganisables, plus l'anneau de contexte en tête de barre, estimation officielle des coûts heures pleines / creuses, prix de modèles personnalisés et solde du compte."
+  }
+}
