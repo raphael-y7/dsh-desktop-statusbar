@@ -18,7 +18,7 @@
 
 Substitui a linha de estatísticas sob a entrada de mensagem no aplicativo desktop DSH por uma barra de status configurável: campos, ordem, preços por modelo e moeda são todos configuráveis, com estimativas de custo em tempo real usando as tarifas oficiais de pico/fora de pico da DeepSeek.
 
-<p align="center"><video src="https://github.com/user-attachments/assets/73f78ed6-cca3-433c-9a96-e1e579fcb2a1" controls muted playsinline width="720"></video></p>
+https://github.com/user-attachments/assets/73f78ed6-cca3-433c-9a96-e1e579fcb2a1
 
 ## Recursos
 

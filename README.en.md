@@ -18,7 +18,7 @@
 
 Replaces the stats line under the message input in the DSH desktop app with a configurable status bar: fields, ordering, per-model prices and currency are all configurable, with live cost estimates using DeepSeek's official peak/off-peak rates.
 
-<p align="center"><video src="https://github.com/user-attachments/assets/73f78ed6-cca3-433c-9a96-e1e579fcb2a1" controls muted playsinline width="720"></video></p>
+https://github.com/user-attachments/assets/73f78ed6-cca3-433c-9a96-e1e579fcb2a1
 
 ## Features
 

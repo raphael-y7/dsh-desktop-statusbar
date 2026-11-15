@@ -18,7 +18,7 @@
 
 以一条可配置的状态栏替换 DSH 桌面端对话区底部的统计行：字段、顺序、模型单价与计价单位均可配置，费用按官方峰谷口径实时估算。
 
-<p align="center"><video src="https://github.com/user-attachments/assets/73f78ed6-cca3-433c-9a96-e1e579fcb2a1" controls muted playsinline width="720"></video></p>
+https://github.com/user-attachments/assets/73f78ed6-cca3-433c-9a96-e1e579fcb2a1
 
 ## 功能
 
