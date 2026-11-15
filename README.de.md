@@ -18,7 +18,7 @@
 
 Ersetzt die Statistikzeile unter der Nachrichteneingabe in der DSH-Desktop-App durch eine konfigurierbare Statusleiste: Felder, Reihenfolge, Preise pro Modell und Währung sind alle konfigurierbar, mit Live-Kostenschätzungen anhand der offiziellen Peak-/Off-Peak-Tarife von DeepSeek.
 
-<video src="https://github.com/user-attachments/assets/5a4f7fd8-a445-490d-a557-1ec840c611df" controls muted playsinline width="720"></video>
+https://github.com/user-attachments/assets/5a4f7fd8-a445-490d-a557-1ec840c611df
 
 ## Funktionen
 

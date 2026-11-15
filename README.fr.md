@@ -18,7 +18,7 @@
 
 Remplace la ligne de statistiques sous le champ de saisie des messages de l'application de bureau DSH par une barre d'état configurable : les champs, l'ordre, les prix par modèle et la devise sont tous configurables, avec des estimations de coût en temps réel selon les tarifs officiels heures pleines / heures creuses de DeepSeek.
 
-<video src="https://github.com/user-attachments/assets/5a4f7fd8-a445-490d-a557-1ec840c611df" controls muted playsinline width="720"></video>
+https://github.com/user-attachments/assets/5a4f7fd8-a445-490d-a557-1ec840c611df
 
 ## Fonctionnalités
 

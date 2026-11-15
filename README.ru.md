@@ -18,7 +18,7 @@
 
 Заменяет строку статистики под полем ввода сообщения в настольном приложении DSH на настраиваемую строку состояния: поля, порядок, цены по моделям и валюта — всё настраивается, с оценкой затрат в реальном времени по официальным тарифам DeepSeek для пиковых и непиковых часов.
 
-<video src="https://github.com/user-attachments/assets/5a4f7fd8-a445-490d-a557-1ec840c611df" controls muted playsinline width="720"></video>
+https://github.com/user-attachments/assets/5a4f7fd8-a445-490d-a557-1ec840c611df
 
 ## Возможности
 
