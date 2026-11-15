@@ -91,7 +91,7 @@ dsh plugin --profile desktop add dsh-desktop-statusbar@3.0.5
 
 **設定 → ステータスバー** を開きます:
 
-![Settings page](docs/settings.en.png)
+![Settings page](docs/settings.ja.png)
 
 - **コンテキスト占有率**: バー先頭のリング。進捗は使用済みコンテキストの割合を示し、隙間は圧縮しきい値を示し、色は実行状態を示します（アイドル-グレー / 実行中-緑 / サブエージェント実行中-青 / より深いサブエージェント実行中-紫 / エラー-赤 / 承認待ち-琥珀）
 - **統計フィールド**: チェックは表示のみを制御するため、チェックを外してもフィールドは移動せず非表示になるだけです。右側のハンドルをドラッグして並べ替えます。「設定をリセット」で工場出荷時の順序に戻ります
@@ -104,7 +104,7 @@ dsh plugin --profile desktop add dsh-desktop-statusbar@3.0.5
 
 ピーク時間帯は **北京時間の 09:00–12:00 と 14:00–18:00、月曜日から金曜日** で、オフピーク料金はピーク料金の半額です。中国の祝日と週末は終日オフピークで課金されます（[公式ドキュメント](https://api-docs.deepseek.com/quick_start/pricing) に準拠、2026-09 確認）。
 
-![Custom model prices](docs/pricing.en.png)
+![Custom model prices](docs/pricing.ja.png)
 
 ## 中継所の残高照会
 

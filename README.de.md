@@ -91,7 +91,7 @@ Ebenfalls gelistet auf [dshmarket](https://awesome-dsh-plugin.com/p/raphael-y7/d
 
 Öffnen Sie **Einstellungen → Statusleiste**:
 
-![Settings page](docs/settings.en.png)
+![Settings page](docs/settings.de.png)
 
 - **Kontextauslastung**: der Ring am Anfang der Leiste — der Fortschritt zeigt den verbrauchten Kontextanteil, die Lücke markiert die Komprimierungsschwelle und die Farbe zeigt den Ausführungszustand (inaktiv-grau / läuft-grün / Sub-Agent läuft-blau / tieferer Sub-Agent läuft-violett / Fehler-rot / wartet auf Genehmigung-bernstein)
 - **Statistikfelder**: Das Ankreuzen steuert nur die Sichtbarkeit, daher blendet das Entfernen des Häkchens ein Feld aus, ohne es zu verschieben; ziehen Sie den Griff auf der rechten Seite, um die Reihenfolge zu ändern; „Einstellungen zurücksetzen“ stellt die Werkseinstellung wieder her
@@ -104,7 +104,7 @@ Ebenfalls gelistet auf [dshmarket](https://awesome-dsh-plugin.com/p/raphael-y7/d
 
 Die Peak-Zeiten sind **09:00–12:00 und 14:00–18:00 Pekinger Zeit, Montag bis Freitag**, und die Off-Peak-Tarife betragen die Hälfte der Peak-Tarife; chinesische Feiertage und Wochenenden werden ganztägig zum Off-Peak-Tarif abgerechnet (entsprechend der [offiziellen Dokumentation](https://api-docs.deepseek.com/quick_start/pricing), geprüft im September 2026).
 
-![Custom model prices](docs/pricing.en.png)
+![Custom model prices](docs/pricing.de.png)
 
 ## Guthabenabfrage für Relais
 

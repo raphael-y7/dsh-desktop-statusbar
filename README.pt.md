@@ -91,7 +91,7 @@ Também listado em [dshmarket](https://awesome-dsh-plugin.com/p/raphael-y7/dsh-d
 
 Abra **Configurações → Barra de status**:
 
-![Settings page](docs/settings.en.png)
+![Settings page](docs/settings.pt.png)
 
 - **Ocupação do contexto**: o anel no início da barra — o progresso mostra a parcela do contexto usada, a lacuna marca o limite de compactação e a cor mostra o estado de execução (ocioso-cinza / em execução-verde / subagente em execução-azul / subagente mais profundo em execução-violeta / erro-vermelho / aguardando aprovação-âmbar)
 - **Campos de estatísticas**: marcar controla apenas a visibilidade, então desmarcar oculta um campo sem movê-lo; arraste a alça à direita para reordenar; “Redefinir configurações” restaura a ordem de fábrica
@@ -104,7 +104,7 @@ Abra **Configurações → Barra de status**:
 
 Os horários de pico são **09:00–12:00 e 14:00–18:00 no horário de Pequim, de segunda a sexta-feira**, e as tarifas fora de pico são metade das tarifas de pico; feriados públicos chineses e fins de semana são cobrados fora de pico o dia todo (de acordo com a [documentação oficial](https://api-docs.deepseek.com/quick_start/pricing), verificada em 2026-09).
 
-![Custom model prices](docs/pricing.en.png)
+![Custom model prices](docs/pricing.pt.png)
 
 ## Consulta de saldo do relay
 

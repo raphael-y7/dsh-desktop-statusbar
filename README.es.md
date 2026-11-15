@@ -91,7 +91,7 @@ También aparece en [dshmarket](https://awesome-dsh-plugin.com/p/raphael-y7/dsh-
 
 Abre **Ajustes → Barra de estado**:
 
-![Settings page](docs/settings.en.png)
+![Settings page](docs/settings.es.png)
 
 - **Ocupación del contexto**: el anillo al inicio de la barra: el progreso muestra la proporción de contexto usado, el hueco marca el umbral de compactación y el color muestra el estado de ejecución (inactivo-gris / en ejecución-verde / subagente en ejecución-azul / subagente más profundo en ejecución-violeta / error-rojo / pendiente de aprobación-ámbar)
 - **Campos de estadísticas**: las casillas solo controlan la visibilidad, así que desmarcar oculta un campo sin moverlo; arrastra el tirador de la derecha para reordenar; «Restablecer ajustes» restaura el orden de fábrica
@@ -104,7 +104,7 @@ Abre **Ajustes → Barra de estado**:
 
 Las horas punta son **09:00–12:00 y 14:00–18:00 hora de Pekín, de lunes a viernes**, y las tarifas de hora valle son la mitad de las de punta; los festivos públicos chinos y los fines de semana se facturan a tarifa valle todo el día (según la [documentación oficial](https://api-docs.deepseek.com/quick_start/pricing), comprobado en 2026-09).
 
-![Custom model prices](docs/pricing.en.png)
+![Custom model prices](docs/pricing.es.png)
 
 ## Consulta del saldo del relé
 

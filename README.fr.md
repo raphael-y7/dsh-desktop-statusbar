@@ -91,7 +91,7 @@ Utilisez la dernière version actuelle (celle affichée sur la page de publicati
 
 Ouvrez **Paramètres → Barre d'état** :
 
-![Settings page](docs/settings.en.png)
+![Settings page](docs/settings.fr.png)
 
 - **Occupation du contexte** : l'anneau en tête de la barre — la progression montre la part de contexte utilisée, l'écart marque le seuil de compactage, et la couleur montre l'état d'exécution (inactif-gris / en cours-vert / sous-agent en cours-bleu / sous-agent plus profond en cours-violet / erreur-rouge / en attente d'approbation-ambre)
 - **Champs de statistiques** : les cases ne contrôlent que la visibilité, donc décocher masque un champ sans le déplacer ; faites glisser la poignée à droite pour réorganiser ; « Réinitialiser les paramètres » restaure l'ordre d'usine
@@ -104,7 +104,7 @@ Ouvrez **Paramètres → Barre d'état** :
 
 Les heures pleines sont **09:00–12:00 et 14:00–18:00 heure de Pékin, du lundi au vendredi**, et les tarifs heures creuses sont la moitié des tarifs heures pleines ; les jours fériés publics chinois et les week-ends sont facturés heures creuses toute la journée (conforme à la [documentation officielle](https://api-docs.deepseek.com/quick_start/pricing), vérifié en 2026-09).
 
-![Custom model prices](docs/pricing.en.png)
+![Custom model prices](docs/pricing.fr.png)
 
 ## Consultation du solde du relais
 

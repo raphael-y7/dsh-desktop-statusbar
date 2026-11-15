@@ -9,6 +9,7 @@
  * 用法：
  *   node tools/shot.cjs            生成全部（中英 × 底栏 / 设置页 / 价格区）
  *   node tools/shot.cjs zh status  只生成某一张
+ *   node tools/shot.cjs ja settings  生成某语言某一张（zh/en/ja/es/fr/de/ru/pt）
  */
 const fs = require('fs');
 const path = require('path');
@@ -82,7 +83,7 @@ function browser() {
 function loadPlugin(locale, config, presets) {
   let code = fs.readFileSync(PLUGIN, 'utf8');
   code = code.replace('\t\texports.apply = apply;',
-    '\t\texports.__shot = { zh: zh, en: en, CSS: CSS, SettingsSection: SettingsSection, StatusBar: StatusBar };\n'
+    '\t\texports.__shot = { zh: zh, en: en, ja: ja, es: es, fr: fr, de: de, ru: ru, pt: pt, CSS: CSS, SettingsSection: SettingsSection, StatusBar: StatusBar };\n'
     + '\t\texports.apply = apply;');
 
   const store = new Map([[CONFIG_KEY, JSON.stringify(config)]]);
@@ -185,7 +186,7 @@ function page(body, extraCss, pluginCss) {
 /** 语言替身：与插件里的 t() 同语义 */
 function translator(dict, locale) {
   return (key, params) => {
-    const table = locale === 'en' ? dict.en : dict.zh;
+    const table = dict[locale] || dict.zh;
     let out = table[key] !== undefined ? table[key] : key;
     if (params !== undefined && params !== null) {
       out = out.replace(/\{(\w+)\}/g, (m, name) => (name in params ? String(params[name]) : m));
@@ -338,7 +339,7 @@ const SIZES = { settings: '940,1300', pricing: '940,390', status: '1180,230' };
 function shoot(locale, scene) {
   const html = SCENES[scene](locale);
   const name = scene === 'settings' ? 'settings' : (scene === 'pricing' ? 'pricing' : 'statusbar');
-  const file = path.join(OUT, locale === 'en' ? name + '.en.png' : name + '.png');
+  const file = path.join(OUT, locale === 'zh' ? name + '.png' : name + '.' + locale + '.png');
   /* SHOT_HTML_ONLY=1：只把页面写到系统临时目录、不碰浏览器 ——
      给「当前环境起不了子进程（AI 沙箱、缺浏览器）」时用：拿这些页面自己调 chrome 截图。 */
   if (process.env.SHOT_HTML_ONLY === '1') {
@@ -356,7 +357,7 @@ function shoot(locale, scene) {
   const staged = file + '.tmp.png';
   if (fs.existsSync(staged)) fs.unlinkSync(staged);
   const args = [
-    '--headless=new', '--disable-gpu', '--hide-scrollbars', '--force-device-scale-factor=2', '--virtual-time-budget=6000',
+    '--headless=new', '--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--hide-scrollbars', '--force-device-scale-factor=2', '--virtual-time-budget=6000',
     '--default-background-color=00000000',
     '--window-size=' + SIZES[scene],
     '--screenshot=' + staged,
