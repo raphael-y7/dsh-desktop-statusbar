@@ -148,10 +148,11 @@ console.log('版本落后时并入官方价：官方价打底、用户条目优�
 
 /* 2d. v8 补播：老用户 priceVersion=7 升级后自动出现 Claude Fable 5.2；
    已有条目（改过价的 fable 5.1）逐字段不动，已下架旧模型不会被加回。 */
+/* 3.0.4 起 USD 条目入库时显示值折成 CNY（99 × 6.742424 = 667.5），base 保留原始 USD 值。 */
 const V7_FABLE = {
-	tiered: false, currency: 'USD', feeMultiplier: 2,
-	peak: { input: 99, cacheRead: 0.25, cacheWrite: 12.5, output: 50 },
-	offPeak: { input: 99, cacheRead: 0.25, cacheWrite: 12.5, output: 50 },
+	tiered: false, currency: 'CNY', feeMultiplier: 2,
+	peak: { input: 667.5, cacheRead: 1.69, cacheWrite: 84.28, output: 337.12 },
+	offPeak: { input: 667.5, cacheRead: 1.69, cacheWrite: 84.28, output: 337.12 },
 	base: {
 		currency: 'USD',
 		peak: { input: 99, cacheRead: 0.25, cacheWrite: 12.5, output: 50 },
@@ -162,11 +163,12 @@ const v7 = boot({ version: 6, priceVersion: 7, currency: 'CNY', models: { 'claud
 const v7Cfg = v7.loadConfig();
 assert.strictEqual(v7Cfg.priceVersion, api.PRICE_VERSION, '2d) priceVersion 7 升到 8');
 assert.deepStrictEqual(JSON.parse(JSON.stringify(v7Cfg.models['claude-fable-5.2'])), {
-	tiered: false, currency: 'USD',
-	peak: { input: 8, cacheRead: 0.2, cacheWrite: 10, output: 40 },
-	offPeak: { input: 8, cacheRead: 0.2, cacheWrite: 10, output: 40 },
+	/* v8 起官方 USD 源表入价格库时：显示值按实时汇率折成 CNY，基准价保留官网 USD 原值 */
+	tiered: false, currency: 'CNY',
+	peak: { input: 53.94, cacheRead: 1.35, cacheWrite: 67.42, output: 269.7 },
+	offPeak: { input: 53.94, cacheRead: 1.35, cacheWrite: 67.42, output: 269.7 },
 	base: { currency: 'USD', peak: { input: 8, cacheRead: 0.2, cacheWrite: 10, output: 40 }, offPeak: { input: 8, cacheRead: 0.2, cacheWrite: 10, output: 40 } }
-}, '2d) 老用户 priceVersion 7 自动补上 Claude Fable 5.2（官网价 + 基准价）');
+}, '2d) 老用户 priceVersion 7 自动补上 Claude Fable 5.2（官网价折算 CNY + USD 基准价）');
 assert.deepStrictEqual(JSON.parse(JSON.stringify(v7Cfg.models['claude-fable-5.1'])), V7_FABLE,
 	'2d) 已有条目不被覆盖（fable 5.1 的改价 + 倍率 + 基准价保留）');
 assert.strictEqual(v7Cfg.models['GLM-5.2'], undefined, '2d) 已下架的旧模型不会被加回');
@@ -239,7 +241,9 @@ const currencyApi = boot({ version: 6, priceVersion: api.PRICE_VERSION, enabled:
 const costText = (models, calls, display) => currencyApi.segmentView('cost', {
 	sessionUsage: { models: models, calls: calls, current: null, last: null, turn: 1 },
 	sessionModel: { provider: 'test', model: 'model-a' },
-	models: CURRENCY_BOOK, defaultCurrency: 'CNY',
+	/* 生产里 `snap.models` 是 normalizeModels 后的形态（USD 条目已折 CNY + base 锚点）；
+	   这里也必须传归一后的库，否则同一笔 USD 价会被二次折算。 */
+	models: currencyApi.loadConfig().models, defaultCurrency: 'CNY',
 	currency: display, now: Date.now(), turnUsage: null
 }, t).text;
 const CALL_A1M = { at: Date.now(), model: 'model-a', input: 1000000, cacheRead: 0, cacheWrite: 0, output: 0 };

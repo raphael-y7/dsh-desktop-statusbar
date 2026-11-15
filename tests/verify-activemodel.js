@@ -91,6 +91,7 @@ const reactStub = {
 	},
 	useState: (init) => { const slot = hookSlot(init); return [slot.get(), slot.set]; },
 	useEffect: (fn) => { hookSlot(undefined); if (typeof fn === 'function') fn(); },   /* 真的执行，fetch 才会发出去 */
+	useLayoutEffect: () => {},
 	useRef: (init) => hookSlot({ current: init === undefined ? null : init }).get(),
 	useSyncExternalStore: (subscribe, snapshot) => { hookSlot(undefined); return snapshot(); },
 	useCallback: (fn) => { hookSlot(undefined); return fn; },

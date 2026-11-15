@@ -7,7 +7,7 @@ const { pathToFileURL } = require('node:url');
 async function main() {
 	const m = await import(pathToFileURL(path.join(__dirname, '..', 'lib', 'balance-api.js')).href);
 	const ids = m.adapters.map((one) => one.id);
-	assert.deepStrictEqual(ids, ['deepseek', 'openrouter', 'bai', 'siliconflow', 'moonshot', 'zhipu', 'zhipu-quota', 'workbuddy'], '适配器清单（智谱余额优先于配额；WorkBuddy 积分走本机路由，排最后）');
+	assert.deepStrictEqual(ids, ['deepseek', 'openrouter', 'bai', 'siliconflow', 'moonshot', 'xiaomi', 'stepfun', 'xai', 'alibaba', 'minimax', 'zhipu', 'zhipu-quota', 'workbuddy'], '适配器清单（13 家：小米/StepFun/xAI/阿里云 + MiniMax；智谱余额优先于配额；WorkBuddy 积分走本机路由，排最后）');
 	const byId = (id) => m.adapters.filter((one) => one.id === id)[0];
 
 	/* ---------------------------------------------------------- provider 识别 */
@@ -35,18 +35,18 @@ async function main() {
 	assert.deepStrictEqual(m.adaptersFor('openrouter', 'x-ai/grok-4').map((one) => one.id), ['openrouter'], 'OpenRouter 只有一条路');
 	assert.deepStrictEqual(m.adaptersFor('moonshot', 'kimi-k2').map((one) => one.id), ['moonshot'], 'Kimi 只有一条路');
 	assert.deepStrictEqual(m.adaptersFor('workbuddy-ai', 'deepseek-v4.1-flash-sg').map((one) => one.id), ['workbuddy'], 'WorkBuddy 只有一条路');
-	assert.deepStrictEqual(m.adaptersFor('xiaomi', 'MiMo-V2.6-Pro-Ultraspeed'), [], '认不出平台 ⇒ 空链（不硬凑）');
+	assert.deepStrictEqual(m.adaptersFor('xiaomi', 'MiMo-V2.6-Pro-Ultraspeed').map((one) => one.id), ['xiaomi'], '小米 MiMo：官方余额接口只有一条路');
 	assert.deepStrictEqual(m.adaptersFor(undefined, undefined), [], '缺参数 ⇒ 空链');
 	assert.deepStrictEqual(m.adaptersFor('my-gateway', 'deepseek-chat').map((one) => one.id), ['deepseek'], 'provider 认不出时退回模型名，链长仍为 1');
 	assert.strictEqual(m.adapterFor('moonshot', 'kimi-k2').id, 'moonshot', 'Kimi');
 	assert.strictEqual(m.adapterFor('siliconflow', 'Qwen/Qwen3-8B').id, 'siliconflow', '硅基流动');
 	assert.strictEqual(m.adapterFor('b-ai', 'gpt-5').id, 'bai', 'B.AI');
-	/* 没核实过的平台不许乱认：小米只有网页控制台，OpenAI 类没有公开余额端点 */
-	assert.strictEqual(m.adapterFor('xiaomi', 'MiMo-V2.6-Pro-Ultraspeed'), null, '小米不该被认成任何适配器');
+	/* 没核实过的平台不许乱认：OpenAI 类没有公开余额端点 */
+	assert.strictEqual(m.adapterFor('xiaomi', 'MiMo-V2.6-Pro-Ultraspeed').id, 'xiaomi', '小米 MiMo 走官方余额接口');
 	assert.strictEqual(m.adapterFor('openai', 'gpt-5'), null, 'OpenAI 没有余额端点');
 	assert.strictEqual(m.adapterFor('', ''), null, '空线索返回 null');
 	assert.strictEqual(m.adapterFor(undefined, undefined), null, '缺参数返回 null');
-	console.log('识别：8 家命中 / 3 类不该命中 / 适配器识别正常');
+	console.log('识别：13 家命中 / 2 类不该命中 / 适配器识别正常');
 
 	/* ------------------------------------------- provider 优先于模型名（实测坑） */
 	/* 实测 2026-10-07：WorkBuddy AI 会话跑 deepseek-v4.1-flash-sg，模型名里的 "deepseek"

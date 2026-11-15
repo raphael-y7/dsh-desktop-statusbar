@@ -388,7 +388,9 @@ const bookOf = (entry) => ({ x: entry });
 		/* 复现：resolveAdapterKey 里的 `ctx.get('credentials')` 裸在 try 之外，被 queryBalance
 		   调用时也在 try 之外 → handler reject 时既不写响应也不关连接 → 客户端 fetch
 		   **永久 pending**（底栏余额永远停在「查询中」）。这里的 ctx.get 就是直接抛错的替身。 */
-		const balance = await hit('/dsh-desktop-statusbar/api/balance');
+		/* 3.0.5 起：没有 provider、模型也认不出时 queryBalance 早退成 unknown-platform（200），
+		   不再触碰 credentials；要验「handler 整体兜底」必须走一条真的会解析凭证的路径。 */
+		const balance = await hit('/dsh-desktop-statusbar/api/balance?provider=deepseek');
 		assert.notStrictEqual(balance.status, 'TIMEOUT',
 			'凭证服务抛错时不许永久挂起（修复前 handler reject，客户端 fetch 永远 pending）');
 		assert.strictEqual(balance.status, 500, '兜底写 500，实际 ' + balance.status);

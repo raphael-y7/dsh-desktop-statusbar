@@ -190,6 +190,7 @@ const reactStub = {
 	},
 	useState: (init) => { const slot = hookSlot(init); return [slot.get(), slot.set]; },
 	useEffect: (fn, deps) => { hookSlot(undefined); pendingEffects.push({ fn: fn, deps: deps }); },
+	useLayoutEffect: () => {},
 	useRef: (init) => hookSlot({ current: init === undefined ? null : init }).get(),
 	useSyncExternalStore: (subscribe, snapshot) => { hookSlot(undefined); return snapshot(); },
 	useCallback: (fn) => { hookSlot(undefined); return fn; },
@@ -293,13 +294,13 @@ assert.strictEqual(legacyValues.length, 6, '峰谷两档共 6 个输入框，实
 assert.deepStrictEqual(legacyValues, ['', '', '', '', '', ''],
 	'1) 旧数据形态（四格全是数字 0、没有 null）：点「修改」要整栏空白，实际 ' + JSON.stringify(legacyValues));
 
-assert.deepStrictEqual(numberValues(openCard('only-output')), ['', '', '5'],
+assert.deepStrictEqual(numberValues(openCard('only-output')), ['', '', '5.00'],
 	'2) 只填了 output=5：只有它显示 5，其余格是空白（不是 0）');
 
-assert.deepStrictEqual(numberValues(openCard('zero-real')), ['', '0', ''],
+assert.deepStrictEqual(numberValues(openCard('zero-real')), ['', '0.00', ''],
 	'3) 明确填了 0（其余是 null）：0 要照实显示出来');
 
-assert.deepStrictEqual(numberValues(openCard('paid-real')), ['0.04', '2', '8'],
+assert.deepStrictEqual(numberValues(openCard('paid-real')), ['0.04', '2.00', '8.00'],
 	'4) 有价的条目仍照实回填（回归：新逻辑不能把已有价格藏起来）');
 console.log('1/2/3/4 旧数据全 0=整栏空白 · 只填一格=其余空白 · 填了 0=显示 0 · 有价=回填真实值');
 
@@ -322,13 +323,13 @@ assert.strictEqual(partial.peak.input, null, '没填的格子要存成 null（�
 assert.strictEqual(partial.peak.cacheWrite, null, '没填的格子要存成 null（不是 0）');
 assert.deepStrictEqual(partial.offPeak, { input: null, cacheRead: null, cacheWrite: null, output: null },
 	'用户没碰过的那一档整档都是 null');
-assert.deepStrictEqual(numberValues(openCard('partial')), ['', '', '5'],
+assert.deepStrictEqual(numberValues(openCard('partial')), ['', '', '5.00'],
 	'5) 再点「修改」：只显示填过的那个 5，其余空白');
 console.log('5 只填一格保存：未填格存成 null、再打开只显示填过的那格');
 
 /* -------------------------------------------- 6：全清空保存 → 条目保留、价格留空 */
 const cleared = openCard('clear-me');
-assert.deepStrictEqual(numberValues(cleared), ['', '3', ''],
+assert.deepStrictEqual(numberValues(cleared), ['', '3.00', ''],
 	'前置：clear-me 只填过 input=3，其余空白');
 fieldsOf(cardByKey(cleared, 'clear-me'))[1].props.onChange({ target: { value: '' } });
 tree = renderSettings();
@@ -543,7 +544,7 @@ console.log('12 自动滚动：打开编辑区滚一次 · 依赖没变不重滚
 	assert.deepStrictEqual(collectByClass(tieredCard, 'dsb-tier-name').map(textOf), ['空闲时段', '高峰时段'],
 		'勾上后两档都带档位名，且不再有「全时段」');
 	assert.deepStrictEqual(numberValues(tierRows[0]), ['7', '7', '7'], '勾上：单档填过的 7 搬到低谷行（不再清空）');
-	assert.deepStrictEqual(numberValues(tierRows[1]), ['14', '14', '14'], '勾上：高峰按低谷 ×2 自动带出');
+	assert.deepStrictEqual(numberValues(tierRows[1]), ['14.00', '14.00', '14.00'], '勾上：高峰按低谷 ×2 自动带出');
 	/* 取消：低谷行的值搬回单档行（计价读 peak 单档行），价格回到原值 */
 	findInput(collectByClass(tieredCard, 'dsb-inline-check')[0], 'checkbox').props.onChange({ target: { checked: false } });
 	const backCard = cardByKey(renderSettings(), 'paid-real');

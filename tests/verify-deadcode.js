@@ -107,6 +107,12 @@ const cssStart = client.indexOf('\t\tconst CSS = [');
 const cssEnd = client.indexOf('].join("");', cssStart);
 const css = client.slice(cssStart, cssEnd);
 const jsx = client.slice(0, cssStart) + client.slice(cssEnd);
+/* 先剥注释再扫字符串字面量：注释里的中英文引号（don't / 「」旁边的 ' 等）会让
+   “任意两个引号之间”的朴素配对跨越几十行，把真正的字面量整段吞掉 —— 实测会
+   把 149 个 CSS 类全判成死代码。 */
+const jsxCode = jsx
+	.replace(/\/\*[\s\S]*?\*\//g, '')
+	.replace(/(^|[^:'"\\])\/\/[^\n]*/g, '$1');
 const classes = new Set();
 /* 字符集带上 `_`：现有 110 个类全是 [a-z0-9-]，加 `_` 不改变任何一个结果；
    但漏掉 `_` 时，`dsb-foo_bar` 这种类会在**取用侧与样式侧同时被静默丢弃**——
@@ -129,14 +135,16 @@ const used = new Set();
    这一处）：它本身不是类名，但把 `dsb-heat-` 打头的类标成"已用"是正确推断
    （后缀由代码算出，静态看不见；前缀有字面量即视为已用）。 */
 const dynamicPrefixes = new Set();
-const literalRe = /["'`]([^"'`]*)["'`]/g;
-while ((hit = literalRe.exec(jsx)) !== null) {
-	hit[1].split(/[\s+]/).forEach((part) => {
-		if (part.indexOf('dsb-') !== 0) return;
-		if (/^dsb-[A-Za-z0-9_-]+$/.test(part) !== true) return;
-		if (part.slice(-1) === '-') dynamicPrefixes.add(part);
-		else used.add(part);
-	});
+/* 扫非 CSS 代码里的全部 dsb-* token（注释已先剥掉）：类名可能出现在双引号、
+   单引号、模板串、三元、拼接里，逐个引号配对去猜太脆（注释里的引号会把配对带偏）。
+   token 级扫描不关心外层写法，只要代码里出现过这个类名就算被用。 */
+/* 前面必须是边界：排除 CSS 变量名（--dsb-fade-l）与属性名（data-dsb-nav）里的同名子串。 */
+const tokenRe = /(^|[^A-Za-z0-9_-])(dsb-[A-Za-z0-9_-]+)/g;
+let tokenHit = null;
+while ((tokenHit = tokenRe.exec(jsxCode)) !== null) {
+	const part = tokenHit[2];
+	if (part.slice(-1) === '-') dynamicPrefixes.add(part);
+	else used.add(part);
 }
 const unusedCss = Array.from(classes).filter((name) => {
 	if (used.has(name)) return false;

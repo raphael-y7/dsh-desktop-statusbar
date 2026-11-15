@@ -24,14 +24,12 @@ function prepare(dir, names) {
 	fs.rmSync(dir, { recursive: true, force: true });
 	fs.mkdirSync(dir, { recursive: true });
 	fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ type: 'module' }), 'utf8');
-	/* 复制 lib 下的**全部**文件，而不是列一份固定清单：index.js 的相对导入会随功能
-	   增删（例如自更新用到的 self-update.js / release-age.js）。写死清单时，新加的
-	   兄弟文件不会被带上，测试就会以 ERR_MODULE_NOT_FOUND 失败，且报错信息看不出
-	   是工具没同步 —— 这条曾经真的踩到过。 */
-	for (const entry of fs.readdirSync(LIB, { withFileTypes: true })) {
-		if (entry.isFile() !== true || entry.name.endsWith('.js') !== true) continue;
-		fs.copyFileSync(path.join(LIB, entry.name), path.join(dir, entry.name));
-	}
+	/* 复制 lib 下的**全部**文件（含 vendor 等所有子目录），而不是列一份固定清单：
+	   index.js 的相对导入会随功能增删（self-update.js / release-age.js），
+	   并且还依赖 `./vendor/zod/index.js` 这类第三方包。只复制顶层 .js 时，
+	   vendor 下的文件不会被带上，测试就会以 ERR_MODULE_NOT_FOUND 失败，
+	   且报错信息看不出是测试工具没同步 —— 这条曾经真的踩到过。 */
+	fs.cpSync(LIB, dir, { recursive: true });
 	let code = fs.readFileSync(path.join(LIB, 'index.js'), 'utf8');
 	code += '\nexport { ' + names.join(', ') + ' };\n';
 	const target = path.join(dir, 'index.js');

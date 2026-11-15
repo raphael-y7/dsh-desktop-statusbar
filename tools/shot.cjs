@@ -170,6 +170,7 @@ function toHtml(node) {
   return open + (node.children || []).map(toHtml).join('') + '</' + node.type + '>';
 }
 
+const OPEN_SCRIPT = '<' + 'script>window.addEventListener("load",function(){try{document.querySelectorAll("details").forEach(function(d){var s=d.querySelector("summary");if(s&&s.textContent&&s.textContent.indexOf("DeepSeek")>=0){d.open=true;}});}catch(e){}});<' + '/script>';
 function page(body, extraCss, pluginCss) {
   return '<!doctype html><html lang="zh"><head><meta charset="utf-8"><style>'
     + THEME
@@ -178,7 +179,7 @@ function page(body, extraCss, pluginCss) {
     + '.shot-wrap{width:100%;padding:26px 30px}'
     + pluginCss
     + extraCss
-    + '</style></head><body>' + body + '</body></html>';
+    + '</style></head><body>' + body + OPEN_SCRIPT + '</body></html>';
 }
 
 /** 语言替身：与插件里的 t() 同语义 */
@@ -219,7 +220,7 @@ function settingsShot(locale) {
   const t = translator(loaded.shot, locale);
   const tree = loaded.shot.SettingsSection({
     t: t,
-    useProjection: (name) => (name === 'desktopStatusbarModel' ? { model: 'deepseek-v4-pro' } : undefined)
+    useProjection: (name) => (name === 'desktopStatusbarModel' ? { model: 'deepseek-flash' } : undefined)
   });
   return page('<div class="shot-wrap">' + toHtml(tree) + '</div>', '', loaded.shot.CSS);
 }
@@ -230,9 +231,9 @@ function pricingShot(locale) {
      0 drag / 1 newModel / 2 hostModel / 3 editing / 4 draft /
      5 catalogNotice / 6 platformModelOpen / 7 currencyOpen /
      8 platformEditing / 9 platformDraft / 10 platformNotice / 11 newPlatform /
-     12 platformPopUp / 13 platformMenuSpec。
+     12 platformPopUp。
      开发模式状态来自模块级快照；重复添加 / 倍率校验失败的提示由 catalogNotice 管理；
-     8-13 是「第三方平台」区块（平台编辑 / 草稿 / 校验提示 / 新平台名输入 / 编辑气泡方向 / 模型下拉定位）。
+     8-12 是「第三方平台」区块（平台编辑 / 草稿 / 校验提示 / 新平台名输入 / 编辑气泡方向）。
      pricingShot 的 presets 固定为 editing=3、draft=4、currencyOpen=7。
      币种下拉必须收在 presets[7]（currencyOpen），否则展开会压住右边那列输入框。
      历史上的坑：hook 顺序变化时截图 presets 未同步，会造成编辑区不展开或草稿注入错误状态。
@@ -260,7 +261,7 @@ function pricingShot(locale) {
   const t = translator(loaded.shot, locale);
   const tree = loaded.shot.SettingsSection({
     t: t,
-    useProjection: (name) => (name === 'desktopStatusbarModel' ? { model: 'deepseek-v4-pro' } : undefined)
+    useProjection: (name) => (name === 'desktopStatusbarModel' ? { model: 'deepseek-flash' } : undefined)
   });
   /* 只留第三块（价格区）：head 与统计字段在前两块，按钮区在后 */
   const extra = '.dsb-settings > *:nth-child(-n+2){display:none}'
@@ -332,7 +333,7 @@ function statusbarShot(locale) {
 const SCENES = { settings: settingsShot, pricing: pricingShot, status: statusbarShot };
 /* 窗口高度按内容量出来的（上下留白对齐到页面自己的 30px 内边距）：
    settings 内容底 1050、pricing 内容底 315.5。改了场景内容要重量一遍再调这里。 */
-const SIZES = { settings: '940,1082', pricing: '940,346', status: '1180,230' };
+const SIZES = { settings: '940,1300', pricing: '940,390', status: '1180,230' };
 
 function shoot(locale, scene) {
   const html = SCENES[scene](locale);
@@ -355,7 +356,7 @@ function shoot(locale, scene) {
   const staged = file + '.tmp.png';
   if (fs.existsSync(staged)) fs.unlinkSync(staged);
   const args = [
-    '--headless=new', '--disable-gpu', '--hide-scrollbars', '--force-device-scale-factor=2',
+    '--headless=new', '--disable-gpu', '--hide-scrollbars', '--force-device-scale-factor=2', '--virtual-time-budget=6000',
     '--default-background-color=00000000',
     '--window-size=' + SIZES[scene],
     '--screenshot=' + staged,

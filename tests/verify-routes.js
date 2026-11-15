@@ -146,6 +146,66 @@ globalThis.setInterval = () => 0;
 	assert.strictEqual(devModeRoute.thrown, null, '未知路径不得抛错');
 	console.log('开发模式探测路由已删除（404）OK');
 
+	/* 10. 余额供应商配置探测：只回变量名与 configured 布尔，绝不回变量值 */
+	const BALANCE_ENV_NAMES = [
+		'XAI_TEAM_ID', 'XAI_MANAGEMENT_API_KEY',
+		'ALIBABA_CLOUD_ACCESS_KEY_ID', 'ALIBABA_CLOUD_ACCESS_KEY_SECRET'
+	];
+	const savedBalanceEnv = {};
+	for (const name of BALANCE_ENV_NAMES) {
+		savedBalanceEnv[name] = process.env[name];
+		delete process.env[name];
+	}
+	try {
+		const unset = await hit('/dsh-desktop-statusbar/api/balance-provider-setup');
+		assert.strictEqual(unset.thrown, null, 'balance-provider-setup route must not throw');
+		assert.strictEqual(unset.status, 200, 'balance-provider-setup status 200');
+		const unsetBody = JSON.parse(unset.body);
+		assert.strictEqual(unsetBody.ok, true, 'balance-provider-setup ok flag');
+		assert.deepStrictEqual(unsetBody.providers.xai.required, ['XAI_TEAM_ID', 'XAI_MANAGEMENT_API_KEY'], 'xai required env names');
+		assert.deepStrictEqual(unsetBody.providers.alibaba.required, ['ALIBABA_CLOUD_ACCESS_KEY_ID', 'ALIBABA_CLOUD_ACCESS_KEY_SECRET'], 'alibaba required env names');
+		assert.strictEqual(unsetBody.providers.xai.configured, false, 'xai unset → configured=false');
+		assert.strictEqual(unsetBody.providers.alibaba.configured, false, 'alibaba unset → configured=false');
+
+		/* 只配一半（xai 只给 TEAM_ID、阿里云只给 ID）也必须算未配置 */
+		process.env.XAI_TEAM_ID = 'fake-xai-team-id';
+		process.env.ALIBABA_CLOUD_ACCESS_KEY_ID = 'fake-alibaba-access-key-id';
+		const partial = await hit('/dsh-desktop-statusbar/api/balance-provider-setup');
+		const partialBody = JSON.parse(partial.body);
+		assert.strictEqual(partialBody.providers.xai.configured, false, 'xai 只有 TEAM_ID 时 configured=false');
+		assert.strictEqual(partialBody.providers.alibaba.configured, false, 'alibaba 只有 ID 时 configured=false');
+
+		const fakeXaiKey = 'fake-xai-management-api-key';
+		const fakeAliSecret = 'fake-alibaba-cloud-access-key-secret';
+		process.env.XAI_MANAGEMENT_API_KEY = fakeXaiKey;
+		process.env.ALIBABA_CLOUD_ACCESS_KEY_SECRET = fakeAliSecret;
+		const set = await hit('/dsh-desktop-statusbar/api/balance-provider-setup');
+		assert.strictEqual(set.thrown, null, 'balance-provider-setup route must not throw after set');
+		assert.strictEqual(set.status, 200, 'balance-provider-setup status 200 after set');
+		const setBody = JSON.parse(set.body);
+		assert.strictEqual(setBody.providers.xai.configured, true, 'xai set → configured=true');
+		assert.strictEqual(setBody.providers.alibaba.configured, true, 'alibaba set → configured=true');
+		for (const fakeValue of ['fake-xai-team-id', fakeXaiKey, 'fake-alibaba-access-key-id', fakeAliSecret]) {
+			assert.strictEqual(set.body.includes(fakeValue), false, '响应不得出现环境变量值: ' + fakeValue);
+		}
+		console.log('余额供应商配置接口 OK: 未设置 false / 设置后 true / 不回传变量值');
+
+		/* 11. 只读接口方法守卫：非 GET 一律 405，且不泄露配置结构 */
+		const setupPost = await hit('/dsh-desktop-statusbar/api/balance-provider-setup', { method: 'POST', body: '{}' });
+		assert.strictEqual(setupPost.thrown, null, 'balance-provider-setup POST must not throw');
+		assert.strictEqual(setupPost.status, 405, 'balance-provider-setup 非 GET 返回 405');
+		const setupPostBody = JSON.parse(setupPost.body);
+		assert.strictEqual(setupPostBody.ok, false, '405 响应 ok=false');
+		assert.strictEqual(setupPostBody.reason, 'method-not-allowed', '405 响应 reason');
+		assert.strictEqual(setupPost.body.includes('providers'), false, '405 不返回 providers 结构');
+		console.log('余额供应商配置接口非 GET → 405（不返回配置内容）');
+	} finally {
+		for (const name of BALANCE_ENV_NAMES) {
+			if (savedBalanceEnv[name] === undefined) delete process.env[name];
+			else process.env[name] = savedBalanceEnv[name];
+		}
+	}
+
 	console.log('\nHOST ROUTE CHECKS PASSED');
 })().finally(() => {
 	try { fs.rmSync(TEMP_HOME, { recursive: true, force: true }); } catch (error) { /* best effort */ }

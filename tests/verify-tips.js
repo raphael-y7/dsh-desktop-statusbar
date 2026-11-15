@@ -212,7 +212,7 @@ const countsTip = api.segmentView('counts', src, t).tip;
 assert.strictEqual(countsTip.title, '会话数据', '气泡标题用 tipCountsTitle（字段名仍是「轮次＆步数」）');
 assert.strictEqual(countsTip.head, undefined, '标题右侧不跟数值');
 assert.deepStrictEqual(labels(countsTip.rows), ['上下文压缩', '技能注入', '工具调用'], '轮次气泡三行：上下文压缩 → 技能注入 → 工具调用');
-assert.deepStrictEqual(values(countsTip.rows), ['2', '4', '1,338'], '三行都只给数字、不带单位；技能注入按每次注入计数（3 条技能注入 + AGENTS.md）');
+assert.deepStrictEqual(values(countsTip.rows), ['2', '3', '1,338'], '三行都只给数字、不带单位；技能注入按去重后的技能个数（ponytail、my-dow-theory 共 2 个 + AGENTS.md = 3）');
 assert.deepStrictEqual(Array.from(countsTip.rows, (row) => row.sub.title), ['上下文压缩', '技能注入', '工具调用'], '三行各自带一个下钻子视图，标题就是这一行的名字');
 assert.strictEqual(countsTip.rows[1].list, undefined, '技能注入那行不再带 list（悬停二次气泡已去掉）');
 console.log('轮次气泡:', countsTip.rows.map((r) => r.label + ' ' + r.value).join(' / '));
@@ -448,6 +448,9 @@ console.log('工具调用：中文名 / 长度优先 / 同长度次数降序 / �
 const countsWith = (progress) => api.segmentView('counts', Object.assign({}, src, { progress: progress }), t).tip.rows;
 assert.deepStrictEqual(values(countsWith({ turn: 3, turnSteps: 4, toolCalls: 10, compactCount: 0, compactTurn: null, compactStep: null })),
 	['0', '-', '10'], '没压缩过：上下文压缩显示 0（那行不可点）；host 没给 skills 时技能注入给横杠');
+/* host 明确上报空 skills（不是缺字段）：技能注入显示 0，不能退化成横杠 */
+const emptySkills = countsWith({ turn: 3, turnSteps: 4, toolCalls: 10, skills: [], globalInstruction: null, toolCounts: {}, compactCount: 0, compactTurn: null, compactStep: null, compacts: [] });
+assert.strictEqual(emptySkills[1].value, '0', 'skills=[] 且无全局提示词 ⇒ 技能注入显示 0（不是横杠）');
 assert.deepStrictEqual(values(countsWith(undefined)), ['-', '-', '-'], 'host 没上报：三行横杠');
 /* 0 与「没数据」都不给子视图：点开没东西看，那行连可点样式都不该有 */
 assert.deepStrictEqual(Array.from(countsWith(undefined), (row) => String(row.sub)), ['null', 'null', 'null'], 'host 没上报时三行都不可点');
@@ -463,13 +466,13 @@ const noPrompt = countsWith({ turn: 3, turnSteps: 4, toolCalls: 10, skills: [{ n
 assert.strictEqual(noPrompt[1].value, '1', '没有全局提示词时技能注入只数技能');
 assert.deepStrictEqual(Array.from(noPrompt[1].sub.rows, (row) => plainLabel(row.label)), ['ponytail'], '没有全局提示词时子视图不出现 AGENTS.md');
 /* 技能有两种来源（skill 工具调用 + 斜杠命令 /i-have-adhd 这类）：host 那边已经并进同一个 skills 数组，
-   这里按名字合并；重复注入同一技能只留一行，计数按注入次数（与工具调用口径一致） */
+   这里按名字合并；重复注入同一技能只留一行，计数按去重后的技能个数（与子视图列表一致） */
 const mixedSkills = countsWith({ turn: 1, turnSteps: 1, toolCalls: 3, skills: [
 	{ name: 'i-have-adhd', manual: false },
 	{ name: 'ponytail', manual: true },
 	{ name: 'i-have-adhd', manual: false }
 ], globalInstruction: null, toolCounts: {}, compactCount: 0, compactTurn: null, compactStep: null, compacts: [] });
-assert.strictEqual(mixedSkills[1].value, '3', '斜杠命令注入的技能与工具调用注入的技能并进同一行计数');
+assert.strictEqual(mixedSkills[1].value, '2', '技能注入按去重后的技能个数计（同名合并后 2 个）');
 assert.deepStrictEqual(Array.from(mixedSkills[1].sub.rows, (row) => plainLabel(row.label)), ['ponytail*', 'i-have-adhd'],
 	'同名合并；名字短的在前面；手动调用的 ponytail 星号在名字后');
 assert.deepStrictEqual(Array.from(mixedSkills[1].sub.rows, (row) => row.value), [undefined, undefined], '合并后仍只显示名字，不显示次数');
@@ -520,7 +523,7 @@ const balanceTip = api.segmentView('balance', src, t).tip;
 assert.strictEqual(balanceTip.title, '余额', '余额气泡标题');
 assert.strictEqual(balanceTip.head, undefined, '余额气泡标题右侧不再跟数值');
 assert.deepStrictEqual(labels(balanceTip.rows), ['充值余额', '赠金余额'], '余额气泡两行：先充值后赠金');
-assert.deepStrictEqual(values(balanceTip.rows), ['¥0.00', '¥0.00'], '接口没给这两个字段时按 0.00 显示');
+assert.deepStrictEqual(values(balanceTip.rows), ['¥12.34', '¥0.00'], '接口没给拆分字段时第一行用总额兜底（无拆分来源的既有行为），赠金 0.00');
 const gifted = api.segmentView('balance', Object.assign({}, src, {
 	balance: { ok: true, total: '12.34', toppedUp: '10.00', granted: '2.34', currency: 'CNY' }
 }), t).tip;
@@ -680,7 +683,7 @@ console.log('本轮回退:', fallbackTip.text);
 
 /* 会话与本轮都没有用量时，本轮显示 ¥0.00（不整段消失，底栏长度稳定），令牌面板不弹 */
 const noUsage = api.segmentView('lastCost', Object.assign({}, src, { sessionUsage: null, turnUsage: null }), t);
-assert.strictEqual(noUsage.text, '本轮 ¥-', '没有用量时本轮给 0.00，实际 ' + (noUsage === null ? 'null' : noUsage.text));
+assert.strictEqual(noUsage.text, '本轮 -', '没有用量时本轮给 0.00，实际 ' + (noUsage === null ? 'null' : noUsage.text));
 /* 没有用量时也给面板（三行横杠），保证任何情况下都点得开 */
 assert.strictEqual(noUsage.tip === null, false, 'no-usage turn still gets a panel');
 assert.strictEqual(noUsage.tip.panel.totalText, '-', 'no-usage panel total is a dash');
@@ -706,11 +709,11 @@ assert.strictEqual(tinyBucket.text, hugeBucket.text, '归零值不读折叠出�
 const firstTurn = api.segmentView('lastCost', Object.assign({}, startingSrc, {
 	sessionUsage: { models: {}, calls: [], current: null, last: null, turn: 1 }
 }), t);
-assert.strictEqual(firstTurn.text, '本轮 ¥-', '第一轮还没有任何已完成调用时给横杠，实际 ' + firstTurn.text);
+assert.strictEqual(firstTurn.text, '本轮 -', '第一轮还没有任何已完成调用时给横杠，实际 ' + firstTurn.text);
 const idleTurn = api.segmentView('lastCost', Object.assign({}, startingSrc, {
 	running: false, runningCalls: [], partial: null
 }), t);
-assert.notStrictEqual(idleTurn.text, '本轮 ¥-', '空闲时仍显示最近一轮的费用，实际 ' + idleTurn.text);
+assert.notStrictEqual(idleTurn.text, '本轮 -', '空闲时仍显示最近一轮的费用，实际 ' + idleTurn.text);
 console.log('新一轮归零:', freshTurn.text, '| 第一轮:', firstTurn.text, '| 空闲时:', idleTurn.text);
 
 /* 回归：节点折叠拿到的轮号对不上 host 的当前轮（当前轮还没产出节点）→ 绝不能拿那份用量算钱。
@@ -719,7 +722,7 @@ const staleTurn = Object.assign({}, startingSrc, { turnUsageTurn: 6, currentTurn
 assert.strictEqual(api.segmentView('lastCost', staleTurn, t).text, freshTurn.text, '折叠轮号对不上当前轮时不能显示那份用量');
 const sameTurnSrc = Object.assign({}, startingSrc, { turnUsageTurn: 8, currentTurn: 8 });
 const sameTurnView = api.segmentView('lastCost', sameTurnSrc, t);
-assert.notStrictEqual(sameTurnView.text, '本轮 ¥-', '轮号一致时显示本轮进行中的用量，实际 ' + sameTurnView.text);
+assert.notStrictEqual(sameTurnView.text, '本轮 -', '轮号一致时显示本轮进行中的用量，实际 ' + sameTurnView.text);
 assert.strictEqual(sameTurnView.tip === null, false, '折叠出来的用量只用于算钱，不给 token 明细（口径与官方投影不同）');
 console.log('轮号对账:', api.segmentView('lastCost', staleTurn, t).text, '/', sameTurnView.text);
 

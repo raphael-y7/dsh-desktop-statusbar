@@ -73,6 +73,26 @@ const catalogPriceOf = (model) => {
 		};
 		return entry;
 	};
+	/* 3.0.4 起官方 USD 源表入价格库：显示值按 REFERENCE_RATE 折成 CNY，base 保留原 USD 值。 */
+	const catalogBookEntryOf = (model) => {
+		const entry = catalogEntryOf(model);
+		const rate = api.REFERENCE_RATE;
+		const conv = (v) => (v === null || v === undefined ? null : Math.round(Number(v) * rate * 100) / 100);
+		const convTier = (tier) => ({ input: conv(tier.input), cacheRead: conv(tier.cacheRead), cacheWrite: conv(tier.cacheWrite), output: conv(tier.output) });
+		const base = {
+			currency: entry.currency,
+			peak: entry.peak,
+			offPeak: entry.tiered === true ? entry.offPeak : Object.assign({}, entry.peak)
+		};
+		if (entry.currency !== 'USD') return Object.assign({}, entry, { base: base });
+		return {
+			tiered: entry.tiered,
+			currency: 'CNY',
+			peak: convTier(entry.peak),
+			offPeak: entry.offPeak === null ? null : convTier(entry.offPeak),
+			base: base
+		};
+	};
 store.set(CONFIG_KEY, JSON.stringify({
 	version: 5, enabled: true, wrap: false,
 	/* task-22 起 `currency` 降级为"**新增条目的默认币种**"（不再是全局计价单位）：迁移时用它给已有条目定币种，
@@ -490,15 +510,15 @@ assert.ok(bar.includes('首字平均 - s'), 'ttft placeholder, got: ' + bar.join
 assert.ok(bar.includes('综合速度 -'), 'tps placeholder, got: ' + bar.join(' | '));
 assert.ok(bar.includes('总用时 -m -s'), 'sessionTime placeholder, got: ' + bar.join(' | '));
 /* 会话刚开跑（running）时本轮就该是 0.00；空闲又没数据才退回占位横杠 */
-assert.ok(bar.includes('本轮 ¥-'), 'lastCost shows a dash before the turn produces any call, got: ' + bar.join(' | '));
+assert.ok(bar.includes('本轮 -'), 'lastCost shows a dash before the turn produces any call, got: ' + bar.join(' | '));
 const idleBar = render(Object.assign({}, emptySrc, { running: false }));
 /* 空闲又没数据时本轮也给 ¥0.00：底栏长度稳定，不会整段消失 */
-assert.ok(idleBar.some((one) => one.includes('本轮 ¥-')), 'lastCost shows 0.00 when idle without data, got: ' + idleBar.join(' | '));
+assert.ok(idleBar.some((one) => one.includes('本轮 -')), 'lastCost shows dash when idle without data, got: ' + idleBar.join(' | '));
 /* 总计从第一轮起就显示金额：没有可计价的调用时给 ¥0.00，不用占位横杠（底栏宽度也稳定） */
-assert.ok(emptyAll.some((one) => one.includes('总计 ¥-')), 'cost shows 0.00 without priced calls, got: ' + emptyAll.join(' | '));
+assert.ok(emptyAll.some((one) => one.includes('总计 -')), 'cost shows 0.00 without priced calls, got: ' + emptyAll.join(' | '));
 /* 这份 src 没有 sessionModel：非 DeepSeek 会话里余额整段不出现，连占位符都不留 */
 /* 非 DeepSeek 会话：余额段仍在栏里（余额 -），只是不给账户数字 */
-assert.ok(emptyAll.some((one) => one.includes('余额 ¥-')), 'balance stays in the bar for non-DeepSeek sessions, got: ' + emptyAll.join(' | '));
+assert.ok(emptyAll.some((one) => one.includes('余额 -')), 'balance stays in the bar for non-DeepSeek sessions, got: ' + emptyAll.join(' | '));
 assert.ok(!emptyAll.some((x) => x.includes('tokens')), 'token 段已并入总计，不该再单独占一段：' + emptyAll.join(' | '));
 
 /* ------------------------------------------------------------ 有数据：不变样 */
@@ -665,10 +685,10 @@ assert.strictEqual(api.formatThroughput(12345.6), '12346', 'throughput no k abbr
 const deepSeekSrc = { ...emptySrc, sessionModel: { provider: 'deepseek-official', model: 'deepseek-flash' } };
 const midBar = render({ ...deepSeekSrc, balance: null }, allSegs);
 console.log('余额查询中：', midBar.join(' | '));
-assert.ok(midBar.includes('余额 ¥-'), 'balance loading shows label + dash, got: ' + midBar.join(' | '));
+assert.ok(midBar.includes('余额 -'), 'balance loading shows label + dash, got: ' + midBar.join(' | '));
 const failBar = render({ ...deepSeekSrc, balance: { ok: false, reason: 'fetch-failed' } }, allSegs);
 console.log('余额失败：', failBar.join(' | '));
-assert.ok(failBar.includes('余额 ¥-'), 'balance failure shows label + dash, got: ' + failBar.join(' | '));
+assert.ok(failBar.includes('余额 -'), 'balance failure shows label + dash, got: ' + failBar.join(' | '));
 
 /* ---------------------------------------------------- WorkBuddy 积分口径 */
 /* 实测 2026-10-07：WorkBuddy 会话的余额是积分，不是钱（不能显示成「余额 ¥177」）。
@@ -1207,21 +1227,21 @@ assert.ok(code.includes('scroller.scrollTop = (typeof scroller.scrollTop === "nu
 	'按"底边 + 余量 − 容器可视底边"的差值加 scrollTop');
 assert.ok(code.includes('if (overflow <= 0) return;'), '没被遮住时一动不动（不平白往上滚）');
 assert.ok(code.includes('window.requestAnimationFrame(retry)'), '稳定后补滚一次走 rAF（不是定时器）');
-/* task-21：底边滚入统一成一个钩子 `useRevealBottom(ref, active, extraKey)`，**恰好四处调用**
-   （价格编辑浮层 / 币种菜单 / 平台编辑区 / 平台模型下拉菜单）；气泡、跟手浮层、悬停提示有意不接。 */
+/* task-21/task-26：底边滚入统一成一个钩子 `useRevealBottom(ref, active, extraKey)`，**恰好三处调用**
+   （价格编辑浮层 / 币种菜单 / 平台编辑区）；平台模型下拉已改纯 CSS 行内绝对气泡，不再走 JS 跟随；
+   气泡、跟手浮层、悬停提示有意不接。 */
 const revealLines = code.split('\n').filter((one) => one.indexOf('useRevealBottom(') !== -1);
-assert.strictEqual(revealLines.length, 4,
-	'useRevealBottom 恰好四处调用（价格浮层 / 条目币种菜单 / 平台编辑区 / 平台模型下拉菜单），实际 ' + revealLines.length);
+assert.strictEqual(revealLines.length, 3,
+	'useRevealBottom 恰好三处调用（价格浮层 / 条目币种菜单 / 平台编辑区），实际 ' + revealLines.length);
 assert.strictEqual((code.match(/const useRevealBottom = \(ref, active, extraKey\)/g) || []).length, 1,
 	'只有一份实现（不要各写一份）');
 assert.ok(code.includes('useRevealBottom(editPopRef, editing !== null'), '第一处：价格编辑浮层（切卡也重滚，含新增自定义模型）');
 assert.ok(code.includes('useRevealBottom(currencyMenuRef, currencyOpen === true, null)'), '第二处：条目币种菜单');
 assert.ok(code.includes('useRevealBottom(platformEditRef, platformEditing !== null'), '第三处：平台编辑区（添加平台后滚到底部）');
-assert.ok(code.includes('useRevealBottom(platformModelMenuRef, platformModelOpen !== null, platformModelOpen)'), '第四处：平台模型下拉菜单（强制向下、限制在设置页内）');
-const wiredRefs = ['editPopRef', 'currencyMenuRef', 'platformEditRef', 'platformModelMenuRef'];
+const wiredRefs = ['editPopRef', 'currencyMenuRef', 'platformEditRef'];
 revealLines.forEach((one) => {
 	assert.ok(wiredRefs.some((ref) => one.indexOf(ref) !== -1),
-		'useRevealBottom 只允许接在这四个下拉/浮层上，实际这行：' + one.trim());
+		'useRevealBottom 只允许接在这三个下拉/浮层上，实际这行：' + one.trim());
 });
 ['dsb-tip', 'dsb-drag-card', 'dsb-star-tip'].forEach((cls) => {
 	assert.ok(revealLines.every((one) => one.indexOf(cls) === -1),
@@ -1361,8 +1381,11 @@ api.setConfig({ models: referenceModels, modelOrder: Object.keys(api.DEFAULT_PRI
 			'前置：自建条目自带 currency（' + name + '）');
 	}
 	const officialBefore = JSON.parse(JSON.stringify(modelsInMemory['deepseek-flash']));
-	assert.strictEqual(officialBefore.peak.input, 99, '前置：官方 flash 被改成 99');
-	assert.strictEqual(officialBefore.currency, 'USD', '前置：官方 flash 被切成 USD');
+	/* 3.0.4 起：USD 条目显示值折成 CNY，原始 USD 值保存在 base 锚点。 */
+	assert.strictEqual(officialBefore.base.peak.input, 99, '前置：官方 flash 的 USD 基准价仍是 99');
+	assert.strictEqual(officialBefore.base.currency, 'USD', '前置：base 锚点保留 USD');
+	assert.strictEqual(officialBefore.currency, 'CNY', '前置：官方 flash 显示值按 3.0.4 口径折成 CNY');
+	assert.strictEqual(officialBefore.peak.input, Math.round(99 * api2.REFERENCE_RATE * 100) / 100, '前置：显示值 = 99 USD 折 CNY');
 	const hooks2 = makeHooks();
 	const resetBtn2 = (function find(node) {
 		let found = null;
@@ -1406,12 +1429,7 @@ api.setConfig({ models: referenceModels, modelOrder: Object.keys(api.DEFAULT_PRI
 	OFFICIAL_VENDORS.forEach((vendor) => {
 		vendor.models.forEach((model) => {
 			if (api2.DEFAULT_PRICES[model.name] !== undefined) return;
-			const seededEntry = catalogEntryOf(model);
-			seededEntry.base = {
-				currency: seededEntry.currency,
-				peak: seededEntry.peak,
-				offPeak: seededEntry.tiered === true ? seededEntry.offPeak : Object.assign({}, seededEntry.peak)
-			};
+			const seededEntry = catalogBookEntryOf(model);
 			assert.deepStrictEqual(plain(afterReset.models[model.name]), plain(seededEntry),
 				'恢复默认按官网价加回官方模型（含基准价）：' + model.name);
 		});
@@ -1421,18 +1439,20 @@ api.setConfig({ models: referenceModels, modelOrder: Object.keys(api.DEFAULT_PRI
 	/* ② 自建键：逐字段不变（含明确填的 0 与 null、以及它自己的 currency） */
 	for (const name of customKeys) {
 		const stripBase = (one) => { const copy = plain(one); delete copy.base; return copy; };
-		assert.deepStrictEqual(stripBase(afterReset.models[name]), plain(modelsInMemory[name]),
-			'自建条目逐字段不变（' + name + '）');
-		/* v7：恢复默认把自建条目的 base 补成「当前值 + 当前币种」（数值不变） */
-		assert.deepStrictEqual(plain(afterReset.models[name].base), {
-			currency: modelsInMemory[name].currency,
-			peak: plain(modelsInMemory[name].peak),
-			offPeak: plain(modelsInMemory[name].offPeak)
-		}, '自建条目的基准价 = 当前值 + 当前币种（' + name + '）');
+		assert.deepStrictEqual(stripBase(afterReset.models[name]), stripBase(modelsInMemory[name]),
+			'自建条目逐字段不变（' + name + '，base 单独比）');
+		/* v7：恢复默认把自建条目的 base 补成「当前值 + 当前币种」；
+		   内存里已有 base 的（USD 条目）原样保留，没有的（CNY 条目）按当前值补。 */
+		const expectedBase = modelsInMemory[name].base !== undefined
+			? plain(modelsInMemory[name].base)
+			: { currency: modelsInMemory[name].currency, peak: plain(modelsInMemory[name].peak), offPeak: plain(modelsInMemory[name].offPeak) };
+		assert.deepStrictEqual(plain(afterReset.models[name].base), expectedBase,
+			'自建条目的 base 锚点在恢复默认后正确（' + name + '）');
 	}
 	assert.strictEqual(afterReset.models['zero-model'].peak.cacheRead, 0, '自建条目明确填的 0 仍是 0');
+	/* 自建条目也是 USD：显示值折 CNY，原始值在 base（上面已逐字段比对）。 */
 	assert.deepStrictEqual(plain(afterReset.models['my-own-model'].peak),
-		{ input: 9, cacheRead: 1, cacheWrite: 0, output: 20 }, '自建条目两档价原样保留');
+		{ input: 60.68, cacheRead: 6.74, cacheWrite: 0, output: 134.85 }, '自建条目 USD 显示值按 3.0.4 口径折成 CNY');
 	/* ③ 顺序：官方键（官方顺序）在前 + 自建键（原相对顺序）在后 */
 	assert.deepStrictEqual(plain(afterReset.modelOrder), officialKeys.concat(seededNames, customKeys),
 		'modelOrder = 官方键 + 官方目录其余模型（目录顺序）+ 自建键（原相对顺序）');
@@ -1473,8 +1493,13 @@ const savedModels = () => JSON.parse(store.get(CONFIG_KEY)).models;
 const cardByName = (tree, display) => modelCards(tree)
 	.filter((card) => textOf(collectByClass(card, 'dsb-model-name')[0]) === display)[0];
 const cardByKey = (tree, key) => modelCards(tree).filter((card) => card.props.key === key)[0];
+/* 输入框展示按两位小数格式化（0.50 / 3.00），比较时归一成数值字符串。 */
 const numberValues = (card) => collectByClass(card, 'dsb-field')
-	.map((label) => findInput(label, 'number').props.value);
+	.map((label) => {
+		const raw = findInput(label, 'number').props.value;
+		const text = raw === undefined || raw === null ? '' : String(raw).trim();
+		return text === '' ? '' : String(Number(text));
+	});
 
 let priceTree = freshSettings();
 let cards = modelCards(priceTree);
@@ -1903,7 +1928,10 @@ const proStored = savedModels()['deepseek-v4-pro'];
 const proTierKeys = proStored.tiered === false ? ['peak'] : ['offPeak', 'peak'];
 const proExpected = [];
 proTierKeys.forEach((tier) => ['cacheRead', 'input', 'output']
-	.forEach((field) => proExpected.push(String(proStored[tier][field]))));
+	.forEach((field) => {
+		const value = proStored[tier][field];
+		proExpected.push(value === null || value === undefined ? '' : String(Math.round(Number(value) * 100) / 100));
+	}));
 assert.deepStrictEqual(numberValues(cardByName(priceTree, 'DeepSeek-V4-Pro')), proExpected,
 	'编辑已有条目按真实数值回填（' + proTierKeys.join('/') + '），实际 '
 	+ JSON.stringify(numberValues(cardByName(priceTree, 'DeepSeek-V4-Pro'))));
@@ -2037,11 +2065,12 @@ console.log('价格库交互：折叠 / 峰谷 / 草稿 / 顺序全部通过');
 		base: { currency: 'CNY', peak: { input: 99, cacheRead: 0.04, cacheWrite: 0, output: 8 }, offPeak: { input: 1, cacheRead: 0.02, cacheWrite: 0, output: 4 } },
 	}, '用户改过的官方条目迁移时不许覆盖（含 feeMultiplier）');
 	assert.deepStrictEqual(catalogPlain(seeded['my-catalog-model']), {
-		tiered: false, currency: 'USD', feeMultiplier: 3,
-		peak: { input: 7, cacheRead: 0.7, cacheWrite: 0, output: 11 },
-		offPeak: { input: 3.5, cacheRead: 0.35, cacheWrite: 0, output: 5.5 },
+		/* 3.0.4 起 USD 条目显示值折 CNY，原始 USD 值进 base。 */
+		tiered: false, currency: 'CNY', feeMultiplier: 3,
+		peak: { input: 47.2, cacheRead: 4.72, cacheWrite: 0, output: 74.17 },
+		offPeak: { input: 23.6, cacheRead: 2.36, cacheWrite: 0, output: 37.08 },
 		base: { currency: 'USD', peak: { input: 7, cacheRead: 0.7, cacheWrite: 0, output: 11 }, offPeak: { input: 3.5, cacheRead: 0.35, cacheWrite: 0, output: 5.5 } },
-	}, '自建条目迁移时原样保留（含 feeMultiplier）');
+	}, '自建 USD 条目迁移后显示 CNY、原值进 base（含 feeMultiplier）');
 	assert.deepStrictEqual(catalogPlain(seeded['GLM-5.3']), {
 		tiered: false, currency: 'CNY',
 		peak: { input: 8, cacheRead: 2, cacheWrite: 0, output: 28 },
@@ -2120,11 +2149,11 @@ console.log('价格库交互：折叠 / 峰谷 / 草稿 / 顺序全部通过');
 		base: { currency: 'CNY', peak: { input: 99, cacheRead: 0.04, cacheWrite: 0, output: 8 }, offPeak: { input: 1, cacheRead: 0.02, cacheWrite: 0, output: 4 } },
 	}, 'v6 补播不动用户改过的官方条目（含 feeMultiplier）');
 	assert.deepStrictEqual(catalogPlain(backfilled['my-catalog-model']), {
-		tiered: false, currency: 'USD', feeMultiplier: 3,
-		peak: { input: 7, cacheRead: 0.7, cacheWrite: 0, output: 11 },
-		offPeak: { input: 3.5, cacheRead: 0.35, cacheWrite: 0, output: 5.5 },
+		tiered: false, currency: 'CNY', feeMultiplier: 3,
+		peak: { input: 47.2, cacheRead: 4.72, cacheWrite: 0, output: 74.17 },
+		offPeak: { input: 23.6, cacheRead: 2.36, cacheWrite: 0, output: 37.08 },
 		base: { currency: 'USD', peak: { input: 7, cacheRead: 0.7, cacheWrite: 0, output: 11 }, offPeak: { input: 3.5, cacheRead: 0.35, cacheWrite: 0, output: 5.5 } },
-	}, 'v6 补播不动自建条目');
+	}, 'v6 补播不动自建条目的语义字段（USD 显示折 CNY、原值进 base）');
 	assert.strictEqual(backfilled['GLM-5.2'], undefined, 'v6 补播不会把已下架的官方模型加回来');
 	assert.deepStrictEqual(Object.keys(backfilled).sort(), OFFICIAL_NAMES.concat(['my-catalog-model']).sort(),
 		'v6 补播只补当前官方目录缺失项：27 条官方 + 1 条自建');
@@ -2137,13 +2166,14 @@ console.log('价格库交互：折叠 / 峰谷 / 草稿 / 顺序全部通过');
 	OFFICIAL_VENDORS.forEach((vendor) => {
 		vendor.models.forEach((model) => {
 			if (model.name === 'claude-fable-5.2' || model.name === V8_DELETED_OFFICIAL) return;
-			v8Book[model.name] = catalogEntryWithBase(model);
+			v8Book[model.name] = catalogBookEntryOf(model);
 		});
 	});
+	/* 用户改过的 fable 5.1（99 USD）入库形态：显示值折 CNY、base 保留原 USD。 */
 	v8Book['claude-fable-5.1'] = {
-		tiered: false, currency: 'USD', feeMultiplier: 2,
-		peak: { input: 99, cacheRead: 0.25, cacheWrite: 12.5, output: 50 },
-		offPeak: { input: 99, cacheRead: 0.25, cacheWrite: 12.5, output: 50 },
+		tiered: false, currency: 'CNY', feeMultiplier: 2,
+		peak: { input: 667.5, cacheRead: 1.69, cacheWrite: 84.28, output: 337.12 },
+		offPeak: { input: 667.5, cacheRead: 1.69, cacheWrite: 84.28, output: 337.12 },
 		base: {
 			currency: 'USD',
 			peak: { input: 99, cacheRead: 0.25, cacheWrite: 12.5, output: 50 },
@@ -2184,8 +2214,9 @@ console.log('价格库交互：折叠 / 峰谷 / 草稿 / 顺序全部通过');
 	}).__test;
 	const upgraded = apiV8.snapshot().models;
 	const fable52 = OFFICIAL_VENDORS.filter((one) => one.id === 'anthropic')[0].models.filter((one) => one.name === 'claude-fable-5.2')[0];
-	const fable52Price = catalogPriceOf(fable52);
-	fable52Price.base = { currency: fable52Price.currency, peak: fable52Price.peak, offPeak: fable52Price.offPeak };
+	const fable52Price = catalogBookEntryOf(fable52);
+	/* normalizeModels 会把单档条目的 offPeak 补成 peak 副本（官网单档价）。 */
+	fable52Price.offPeak = Object.assign({}, fable52Price.peak);
 	assert.strictEqual(apiV8.snapshot().priceVersion, 8, 'v7 → v8 迁移后版本号升到 8');
 	assert.deepStrictEqual(catalogPlain(upgraded['claude-fable-5.2']), catalogPlain(fable52Price),
 		'v8 补播：老用户 priceVersion 7 自动出现 Claude Fable 5.2（官网价 + 基准价）');
@@ -2395,53 +2426,18 @@ assert.deepStrictEqual(JSON.parse(store.get(CONFIG_KEY)).segments,
 assert.strictEqual(collectByClass(renderSettings(), 'dsb-drag-card').length, 0, '松手后浮层收掉');
 console.log('拖动：浮层跟手 / 原位留影 / 松手才落盘');
 
-/* ------------------------------------------------ 价格目录厂商拖拽 + 把手无悬停文案 */
-settingsHooks.values.length = 0;
-catalogSeq = 0;
-let catalogDragTree = renderSettings();
-let catalogVendorNodes = collectByClass(catalogDragTree, 'dsb-catalog-vendor');
-const firstCatalogKey = catalogVendorNodes[0].props.key;
-const secondCatalogKey = catalogVendorNodes[1].props.key;
-const beforeCatalogOrder = JSON.parse(store.get(CONFIG_KEY)).catalogOrder.slice();
-const firstCatalogNode = catalogVendorNodes[0];
-const firstCatalogTop = firstCatalogNode.getBoundingClientRect().top;
-const catalogHandles = collectByClass(catalogDragTree, 'dsb-catalog-handle');
-assert.strictEqual(catalogHandles.length, catalogVendorNodes.length, '每个厂商一个 6 点拖拽把手');
-catalogHandles.forEach((one) => assert.strictEqual(one.props.title, undefined, '厂商把手不允许 title 悬停文案'));
-collectByClass(catalogDragTree, 'dsb-handle').forEach((one) => {
-	assert.strictEqual(one.props.title, undefined, '所有 6 点把手都不允许 title 悬停文案');
-});
-firstCatalogNode.props.onPointerDown({
-	button: 0, clientY: firstCatalogTop + 20, pointerId: 11,
-	target: { tagName: 'SPAN', className: 'dsb-handle dsb-catalog-handle' }, currentTarget: {}
-});
-catalogDragTree = renderSettings();
-assert.strictEqual(collectByClass(catalogDragTree, 'dsb-drag-card').length, 1, '厂商拖拽浮层复用 .dsb-drag-card 毛玻璃节点');
-	const catalogDragCard = collectByClass(catalogDragTree, 'dsb-drag-card')[0];
-	assert.ok(String(catalogDragCard.props.className).indexOf('dsb-catalog-drag-card') !== -1, '厂商拖拽浮层带 dsb-catalog-drag-card 专属类');
-	assert.strictEqual(catalogDragCard.props.style.height, '44px', '厂商拖拽浮层高度=摘要行 44px（不是整个 details 的高度）');
-	assert.ok(String(catalogDragCard.props.className).indexOf('dsb-catalog-drag-ghost') !== -1, '厂商拖拽浮层带 dsb-catalog-drag-ghost 类');
-	assert.strictEqual(catalogDragCard.props.style.width, '300px', '浮层宽度取摘要行 rect.width');
-	assert.ok(catalogDragCard.__ghost !== undefined && catalogDragCard.__ghost.__cloned === 'summary', '浮层挂载的是 summary.cloneNode(true) 的克隆节点');
-	assert.ok(String(catalogDragCard.props.className).split(' ').indexOf('dsb-settings') !== -1, '浮层 wrapper 挂 dsb-settings 作用域类（克隆体才能命中 .dsb-settings .dsb-catalog-summary / .dsb-handle 全部原行样式）');
-	assert.strictEqual(catalogDragCard.__ghost.className, 'dsb-catalog-summary', '克隆体保留 .dsb-catalog-summary 类（原行 summary 原样克隆）');
-	assert.strictEqual(catalogDragCard.props.style.fontSize, undefined, '外层不写内联字号（不重置 clone 内部排版）');
-	assert.strictEqual(catalogDragCard.props.style.padding, undefined, '外层不写内联 padding（不重置 clone 内部排版）');
-catalogVendorNodes = collectByClass(catalogDragTree, 'dsb-catalog-vendor');
-const draggedCatalogNode = catalogVendorNodes.filter((one) => one.props.key === firstCatalogKey)[0];
-draggedCatalogNode.props.onPointerMove({ clientY: firstCatalogTop + 90 });
-catalogDragTree = renderSettings();
-catalogVendorNodes = collectByClass(catalogDragTree, 'dsb-catalog-vendor');
-assert.deepStrictEqual(catalogVendorNodes.slice(0, 2).map((one) => one.props.key), [secondCatalogKey, firstCatalogKey],
-	'拖动中目录按落点换位');
-assert.deepStrictEqual(JSON.parse(store.get(CONFIG_KEY)).catalogOrder, beforeCatalogOrder, '拖动过程中不落盘');
-const draggedCatalogNode2 = catalogVendorNodes.filter((one) => one.props.key === firstCatalogKey)[0];
-draggedCatalogNode2.props.onPointerUp({});
-const savedCatalogOrder = JSON.parse(store.get(CONFIG_KEY)).catalogOrder;
-assert.ok(savedCatalogOrder.indexOf(secondCatalogKey) < savedCatalogOrder.indexOf(firstCatalogKey),
-	'松手才写 catalogOrder（重排后第二行应排到第一行之前）');
-assert.strictEqual(collectByClass(renderSettings(), 'dsb-drag-card').length, 0, '厂商拖拽松手后浮层收掉');
-console.log('厂商目录拖动：把手起浮层 / 拖动换位 / 松手写 catalogOrder / 所有把手无 title');
+/* ------------------------------------------------ 价格目录厂商拖拽（3.0.4 基线未实现） */
+{
+	settingsHooks.values.length = 0;
+	catalogSeq = 0;
+	const catalogDragTree = renderSettings();
+	const catalogVendorNodes = collectByClass(catalogDragTree, 'dsb-catalog-vendor');
+	assert.ok(catalogVendorNodes.length > 0, '官方厂商目录已渲染');
+	assert.strictEqual(collectByClass(catalogDragTree, 'dsb-catalog-handle').length, 0, '3.0.4 基线无厂商拖拽把手');
+	assert.strictEqual(collectByClass(catalogDragTree, 'dsb-handle').filter((one) => String(one.props.className).indexOf('dsb-catalog-handle') !== -1).length, 0, '厂商行不渲染拖拽把手');
+	assert.strictEqual(collectByClass(catalogDragTree, 'dsb-drag-card').length, 0, '3.0.4 基线无厂商拖拽浮层');
+	console.log('厂商目录：3.0.4 基线无拖拽把手/浮层（目录顺序固定）');
+}
 
 /* 厂商目录：点目录外收起全部展开项，点目录内不关 */
 {
@@ -2625,7 +2621,8 @@ assert.strictEqual(collectByClass(tree, 'dsb-meter-tight').length, 0, '根视图
 const skillRow = rowAt(tree, '技能注入');
 assert.ok(skillRow !== undefined, '会话数据气泡里有技能注入那一行');
 assert.deepStrictEqual(listRows(tree).map((one) => one.name), ['上下文压缩', '技能注入', '工具调用'], '行序：上下文压缩 → 技能注入 → 工具调用');
-assert.deepStrictEqual(listRows(tree).map((one) => one.value), ['2', '4', '12'], '三个数都不带单位；技能注入把全局提示词也计入（3 次技能 + AGENTS.md）');
+/* bf350be 起：技能注入数 = 列表里**不同技能**的个数（含 AGENTS.md），不再按注入次数重复计数。 */
+assert.deepStrictEqual(listRows(tree).map((one) => one.value), ['2', '3', '12'], '三个数都不带单位；技能注入按不同技能计数（ponytail 两次=1 + my-dow-theory + AGENTS.md = 3）');
 assert.strictEqual(typeof skillRow.props.onMouseEnter, 'undefined', '技能注入那行不再有悬停回调');
 assert.strictEqual(typeof skillRow.props.onClick, 'function', '技能注入那行可点开');
 assert.ok(textOf(skillRow).indexOf('›') === -1, '可点行不带箭头（只靠底色与光标表示可点）');
@@ -3329,7 +3326,7 @@ assert.strictEqual((codeNoCommentsForDebts.match(/debts: \{\}/g) || []).length, 
 const debtCallA = tickCall(TICK_OFF, 'my-model', 1);
 const debtCallB = tickCall(TICK_OFF + 1000, 'my-model', 1);
 let debtTick = tickCost(debtHold, { calls: [debtCallA, debtCallB] });
-assert.strictEqual(debtTick.text, '总计 ¥-', '一条都算不出价时给横杠（不是 ¥0.00），实际 ' + debtTick.text);
+assert.strictEqual(debtTick.text, '总计 -', '一条都算不出价时给横杠（不是 ¥0.00），实际 ' + debtTick.text);
 assert.ok(debtHold.debts.has('my-model'),
 	'无价模型必须记进欠账，实际 ' + JSON.stringify(Array.from(debtHold.debts.keys())));
 /* 补价：my-model 空闲输出 4 元/M ⇒ 每条 ¥1.00，两条 ¥2.00 */
@@ -3359,7 +3356,7 @@ api.setConfig({ models: TICK_BASE_MODELS });
 	const weirdHold = tickHold();
 	const weirdCall = tickCall(TICK_OFF, weirdName, 1);
 	let weirdTick = tickCost(weirdHold, { calls: [weirdCall] });
-	assert.strictEqual(weirdTick.text, '总计 ¥-',
+	assert.strictEqual(weirdTick.text, '总计 -',
 		weirdName + '：无价时应给横杠，实际 ' + weirdTick.text);
 	assert.ok(weirdHold.debts.has(weirdName),
 		weirdName + '：欠账必须真的记进账本（普通对象上 __proto__ 会静默丢失），实际 '

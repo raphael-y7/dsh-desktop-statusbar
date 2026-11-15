@@ -105,7 +105,9 @@ function hit(handler, pathname, options = {}) {
     const req = {
       url: pathname,
       method: options.method || 'GET',
-      headers: {},
+      /* relay 配置 GET 会校验 Host 与 TCP 对端：假 req 补本机 Host / 回环 socket。 */
+      headers: { host: '127.0.0.1:19387' },
+      socket: { remoteAddress: '127.0.0.1' },
       on(name, fn) {
         listeners[name] = (listeners[name] || []).concat(fn);
         return req;
@@ -490,14 +492,22 @@ async function main() {
 
     const magpieMark = fetched.length;
     await hit(handler, API + '/balance?provider=Magpie&model=' + encodeURIComponent(modelChannel) + '&force=1');
-    assert.equal(fetched.length, magpieMark, 'Magpie never falls back to a model-keyed channel');
+    /* 3.0.4 起 queryMagpieBalance 会查两个端点（/v1/magpie/quotas + /v1/models），多 2 次 fetch；
+   这里钉住「不按模型名回退到单条 channel」，而不是旧的 4 次总数。 */
+assert.equal(fetched.length, magpieMark + 2, 'Magpie 走 quotas + models 两个端点，不按模型名回退');
 
-    const beforeNoFetch = fetched.length;
+    /* Magpie 与未知 provider 每次只探测 Magpie 的 quotas + models 两个端点（2 次 fetch），
+       绝不按模型名回退到单条 relay channel。 */
+    const magpieOnlyMark = fetched.length;
     await hit(handler, API + '/balance?provider=Magpie&model=fee-model&force=1');
+    assert.equal(fetched.length, magpieOnlyMark + 2, 'Magpie 只查 quotas + models');
+    const unknownMark = fetched.length;
     await hit(handler, API + '/balance?provider=unconfigured-provider&model=deepseek-flash&force=1');
+    assert.equal(fetched.length, unknownMark + 2, 'unknown provider 只探测 Magpie 两个端点');
+    const suffixMark = fetched.length;
     await hit(handler, API + '/balance?provider=' + encodeURIComponent(PROVIDER_A + '-suffix')
       + '&model=fee-model&force=1');
-    assert.equal(fetched.length, beforeNoFetch, 'Magpie and unknown explicit providers never fetch or fall back by model');
+    assert.equal(fetched.length, suffixMark + 2, 'provider 名后缀不精确命中 relay，只探测 Magpie 两个端点');
   } finally {
     globalThis.fetch = realFetch;
   }

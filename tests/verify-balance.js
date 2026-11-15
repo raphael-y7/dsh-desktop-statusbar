@@ -80,7 +80,7 @@ process.env.DSH_HOME = HOME;
 		handler(req, res);
 	});
 
-	const got = await call('');
+	const got = await call('?provider=deepseek-account');
 	assert.strictEqual(got.status, 200, 'HTTP 200');
 	assert.strictEqual(got.body.ok, true, '余额可用');
 	assert.strictEqual(got.body.source, 'account-service', '走官方账号服务（设置页同源）');
@@ -95,7 +95,7 @@ process.env.DSH_HOME = HOME;
 
 	/* 客户端点开余额气泡时会带 force=1 再查一次：host 端本来就不缓存（BALANCE_TTL_MS = 0），
 	   这条路径同样得走得通 —— 参数只是把"跳过缓存"写明，不能因为多这个参数就出错。 */
-	const forced = await call('?force=1');
+	const forced = await call('?provider=deepseek-account&force=1');
 	assert.strictEqual(forced.status, 200, 'force=1 仍然 HTTP 200');
 	assert.strictEqual(forced.body.ok, true, 'force=1 同样拿得到余额');
 	assert.strictEqual(forced.body.total, got.body.total, '强制刷新与轮询取的是同一口径');
@@ -146,7 +146,7 @@ process.env.DSH_HOME = HOME;
 	});
 	assert.ok(handlerDual !== null, '双币种场景的 host 路由已注册');
 	const dual = await new Promise((resolve) => {
-		const req = { url: '/dsh-desktop-statusbar/api/balance', method: 'GET' };
+		const req = { url: '/dsh-desktop-statusbar/api/balance?provider=deepseek-account', method: 'GET' };
 		const res = {
 			writeHead: (status) => { res.status = status; },
 			end: (text) => { resolve({ status: res.status, body: JSON.parse(text) }); }
@@ -213,7 +213,7 @@ process.env.DSH_HOME = HOME;
 		}
 	});
 	const split = await new Promise((resolve) => {
-		const req = { url: '/dsh-desktop-statusbar/api/balance', method: 'GET' };
+		const req = { url: '/dsh-desktop-statusbar/api/balance?provider=deepseek-account', method: 'GET' };
 		const res = {
 			writeHead: (status) => { res.status = status; },
 			end: (text) => { resolve({ status: res.status, body: JSON.parse(text) }); }
@@ -258,7 +258,7 @@ process.env.DSH_HOME = HOME;
 		}
 	});
 	const usdOnly = await new Promise((resolve) => {
-		const req = { url: '/dsh-desktop-statusbar/api/balance', method: 'GET' };
+		const req = { url: '/dsh-desktop-statusbar/api/balance?provider=deepseek-account', method: 'GET' };
 		const res = {
 			writeHead: (status) => { res.status = status; },
 			end: (text) => { resolve({ status: res.status, body: JSON.parse(text) }); }
@@ -695,6 +695,8 @@ process.env.DSH_HOME = HOME;
 			url: route,
 			method,
 			headers: { host: '127.0.0.1:19387' },
+			/* 3.0.5 起 relay 配置 GET 会校验 TCP 对端必须是回环；本测试是假 req，补一个本机 socket。 */
+			socket: { remoteAddress: '127.0.0.1' },
 			on: (type, fn) => {
 				if (listeners[type] === undefined) listeners[type] = [];
 				listeners[type].push(fn);
@@ -736,10 +738,11 @@ process.env.DSH_HOME = HOME;
 	assert.strictEqual(relayInitialGet.body.channels[0].tokenConfigured, true, 'GET reports token configured');
 	assert.strictEqual(relayInitialGet.body.channels[0].userIdConfigured, true, 'GET reports user id configured');
 	assert.deepStrictEqual(relayInitialGet.body.channels[0].headerNames, ['x-custom-secret'], 'GET returns only custom header names');
-	const relayInitialText = JSON.stringify(relayInitialGet.body);
-	for (const secret of ['relay-token-sentinel', 'relay-user-sentinel', 'relay-header-sentinel']) {
-		assert.strictEqual(relayInitialText.includes(secret), false, 'GET response redacts secret');
-	}
+	/* 技能 §7 明确例外：本机同源的设置页要回显已保存的 token / userId，
+	   GET /api/relay-balance-config 允许原样回传这两个字段；自定义 header 的**值**仍不回传。 */
+	assert.strictEqual(relayInitialGet.body.channels[0].token, 'relay-token-sentinel', 'GET returns token for same-origin settings UI (skill §7 exception)');
+	assert.strictEqual(relayInitialGet.body.channels[0].userId, 'relay-user-sentinel', 'GET returns userId for same-origin settings UI (skill §7 exception)');
+	assert.strictEqual(JSON.stringify(relayInitialGet.body).includes('relay-header-sentinel'), false, 'GET does not return custom header values');
 	const beforeClearUnset = relayUnsetCalls.length;
 	const relayClear = await relayCall('POST', relayPath, {
 		channelKey: ordinaryRelay.channelKey, token: null, userId: '', headers: {}
@@ -881,6 +884,18 @@ process.env.DSH_HOME = HOME;
 		assert.strictEqual(noChannel.body.ok, false, '无此通道时 ok=false');
 		assert.strictEqual(noChannel.body.reason, 'unknown-platform', '无此通道走原有 unknown-platform');
 
+		/* provider 为空/未知：不能拿 DeepSeek 余额顶替 → 统一 unknown-platform（客户端显示横杠）。
+		   以 f2 的 host 侧修复为准：provider 为空时即使模型名认得出 DeepSeek，也不查它的余额。 */
+		const emptyProvider = await call('?provider=&model=deepseek-v4-pro');
+		assert.strictEqual(emptyProvider.status, 200, 'provider 为空仍 HTTP 200');
+		assert.strictEqual(emptyProvider.body.ok, false, 'provider 为空时 ok=false（不回落 DeepSeek 余额）');
+		assert.strictEqual(emptyProvider.body.reason, 'unknown-platform', 'provider 为空 → unknown-platform（横杠）');
+
+		const unknownProvider = await call('?provider=unknown-provider-xyz&model=deepseek-v4-pro');
+		assert.strictEqual(unknownProvider.status, 200, '未知 provider 仍 HTTP 200');
+		assert.strictEqual(unknownProvider.body.ok, false, '未知 provider 时 ok=false');
+		assert.strictEqual(unknownProvider.body.reason, 'unknown-platform', '未知 provider → unknown-platform（横杠）');
+
 		/* ===== 平台档案复用：channelKey = 平台名，relay 参数优先（relay → provider → model） ===== */
 		const platformA = 'relay-platform-a';
 		const platformB = 'relay-platform-b';
@@ -945,9 +960,11 @@ process.env.DSH_HOME = HOME;
 		const byMagpieRelay = await relayCall('GET', balanceUrl('unknown-relay-provider', 'any-model')
 			+ '&relay=' + encodeURIComponent('magpie-proxy'));
 		assert.strictEqual(byMagpieRelay.body.ok, false, 'relay 含 magpie 时 ok=false');
-		assert.strictEqual(byMagpieRelay.body.reason, 'unsupported-provider',
-			'relay 含 magpie 返回 unsupported-provider（横杠）');
-		assert.strictEqual(byMagpieRelay.body.provider, 'magpie-proxy', '失败态标明是哪个平台');
+		/* 3.0.4 基线起 Magpie 查询失败统一报 magpie-* 原因（这里网关不可达 ⇒ magpie-unknown-model），
+		   客户端按 ok=false 显示横杠即可；不再有单独的 unsupported-provider。 */
+		assert.strictEqual(byMagpieRelay.body.reason, 'magpie-unknown-model',
+			'relay 含 magpie 返回 magpie-unknown-model（横杠）');
+		assert.strictEqual(byMagpieRelay.body.provider, 'magpie', '失败态标明是 Magpie');
 		assert.strictEqual(stubRequests.length, magpieMark, 'relay 含 magpie 不查任何通道');
 		console.log('= 平台档案：relay 参数优先命中对应平台；不存在/非法 relay 回退 provider→model；Magpie 类直接横杠');
 		console.log('= 第三方余额端到端：stub 收到 Bearer/New-Api-User，quota/500000='

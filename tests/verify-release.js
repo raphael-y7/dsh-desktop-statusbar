@@ -113,13 +113,14 @@ pkg.files.forEach((entry) => {
    （`npm test` / `npm run sync` / 截图、插件目录定位）是给想二次开发或本地调试的
    用户准备的，必须能被 `node tools/xxx.cjs` 直接跑到。
    它们是**手动执行**的工具，不会被自动触发（没有 postinstall，也没有任何代码 import 它们）。 */
-const REQUIRED_IN_FILES = ['lib', 'tools', 'docs', 'locale', 'cordis.patch.yml', 'icon.svg', 'README.md', 'README.en.md', 'LICENSE'];
+/* 3.0.5 起按用户要求把 `tests/` 一并发布（npm 包内含测试源码），所以它是必需项。 */
+const REQUIRED_IN_FILES = ['lib', 'tests', 'tools', 'docs', 'locale', 'cordis.patch.yml', 'icon.svg', 'README.md', 'README.en.md', 'LICENSE'];
 REQUIRED_IN_FILES.forEach((entry) => {
 	assert.ok(pkg.files.includes(entry), 'files 清单缺必需项：' + entry);
 });
-/* 反面断言：测试目录与临时产物不许进发布包。
-   （`tools/` 不在此列 —— 它是有意随包发布的，见上。） */
-['tests', 'tests/verify.js', '_diag', 'node_modules'].forEach((entry) => {
+/* 反面断言：临时产物不许进发布包。
+   （`tools/` 与 `tests/` 都不在此列 —— 它们是有意随包发布的，见上。） */
+['_diag', 'node_modules'].forEach((entry) => {
 	assert.ok(pkg.files.includes(entry) !== true, 'files 清单不该包含这个目录：' + entry);
 });
 console.log('files 清单:', pkg.files.join(', '));

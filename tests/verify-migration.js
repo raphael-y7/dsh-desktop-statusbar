@@ -142,15 +142,16 @@ const LEGACY_CONFIG = JSON.stringify({
 	console.log('价格自愈：被写坏的空闲价按参考价补回，自建模型不动');
 }
 
-/* 5. 计价单位：USD 保留，非法值回落到 CNY */
+/* 5. 计价单位（3.0.4 基线口径）：`snapshot().currency` 恒为 CNY，
+   它只是「新增条目的默认币种」；旧配置里的 USD 不再作为全局默认值。 */
 {
 	const usd = JSON.stringify({ version: 6, currency: 'USD', hidden: [], models: {}, modelOrder: [] });
-	assert.strictEqual(loadWith({ [NEW_KEY]: usd }).api.snapshot().currency, 'USD', '配置里的 USD 要保留');
+	assert.strictEqual(loadWith({ [NEW_KEY]: usd }).api.snapshot().currency, 'CNY', '3.0.4 起全局 currency 固定 CNY（USD 只作为条目级 base 锚点）');
 	const junk = JSON.stringify({ version: 6, currency: 'JPY', hidden: [], models: {}, modelOrder: [] });
-	assert.strictEqual(loadWith({ [NEW_KEY]: junk }).api.snapshot().currency, 'CNY', '非法币种回落到 CNY');
+	assert.strictEqual(loadWith({ [NEW_KEY]: junk }).api.snapshot().currency, 'CNY', '非法币种同样回落 CNY');
 	const none = JSON.stringify({ version: 6, hidden: [], models: {}, modelOrder: [] });
 	assert.strictEqual(loadWith({ [NEW_KEY]: none }).api.snapshot().currency, 'CNY', '没配过就是 CNY');
-	console.log('计价单位：USD 保留、非法值回落 CNY、缺省 CNY');
+	console.log('计价单位：快照固定 CNY（旧 USD 不再当全局默认）、非法值/缺省同为 CNY');
 }
 
 /* 5b. 条目币种（task-22）：迁移用全局 currency 给**已有条目**落成显式值；条目自带值优先 */
@@ -158,18 +159,21 @@ const LEGACY_CONFIG = JSON.stringify({
 	const legacyCur = JSON.stringify({ version: 6, currency: 'USD', hidden: [], modelOrder: ['my-model'],
 		models: { 'my-model': { peak: { input: 1, cacheRead: 0, cacheWrite: 0, output: 2 }, offPeak: null } } });
 	const migratedCur = loadWith({ [NEW_KEY]: legacyCur }).api.snapshot();
-	assert.strictEqual(migratedCur.currency, 'USD', '全局字段保留（现在只是"新增条目的默认币种"）');
-	assert.strictEqual(migratedCur.models['my-model'].currency, 'USD', '已有条目按全局币种落成显式 currency');
+	assert.strictEqual(migratedCur.currency, 'CNY', '全局字段固定 CNY（3.0.4 基线口径）');
+	assert.strictEqual(migratedCur.models['my-model'].currency, 'CNY', '无币种条目按默认 CNY 落成显式 currency');
 	const mixedCur = JSON.stringify({ version: 6, currency: 'CNY', hidden: [], modelOrder: ['a', 'b'],
 		models: {
 			a: { currency: 'USD', peak: { input: 1, cacheRead: 0, cacheWrite: 0, output: 2 }, offPeak: null },
 			b: { peak: { input: 1, cacheRead: 0, cacheWrite: 0, output: 2 }, offPeak: null }
 		} });
 	const mixedSnap = loadWith({ [NEW_KEY]: mixedCur }).api.snapshot();
-	assert.strictEqual(mixedSnap.models.a.currency, 'USD', '条目自带币种优先于默认值');
+	/* 3.0.4 起：USD 条目的显示值按实时汇率折成 CNY，原始 USD 值落进 base 锚点。 */
+	assert.strictEqual(mixedSnap.models.a.currency, 'CNY', 'USD 条目显示值折成 CNY（3.0.4 口径）');
+	assert.strictEqual(mixedSnap.models.a.base.currency, 'USD', '条目自带 USD 保留在 base 锚点');
+	assert.strictEqual(mixedSnap.models.a.base.peak.input, 1, 'base 保留原始 USD 值');
 	assert.strictEqual(mixedSnap.models.b.currency, 'CNY', '没带的条目落成默认币种');
 	assert.strictEqual(mixedSnap.currency, 'CNY', '默认币种字段不被条目值改写');
-	console.log('条目币种：迁移落成显式值（全局 currency 当初值）· 条目自带优先 · 默认字段不被改写');
+	console.log('条目币种：无币种落 CNY · USD 条目折 CNY 显示、原值进 base · 默认字段不被改写');
 }
 
 console.log('\nMIGRATION CHECKS PASSED');

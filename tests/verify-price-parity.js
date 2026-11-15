@@ -338,9 +338,15 @@ function compareBook(client, host, raw) {
 		const noCur = { x: { peak: { input: 1, cacheRead: 0, cacheWrite: 0, output: 2 }, offPeak: null } };
 		assert.strictEqual(client.normalizeModels(noCur).x.currency, 'CNY', 'client 缺币种 ⇒ 落成入口默认 CNY');
 		assert.strictEqual(host.sanitizePriceBook(noCur).x.currency, undefined, 'host 不给缺币种的条目补默认值');
+		/* 3.0.4 起 client 把 USD 条目折成 CNY 显示（base 保留原 USD 值）；host 只做 store 原样保留。
+		   这是**有意的不对称**（与 noCur 同类）：线上 client POST 的是 normalizeModels 后的形态。 */
 		const usdCur = { x: { currency: 'USD', peak: { input: 1, cacheRead: 0, cacheWrite: 0, output: 2 }, offPeak: null } };
-		assert.strictEqual(client.normalizeModels(usdCur).x.currency, 'USD', '显式 USD 原样保留（client）');
-		assert.strictEqual(host.sanitizePriceBook(usdCur).x.currency, 'USD', '显式 USD 原样保留（host）');
+		const cUsd = client.normalizeModels(usdCur).x;
+		assert.strictEqual(cUsd.currency, 'CNY', 'client 把 USD 条目折成 CNY 显示（3.0.4 口径）');
+		assert.strictEqual(cUsd.base.currency, 'USD', 'client 的 base 锚点保留 USD');
+		assert.strictEqual(cUsd.base.peak.input, 1, 'client 的 base 保留原始 USD 值');
+		assert.strictEqual(cUsd.peak.input, 6.74, 'client 显示值按 REFERENCE_RATE 折算');
+		assert.strictEqual(host.sanitizePriceBook(usdCur).x.currency, 'USD', 'host 原样保留 USD（入口只收 client 归一后的形态）');
 		const junkCur = { x: { currency: 'JPY', peak: { input: 1, cacheRead: 0, cacheWrite: 0, output: 2 }, offPeak: null } };
 		assert.strictEqual(client.normalizeModels(junkCur).x.currency, 'CNY', '非法币种回落 CNY（client）');
 		assert.strictEqual(host.sanitizePriceBook(junkCur).x.currency, undefined, '非法币种 host 直接不带这个键');

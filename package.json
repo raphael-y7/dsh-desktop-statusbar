@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop-statusbar",
-  "version": "3.0.4",
+  "version": "3.0.5",
   "type": "module",
   "description": "把 DSH 桌面端对话区底部的统计行换成可配置状态栏：9 个可选字段可排序 + 栏首上下文圆环，按官方峰谷口径估算费用，支持自定义模型单价与账户余额。",
   "icon": "icon.svg",
@@ -39,6 +39,7 @@
   },
   "files": [
     "lib",
+    "tests",
     "tools",
     "docs",
     "locale",
@@ -46,12 +47,23 @@
     "icon.svg",
     "README.md",
     "README.en.md",
+    "README.ja.md",
+    "README.es.md",
+    "README.fr.md",
+    "README.de.md",
+    "README.ru.md",
+    "README.pt.md",
     "LICENSE"
   ],
-  "dependencies": {
-    "zod": "^4.4.0"
-  },
+  "dependencies": {},
   "dsh": {
+    "compatibility": {
+      "node": "^22.19.0 || >=24.0.0",
+      "dsh": ">=0.2.0-rc.2",
+      "dshReleases": {
+        "0.2.2-rc.3": "compatible"
+      }
+    },
     "bundle": {
       "patch": "./cordis.patch.yml"
     },

@@ -1,5 +1,5 @@
 /**
- * 跑 tests/ 下所有 verify*.js 并汇总结果。
+ * 跑 tests/ 下所有 verify*.js / verify*.mjs 并汇总结果。
  * 用法：node tools/test.cjs；退出码 0 = 全部通过。
  *
  * 两个刻意的写法（都是踩过坑才改的）：
@@ -10,9 +10,11 @@
  *    原因那一栏是空的 —— 看起来像"40 个测试全挂了"，其实一个都没跑。
  *    inherit 让子进程直接写本终端的输出，不受这条限制，失败时也能就地看到完整上下文。
  *
- * 2. 通配符用 `/^verify.*\.js$/`，**显式包含 verify.js**。
+ * 2. 通配符用 `/^verify.*\.(?:js|mjs)$/`，**显式包含 verify.js**。
  *    如果写成 `verify-*.js`（多个连字符）会漏掉 `verify.js` —— 那是最大的一个测试，
  *    漏跑它时总数看起来"少一个"却不容易察觉。
+ *    需要 ESM 的测试必须用 **.mjs** 扩展名：tests/package.json 是 commonjs，
+ *    同内容的 .js 会被 Node 当成 CJS 直接报 "Cannot use import statement outside a module"。
  *
  * 另加超时：单个测试挂住时不能把整个汇总永久卡住。
  */
@@ -24,7 +26,7 @@ const DIR = path.join(__dirname, '..', 'tests');
 /* 单测超时（毫秒）：正常都远小于它，只有挂住时才会触发 */
 const TIMEOUT_MS = 300000;
 
-const files = fs.readdirSync(DIR).filter((name) => /^verify.*\.js$/.test(name)).sort();
+const files = fs.readdirSync(DIR).filter((name) => /^verify.*\.(?:js|mjs)$/.test(name)).sort();
 
 let failed = 0;
 for (const name of files) {
@@ -53,6 +55,10 @@ console.log('');
  * 两边不一致（忘了同步）时这里直接判失败，避免"测试全绿但界面上没变化"。
  * 插件目录由 tools/plugin-dir.cjs 自动定位（换机器/换用户名都不必改代码）。
  *
+ * 检查范围 = lib/ 下**全部文件**（含 vendor/** 逐文件比较）+ package.json + locale/*.json：
+ * index.js 依赖 ./vendor/zod/index.js，vendor 漏同步时测试全绿但插件启动就崩；
+ * package.json / locale 漏同步时版本与界面文案会与项目漂移。
+ *
  * 三个修正（原有实现的问题）：
  *   ① 报的是**项目**目录的文件数，文案却写"插件目录已同步" —— 数字对不上实际；
  *      现在报两边各自的数量。
@@ -60,25 +66,55 @@ console.log('');
  *      现在两个方向都比。
  *   ③ 原先不一致时直接 `process.exit(1)`，**在打印测试汇总之前就退出了** ——
  *      于是"同步问题"会把"测试结果"整个吞掉，看到的只是最后那行退出码。
- *      现在记为失败并继续往下打印汇总。 */
-const PROJECT_LIB = path.join(__dirname, '..', 'lib');
+ *      现在记为失败并继续往下打印汇总。
+ */
+const PROJECT_ROOT = path.join(__dirname, '..');
+const PROJECT_LIB = path.join(PROJECT_ROOT, 'lib');
+
+/** 递归列出 root 下的全部文件（相对路径，统一用 / 分隔，顺序稳定）。 */
+function listFiles(root, prefix = '') {
+	const out = [];
+	const entries = fs.readdirSync(root, { withFileTypes: true })
+		.sort((a, b) => a.name.localeCompare(b.name));
+	for (const entry of entries) {
+		const rel = prefix === '' ? entry.name : prefix + '/' + entry.name;
+		if (entry.isDirectory()) out.push(...listFiles(path.join(root, entry.name), rel));
+		else if (entry.isFile()) out.push(rel);
+	}
+	return out;
+}
+
+/** 同步检查的元数据文件：package.json + locale/*.json（与 sync-to-plugin.cjs 一致）。 */
+function metaFiles(root) {
+	const out = ['package.json'];
+	const localeDir = path.join(root, 'locale');
+	if (fs.existsSync(localeDir)) {
+		listFiles(localeDir).forEach((name) => out.push('locale/' + name));
+	}
+	return out;
+}
+
+/** 一个插件根目录下参与一致性检查的全部文件（lib/** + 元数据）。 */
+function syncedFiles(root) {
+	const libDir = path.join(root, 'lib');
+	const out = fs.existsSync(libDir) ? listFiles(libDir).map((rel) => 'lib/' + rel) : [];
+	return out.concat(metaFiles(root));
+}
+
 const pluginRoot = require('./plugin-dir.cjs').pluginDir();
 if (pluginRoot === null) {
 	console.log('! 找不到已安装的插件目录，跳过一致性检查。');
 	console.log('  可用环境变量 DSH_STATUS_BAR_PLUGIN_DIR 指向它，或把 tools/ 放在插件目录里运行。');
 } else {
-	const PLUGIN_LIB = path.join(pluginRoot, 'lib');
-	const projectFiles = fs.readdirSync(PROJECT_LIB).filter((name) => name.endsWith('.js'));
-	const pluginFiles = fs.existsSync(PLUGIN_LIB)
-		? fs.readdirSync(PLUGIN_LIB).filter((name) => name.endsWith('.js'))
-		: [];
+	const projectFiles = syncedFiles(PROJECT_ROOT);
+	const pluginFiles = syncedFiles(pluginRoot);
 
 	/* 两个方向都看：项目→插件（漏同步）、插件→项目（多出来的） */
-	const missingInPlugin = projectFiles.filter((name) => !pluginFiles.includes(name));
-	const extraInPlugin = pluginFiles.filter((name) => !projectFiles.includes(name));
-	const different = projectFiles.filter((name) => {
-		if (!pluginFiles.includes(name)) return false;
-		return fs.readFileSync(path.join(PROJECT_LIB, name), 'utf8') !== fs.readFileSync(path.join(PLUGIN_LIB, name), 'utf8');
+	const missingInPlugin = projectFiles.filter((rel) => !pluginFiles.includes(rel));
+	const extraInPlugin = pluginFiles.filter((rel) => !projectFiles.includes(rel));
+	const different = projectFiles.filter((rel) => {
+		if (!pluginFiles.includes(rel)) return false;
+		return !fs.readFileSync(path.join(PROJECT_ROOT, rel)).equals(fs.readFileSync(path.join(pluginRoot, rel)));
 	});
 
 	const issues = [];
@@ -88,11 +124,11 @@ if (pluginRoot === null) {
 
 	if (issues.length > 0) {
 		failed += 1;
-		console.log('× 两边源码不一致 —— ' + issues.join('；'));
+		console.log('× 两边文件不一致（lib + package.json + locale）—— ' + issues.join('；'));
 		console.log('  项目 → 插件：node tools/sync-to-plugin.cjs');
 		console.log('  插件 → 项目：node tools/sync-from-plugin.cjs');
 	} else {
-		console.log('= 插件目录已同步（项目 ' + projectFiles.length + ' 个源文件 / 插件 ' + pluginFiles.length + ' 个，' + pluginRoot + '）');
+		console.log('= 插件目录已同步（项目 ' + projectFiles.length + ' 个文件 / 插件 ' + pluginFiles.length + ' 个，' + pluginRoot + '）');
 	}
 }
 console.log(failed === 0 ? files.length + ' 个测试全部通过' : failed + ' 项失败（含测试与同步检查）');

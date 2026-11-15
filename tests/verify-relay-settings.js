@@ -237,7 +237,7 @@ const buttonsByLabel = (tree, label) => findAll(tree, (node) => node.type === 'b
 	&& hasClass(node, 'dsb-action') && textOf(node) === label);
 const findLabelInput = (tree, label) => {
 	/* 中转站字段行（dsb-relay-line）与费用倍率行（dsb-field）都是「标签 + 输入框」 */
-	const row = findAll(tree, (node) => node.type === 'label'
+	const row = findAll(tree, (node) => (node.type === 'label' || node.type === 'div')
 		&& (hasClass(node, 'dsb-relay-line') || hasClass(node, 'dsb-field'))
 		&& textOf(node) === label)[0];
 	return row === undefined ? undefined : findAll(row, (one) => one.type === 'input')[0];
@@ -365,11 +365,12 @@ console.log('\n===== ② 官方目录：默认全部已加入（价格卡），�
 		base: { currency: 'CNY', peak: { input: 7, cacheRead: null, cacheWrite: null, output: 11 }, offPeak: { input: 7, cacheRead: null, cacheWrite: null, output: 11 } },
 	}, '自建条目迁移时原样保留（价格与费用倍率）');
 	assert.deepStrictEqual(plain(models['claude-opus-5.5']), {
-		tiered: false, currency: 'USD',
-		peak: { input: 4, cacheRead: 0.2, cacheWrite: 5, output: 20 },
-		offPeak: { input: 4, cacheRead: 0.2, cacheWrite: 5, output: 20 },
+		/* 官方 USD 源表入价格库：显示值折 CNY，base 保留官网 USD 原值 */
+		tiered: false, currency: 'CNY',
+		peak: { input: 26.97, cacheRead: 1.35, cacheWrite: 33.71, output: 134.85 },
+		offPeak: { input: 26.97, cacheRead: 1.35, cacheWrite: 33.71, output: 134.85 },
 		base: { currency: 'USD', peak: { input: 4, cacheRead: 0.2, cacheWrite: 5, output: 20 }, offPeak: { input: 4, cacheRead: 0.2, cacheWrite: 5, output: 20 } },
-	}, '未配置过的官方模型按官网价播种（单档）');
+	}, '未配置过的官方模型按官网价播种（单档，USD 基准价 + CNY 显示价）');
 	assert.deepStrictEqual(plain(models['GLM-5.3']), {
 		tiered: false, currency: 'CNY',
 		peak: { input: 8, cacheRead: 2, cacheWrite: 0, output: 28 },
@@ -493,11 +494,12 @@ console.log('\n===== ② 官方目录：默认全部已加入（价格卡），�
 	const noBaseModels = noBase.api.snapshot().models;
 	assert.strictEqual(noBase.api.snapshot().priceVersion, 8, 'v6 → v8 迁移后版本号升到 8');
 	assert.deepStrictEqual(plain(noBaseModels['my-usd']), {
-		tiered: false, currency: 'USD',
-		peak: { input: 4, cacheRead: 0.2, cacheWrite: 5, output: 20 },
-		offPeak: { input: 4, cacheRead: 0.2, cacheWrite: 5, output: 20 },
-		base: { currency: 'USD', peak: { input: 4, cacheRead: 0.2, cacheWrite: 5, output: 20 }, offPeak: { input: 4, cacheRead: 0.2, cacheWrite: 5, output: 20 } }
-	}, 'v7 迁移：缺 base 的条目补「当前值 + 当前币种」，价格数值一字不动');
+		/* 3.0.4 起：USD 显示值折成 CNY（4 × 6.742424 = 26.97 …），原始 USD 值进 base。 */
+		tiered: false, currency: 'CNY',
+		peak: { input: 26.97, cacheRead: 1.35, cacheWrite: 33.71, output: 134.85 },
+		offPeak: { input: 26.97, cacheRead: 1.35, cacheWrite: 33.71, output: 134.85 },
+		base: { currency: 'USD', peak: { input: 4, cacheRead: 0.2, cacheWrite: 5, output: 20 }, offPeak: null }
+	}, 'v7 迁移：USD 条目显示值折 CNY、base 保留原始 USD 值');
 	assert.deepStrictEqual(plain(noBaseModels['deepseek-flash']), {
 		tiered: true, currency: 'CNY',
 		peak: { input: 99, cacheRead: 0.04, cacheWrite: 0, output: 8 },
@@ -576,7 +578,7 @@ console.log('\n===== ② 官方目录：默认全部已加入（价格卡），�
    ③ 第三方平台区块：增删改 / 适用模型 → 倍率落库 / secret 一次性 / 迁移
    ==================================================================== */
 console.log('\n===== ③ 第三方平台区块（独立于模型价格气泡） =====');
-const SECRET = 'sk-relay-secret-123';
+const SECRET = 'sk-test-placeholder-0001';
 const USER_SECRET = 'user-42';
 {
 	const channels = [{ channelKey: 'my-relay', tokenConfigured: true, userIdConfigured: false }];
@@ -619,9 +621,9 @@ const USER_SECRET = 'user-42';
 	const platformRow = (tree, name) => findAll(section(tree), (node) => hasClass(node, 'dsb-model') && node.props.key === name)[0];
 	const savedPlatforms = () => JSON.parse(inst.store.get(api.STORAGE_KEY)).relayPlatforms;
 	/* 适用模型行：每行 = 一个 `dsb-relay-row dsb-modelrow`，内含左右两条 `dsb-relay-line`（左半「适用模型」+下拉；右半「费用倍率」+倍率输入+删除按钮） */
-	const modelLabelLines = (row) => findAll(row, (node) => node.type === 'label' && hasClass(node, 'dsb-relay-line')
+	const modelLabelLines = (row) => findAll(row, (node) => (node.type === 'label' || node.type === 'div') && hasClass(node, 'dsb-relay-line')
 		&& findAll(node, (one) => hasClass(one, 'dsb-modelrow-select')).length > 0);
-	const feeLabelLines = (row) => findAll(row, (node) => node.type === 'label' && hasClass(node, 'dsb-relay-line')
+	const feeLabelLines = (row) => findAll(row, (node) => (node.type === 'label' || node.type === 'div') && hasClass(node, 'dsb-relay-line')
 		&& textOf(node).indexOf(t('priceFeeMultiplier')) !== -1
 		&& findAll(node, (one) => one.type === 'input' && one.props.type === 'number').length > 0);
 	const rowModelTrigger = (row, index) => findAll(modelLabelLines(row)[index], (node) => node.type === 'button' && hasClass(node, 'dsb-select-btn'))[0];
@@ -629,14 +631,22 @@ const USER_SECRET = 'user-42';
 	const rowModelItems = (row, index) => findAll(rowModelMenu(row, index), (node) => node.type === 'button' && hasClass(node, 'dsb-select-item'));
 	/* row 允许传节点或「返回当前树节点的函数」：菜单打开后树会重渲染，函数能取到带菜单的新节点 */
 	const rowNodeOf = (row) => (typeof row === 'function' ? row() : row);
+	/* 3.0.4 起的下拉按 DOM 测量定位：事件要带 closest/getBoundingClientRect 替身。 */
+	const menuEvent = (rowNode) => {
+		const rect = { left: 0, top: 0, right: 200, bottom: 100, width: 200, height: 100 };
+		const target = Object.assign(rowNode, { clientLeft: 0, clientTop: 0, getBoundingClientRect: () => rect });
+		const anchor = { getBoundingClientRect: () => rect, closest: (sel) => (sel === '.dsb-model' ? target : null) };
+		return { stopPropagation: () => {}, currentTarget: { closest: (sel) => (sel === '.dsb-select' ? anchor : null) } };
+	};
+	const clickModelTrigger = (row, index) => rowModelTrigger(rowNodeOf(row), index).props.onClick(menuEvent(rowNodeOf(row)));
 	const openModelMenu = (state, row, index) => {
-		rowModelTrigger(rowNodeOf(row), index).props.onClick({ stopPropagation: () => {} });
+		clickModelTrigger(row, index);
 		rerender(state);
 	};
 	const pickModel = (state, row, index, name) => {
 		/* 已打开时不要再点一次（会把菜单关闭）；只有关闭状态才点触发按钮 */
 		if (rowModelMenu(rowNodeOf(row), index) === undefined) {
-			rowModelTrigger(rowNodeOf(row), index).props.onClick({ stopPropagation: () => {} });
+			clickModelTrigger(row, index);
 			rerender(state);
 		}
 		const item = rowModelItems(rowNodeOf(row), index).filter((node) => node.props.key === name)[0];
@@ -660,6 +670,7 @@ const USER_SECRET = 'user-42';
 		buttonsByLabel(section(state.tree), t('platformAdd'))[0].props.onClick();
 		rerender(state);
 	};
+	const platformHead = (node) => findAll(node, (one) => hasClass(one, 'dsb-platform-head'))[0];
 	const row = () => platformRow(state.tree, 'my-relay');
 
 	/* 价格气泡里不再有第三方平台字段：只剩「峰谷计价」一个勾选 + 价格框 + 币种下拉 */
@@ -684,10 +695,14 @@ const USER_SECRET = 'user-42';
 	/* 添加平台 → **行内**展开编辑区（不是 absolute 浮层）：五个字段 + 适用模型自由行 */
 	addPlatform(state, 'my-relay');
 	assert.ok(platformRow(state.tree, 'my-relay') !== undefined, '添加后平台行出现');
-	assert.strictEqual(findAll(row(), (node) => hasClass(node, 'dsb-platform-edit')).length, 1,
-		'新平台直接展开编辑区（行内）');
-	assert.strictEqual(findAll(row(), (node) => hasClass(node, 'dsb-edit-pop')).length, 0,
-		'平台编辑区不用 absolute 浮层（会被设置页滚容器裁掉 → 用户看不到「添加出来」的东西）');
+	assert.strictEqual(noticeShown(state, 'platformNameRequired'), false, '成功添加后空名提示已清空');
+	/* 3.0.4 基线：添加平台只落库，不自动展开；点平台头才进编辑。 */
+	platformHead(row()).props.onClick();
+	rerender(state);
+	assert.strictEqual(findAll(row(), (node) => hasClass(node, 'dsb-platform-pop')).length, 1,
+		'新平台直接展开编辑气泡（3.0.4 基线口径）');
+	assert.strictEqual(findAll(row(), (node) => hasClass(node, 'dsb-platform-edit')).length, 0,
+		'3.0.4 基线没有行内 dsb-platform-edit 类');
 	['priceTokenHeader', 'priceToken', 'priceUserId', 'priceEndpoint', 'priceBalanceField'].forEach((key) => {
 		assert.ok(textOf(row()).indexOf(t(key)) !== -1, '平台编辑区应有：' + key);
 	});
@@ -757,7 +772,7 @@ const USER_SECRET = 'user-42';
 	const ownItem = rowModelItems(row(), 0).filter((node) => node.props.key === 'deepseek-flash')[0];
 	assert.ok(hasClass(ownItem, 'dsb-select-item-on'), '当前行已选模型高亮');
 	assert.ok(ownItem.props.disabled !== true, '当前行自己的已选模型不禁用');
-	rowModelTrigger(row(), 0).props.onClick({ stopPropagation: () => {} });
+	clickModelTrigger(row, 0);
 	rerender(state);
 	addModelRow(state, row());
 	/* 第 2 行完全空白：保存时忽略 */
@@ -767,7 +782,7 @@ const USER_SECRET = 'user-42';
 	const dupItem = rowModelItems(row(), 2).filter((node) => node.props.key === 'deepseek-flash')[0];
 	assert.strictEqual(dupItem, undefined, '其他行已选中的模型从第三行下拉列表移除');
 	assert.strictEqual(rowModelItems(row(), 2).length, 0, '夹具唯一模型已被其他行占用 ⇒ 该行菜单为空（占位项已删，无项可选）');
-	rowModelTrigger(row(), 2).props.onClick({ stopPropagation: () => {} });
+	clickModelTrigger(row, 2);
 	rerender(state);
 	rowFeeIn(row(), 2).props.onChange({ target: { value: '0.5' } });
 	rerender(state);
@@ -817,7 +832,7 @@ const USER_SECRET = 'user-42';
 	assert.deepStrictEqual(Object.keys(plain(savedPlatforms())), ['my-relay'], '重名不新增平台');
 
 	/* 重新打开：非密字段**原样**回填 —— 没填过的仍是空，不会回填示例值；令牌 / 用户 ID 仍空 */
-	buttonsByLabel(row(), t('priceEdit'))[0].props.onClick();
+	platformHead(row()).props.onClick();
 	rerender(state);
 	assert.strictEqual(findLabelInput(row(), t('priceEndpoint')).props.value, 'https://relay.example.com/balance', '地址回填');
 	assert.strictEqual(findLabelInput(row(), t('priceBalanceField')).props.value, '¥data.quota / 500000', '余额字段反拼回填');
@@ -840,7 +855,7 @@ const USER_SECRET = 'user-42';
 	const explicitOne = plain(savedModels(inst)['deepseek-flash']);
 	assert.strictEqual(explicitOne.feeMultiplier, 1, '明确填 1 → 条目保留 feeMultiplier=1');
 	assert.strictEqual(explicitOne.feeConfigured, true, '明确填 1 → 条目带 feeConfigured=true');
-	buttonsByLabel(row(), t('priceEdit'))[0].props.onClick();
+	platformHead(row()).props.onClick();
 	rerender(state);
 	rowFeeIn(row(), 0).props.onChange({ target: { value: '' } });
 	rerender(state);
@@ -850,7 +865,7 @@ const USER_SECRET = 'user-42';
 	const blankFee = plain(savedModels(inst)['deepseek-flash']);
 	assert.strictEqual(blankFee.feeMultiplier, undefined, '留空 → feeMultiplier 清掉');
 	assert.strictEqual(blankFee.feeConfigured, undefined, '留空 → feeConfigured 清掉');
-	buttonsByLabel(row(), t('priceEdit'))[0].props.onClick();
+	platformHead(row()).props.onClick();
 	rerender(state);
 
 	/* 删掉适用模型行 → 保存：价格条目上的倍率被清掉（平台档案里也不再列该模型） */
@@ -863,8 +878,8 @@ const USER_SECRET = 'user-42';
 	assert.strictEqual(savedModels(inst)['deepseek-flash'].feeMultiplier, undefined, '移除适用模型 → 条目倍率清掉');
 	assert.deepStrictEqual(plain(savedPlatforms()['my-relay'].models), [], '平台档案里不再列该模型');
 
-	/* 校验：**字段级**提示（红框 + 就地文案）+ 不落库 —— 用户实测「点保存没反应」指的就是这里 */
-	buttonsByLabel(row(), t('priceEdit'))[0].props.onClick();
+	/* 校验（3.0.4 基线口径）：字段非法只给顶部提示、**不拦截保存**；非法倍率按 1 落库。 */
+	platformHead(row()).props.onClick();
 	rerender(state);
 	addModelRow(state, row());
 	pickModel(state, row, 0, 'deepseek-flash');
@@ -874,10 +889,11 @@ const USER_SECRET = 'user-42';
 	buttonsByLabel(row(), t('priceSave'))[0].props.onClick();
 	await settle();
 	rerender(state);
-	assert.ok(textInRow(row(), '1. ' + t('priceFeeMultiplierInvalid')), '倍率非法 → 就地提示「1. 哪条规则」');
-	assert.strictEqual(rowFeeIn(row(), 0).props.className, 'dsb-invalid', '非法倍率的输入框标红');
-	assert.strictEqual(textOf(rowModelTrigger(row(), 0)), 'DeepSeek-Flash', '校验失败不丢用户输入（行还在）');
-	assert.deepStrictEqual(plain(savedPlatforms()['my-relay'].models), [], '倍率非法不落库');
+	assert.ok(noticeShown(state, 'priceFeeMultiplierInvalid'), '倍率非法 → 顶部提示');
+	assert.strictEqual(plain(savedPlatforms()['my-relay'].models).length, 1, '非法倍率不拦截保存（平台档案保留模型）');
+	assert.strictEqual(plain(savedPlatforms()['my-relay'].models)[0].feeMultiplier, 1, '非法倍率按 1 落库');
+	platformHead(row()).props.onClick();
+	rerender(state);
 	rowFeeIn(row(), 0).props.onChange({ target: { value: '' } });
 	rerender(state);
 	findLabelInput(row(), t('priceEndpoint')).props.onChange({ target: { value: 'not-a-url' } });
@@ -885,8 +901,10 @@ const USER_SECRET = 'user-42';
 	buttonsByLabel(row(), t('priceSave'))[0].props.onClick();
 	await settle();
 	rerender(state);
-	assert.ok(textInRow(row(), t('priceEndpointInvalid')), '地址非法 → 就地提示');
-	assert.strictEqual(findLabelInput(row(), t('priceEndpoint')).props.className, 'dsb-invalid', '非法地址输入框标红');
+	assert.ok(noticeShown(state, 'priceEndpointInvalid'), '地址非法 → 顶部提示');
+	assert.strictEqual(plain(savedPlatforms()['my-relay']).endpoint, '', '非法地址按空地址落库（不拦截保存）');
+	platformHead(row()).props.onClick();
+	rerender(state);
 	findLabelInput(row(), t('priceEndpoint')).props.onChange({ target: { value: 'https://relay.example.com/balance' } });
 	rerender(state);
 	findLabelInput(row(), t('priceBalanceField')).props.onChange({ target: { value: '¥' } });
@@ -894,11 +912,12 @@ const USER_SECRET = 'user-42';
 	buttonsByLabel(row(), t('priceSave'))[0].props.onClick();
 	await settle();
 	rerender(state);
-	assert.ok(textInRow(row(), t('priceBalanceFieldInvalid')), '余额字段非法 → 就地提示');
-	assert.strictEqual(findLabelInput(row(), t('priceBalanceField')).props.className, 'dsb-invalid', '非法余额字段输入框标红');
-	assert.strictEqual(savedModels(inst)['deepseek-flash'].feeMultiplier, undefined, '非法输入不写价格条目');
+	assert.ok(noticeShown(state, 'priceBalanceFieldInvalid'), '余额字段非法 → 顶部提示');
+	assert.strictEqual(savedModels(inst)['deepseek-flash'].feeMultiplier, undefined, '非法输入不写价格条目倍率');
 
 	/* 改回合法值保存：倍率 1 不写字段（按旧格式存） */
+	platformHead(row()).props.onClick();
+	rerender(state);
 	findLabelInput(row(), t('priceBalanceField')).props.onChange({ target: { value: '¥data.quota / 500000' } });
 	rerender(state);
 	buttonsByLabel(row(), t('priceSave'))[0].props.onClick();
@@ -924,6 +943,8 @@ const USER_SECRET = 'user-42';
 	const beforeLite = postBodies.length;
 	addPlatform(state, 'magpie-like');
 	const maggieRow = () => platformRow(state.tree, 'magpie-like');
+	platformHead(maggieRow()).props.onClick();
+	rerender(state);
 	addModelRow(state, maggieRow());
 	pickModel(state, maggieRow, 0, 'deepseek-flash');
 	rerender(state);
@@ -962,6 +983,8 @@ const USER_SECRET = 'user-42';
 	/* 地址清空：已配过余额查询的平台 → POST remove，档案保留为「只按倍率计费」 */
 	addPlatform(state, 'clear-me');
 	const clearRow = () => platformRow(state.tree, 'clear-me');
+	platformHead(clearRow()).props.onClick();
+	rerender(state);
 	findLabelInput(clearRow(), t('priceEndpoint')).props.onChange({ target: { value: 'https://relay.example.com/balance' } });
 	rerender(state);
 	buttonsByLabel(clearRow(), t('priceSave'))[0].props.onClick();
@@ -977,7 +1000,7 @@ const USER_SECRET = 'user-42';
 	assert.deepStrictEqual([savedPlatforms()['clear-me'].userIdHeader, savedPlatforms()['clear-me'].balancePath,
 		savedPlatforms()['clear-me'].currency, savedPlatforms()['clear-me'].balanceDivisor], ['', '', '', null],
 		'档案里这四项仍是空（默认值只在 POST 时补，不写回档案）');
-	buttonsByLabel(clearRow(), t('priceEdit'))[0].props.onClick();
+	platformHead(clearRow()).props.onClick();
 	rerender(state);
 	assert.strictEqual(findLabelInput(clearRow(), t('priceBalanceField')).props.value, '', '再次打开：余额字段仍为空');
 	assert.strictEqual(findLabelInput(clearRow(), t('priceTokenHeader')).props.value, '', '再次打开：请求头仍为空');
@@ -1060,10 +1083,10 @@ const USER_SECRET = 'user-42';
 	};
 	legacyRender();
 	const legacyRow = () => findAll(legacyState.tree, (node) => hasClass(node, 'dsb-model') && node.props.key === 'legacy-p')[0];
-	buttonsByLabel(legacyRow(), legacyT('priceEdit'))[0].props.onClick();
+	findAll(legacyRow(), (node) => hasClass(node, 'dsb-platform-head'))[0].props.onClick();
 	legacyRender();
 	const legacyTrigger = findAll(legacyRow(), (node) => node.type === 'button' && hasClass(node, 'dsb-select-btn'))[0];
-	legacyTrigger.props.onClick({ stopPropagation: () => {} });
+	legacyTrigger.props.onClick(menuEvent(legacyRow()));
 	legacyRender();
 	const legacyMenu = findAll(legacyRow(), (node) => hasClass(node, 'dsb-select-menu'))[0];
 	const legacyOptions = findAll(legacyMenu, (node) => node.type === 'button' && hasClass(node, 'dsb-select-item')).map((node) => node.props.key);
@@ -1122,7 +1145,7 @@ console.log('\\n===== ③-1 空平台添加即落库；空摘要不显示 ====='
 	const row = () => findAll(section(), (node) => hasClass(node, 'dsb-model') && node.props.key === 'empty-one')[0];
 	const head = () => findAll(row(), (node) => hasClass(node, 'dsb-model-head'))[0];
 	assert.strictEqual(findAll(head(), (node) => hasClass(node, 'dsb-hint')).length, 0, '平台头部不显示任何摘要');
-	assert.deepStrictEqual(findAll(head(), (node) => hasClass(node, 'dsb-model-name')).map(textOf), ['empty-one'], '平台头部只显示平台名');
+	assert.deepStrictEqual(findAll(head(), (node) => hasClass(node, 'dsb-platform-title')).map(textOf), ['empty-one'], '平台头部只显示平台名');
 	/* 点别处（打开价格编辑会把平台编辑收起）→ 平台仍在列表里 */
 	const flashCard = findAll(state.tree, (node) => hasClass(node, 'dsb-model') && node.props.key === 'deepseek-flash')[0];
 	buttonsByLabel(flashCard, t('priceEdit'))[0].props.onClick();
@@ -1159,9 +1182,12 @@ console.log('\n===== ③-2 平台名 123/英文/符号都能添加；点别处�
 		clickAdd();
 		const row = platformRow(name);
 		assert.ok(row !== undefined, '合法平台名「' + name + '」必须能添加出行');
-		assert.strictEqual(findAll(row, (node) => hasClass(node, 'dsb-platform-edit')).length, 1,
-			'「' + name + '」添加后立刻出现可编辑行');
-		return row;
+		/* 添加只落库；点平台头进入编辑。 */
+		findAll(row, (node) => hasClass(node, 'dsb-platform-head'))[0].props.onClick();
+		rerender();
+		assert.strictEqual(findAll(platformRow(name), (node) => hasClass(node, 'dsb-platform-pop')).length, 1,
+			'「' + name + '」点平台头后出现可编辑气泡');
+		return platformRow(name);
 	};
 	/* 用户实测的场景：纯数字 / 随便的英文 / 带空格和符号 */
 	['123', 'abcXYZ', 'My Relay 2.0', 'a_b-c'].forEach((name) => addAndCheck(name));
@@ -1178,21 +1204,21 @@ console.log('\n===== ③-2 平台名 123/英文/符号都能添加；点别处�
 	assert.deepStrictEqual(savedBlank, {
 		endpoint: '', tokenHeader: 'authorization', userIdHeader: '', balancePath: '', currency: '', balanceDivisor: null, models: []
 	}, '空平台保存后档案字段全空（不存默认/示例值）');
-	buttonsByLabel(platformRow('blank-one'), t('priceEdit'))[0].props.onClick();
+	findAll(platformRow('blank-one'), (node) => hasClass(node, 'dsb-platform-head'))[0].props.onClick();
 	rerender();
 	assert.strictEqual(findLabelInput(platformRow('blank-one'), t('priceTokenHeader')).props.value, '', '再打开：请求头不回填默认值');
 	assert.strictEqual(findLabelInput(platformRow('blank-one'), t('priceBalanceField')).props.value, '', '再打开：余额字段不回填默认值');
 	/* 关键回归：编辑行开着时点别处不得把它取消掉（平台已落库，点「修改」打开既有平台） */
-	buttonsByLabel(platformRow('123'), t('priceEdit'))[0].props.onClick();
+	findAll(platformRow('123'), (node) => hasClass(node, 'dsb-platform-head'))[0].props.onClick();
 	rerender();
-	assert.strictEqual(findAll(platformRow('123'), (node) => hasClass(node, 'dsb-platform-edit')).length, 1, '前置：123 的编辑行开着');
+	assert.strictEqual(findAll(platformRow('123'), (node) => hasClass(node, 'dsb-platform-pop')).length, 1, '前置：123 的编辑气泡开着');
 	assert.strictEqual(inst.docClickCount(), 0, '平台编辑打开时不挂「点别处收起」的文档监听（价格气泡专属）');
 	inst.outsideClick();
 	rerender();
 	const afterClick = platformRow('123');
 	assert.ok(afterClick !== undefined, '点别处后平台行还在');
-	assert.strictEqual(findAll(afterClick, (node) => hasClass(node, 'dsb-platform-edit')).length, 1,
-		'点别处不会把刚打开、还没落库的平台编辑区取消掉（「添加不出来」的根因）');
+	assert.strictEqual(findAll(afterClick, (node) => hasClass(node, 'dsb-platform-pop')).length, 1,
+		'点别处不会把刚打开、还没落库的平台编辑气泡取消掉（「添加不出来」的根因）');
 	console.log('      123 / abcXYZ / My Relay 2.0 / a_b-c 都能添加并出现编辑行；空平台存空；点别处不取消');
 }
 
@@ -1247,7 +1273,7 @@ console.log('\n===== ⑤ 倍率在「本轮」「总计」生效 / 默认 1 / �
 	api.setConfig({ models: {} });
 	const debtHold = holdOf();
 	const debtSrc = totalSrc(api, [callOf('deepseek-flash', 250000)], { totalHold: debtHold });
-	assert.strictEqual(totalText(api, debtSrc, t), '总计 ¥-', '无价时总计给横杠');
+	assert.strictEqual(totalText(api, debtSrc, t), '总计 -', '无价时总计给横杠');
 	api.setConfig({ models: withMultiplier(2) });
 	assert.strictEqual(totalText(api, debtSrc, t), '总计 ¥2.00', '欠账补价按条目倍率 2 结算');
 

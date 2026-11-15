@@ -97,6 +97,7 @@ const api = captured.factory((name) => {
 				const out = fn();
 				if (typeof out === 'function') effectCleanups.push(out);
 			},
+			useLayoutEffect: () => {},
 			useRef: (init) => ({ current: init === undefined ? null : init }),
 			useSyncExternalStore: (sub, snap) => snap(),
 			useCallback: (fn) => fn, useMemo: (fn) => fn(), Fragment: Symbol('Fragment')

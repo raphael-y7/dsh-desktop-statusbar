@@ -81,6 +81,7 @@ const ZH = {
 	priceNewModel: '自定义模型',
 	/* 适用模型下拉的占位项：用户改为下拉选择 */
 	platformModelSelectPh: '请选择模型',
+	platformNameRequired: '平台名称不能为空。',
 	platformFeePh: '如 0.02',
 	/* task-24：提示行不再带币种（用户要求删掉那半句）。 */
 	secPricesHint: '填写你使用的模型单价（每百万 tokens）。',
@@ -158,6 +159,7 @@ const EN = {
 	tipCreditsLeft: '{left} / {total} left',
 	priceNewModel: 'Custom model',
 	platformModelSelectPh: 'Select a model',
+	platformNameRequired: 'Platform name is required.',
 	platformFeePh: 'e.g. 0.02'
 };
 
@@ -216,19 +218,15 @@ const STYLES = [
 	['价格行不换行（「全时段」/高峰/低谷与价格框始终同一行）', 'dsb-tier{display:flex;align-items:center;gap:8px;flex-wrap:nowrap}'],
 	['价格输入框刚好显示 XXX.XX（calc(6ch + 18px) 宽、24px 高；选择器带 input[type] 才压得住通用规则）', 'dsb-field input[type=text],.dsb-settings .dsb-field input[type=number]{width:calc(6ch + 18px);min-width:calc(6ch + 18px);flex:none;height:24px;text-align:right}'],
 	['费用倍率输入框刚好显示 xx.xx（calc(5ch + 18px)）', 'dsb-modelrow-fee input[type=number]{width:calc(5ch + 18px);min-width:calc(5ch + 18px);text-align:left}'],
-	['平台模型下拉强制向下、最多显示 5 项超出滚动（left:0 / width:100% / max-height 5 项 / 自身滚动）', 'dsb-modelrow-menu{left:0;right:auto;width:100%;max-height:calc(5 * 30px + 8px);overflow-y:auto;overscroll-behavior:contain}'],
+	['平台模型下拉浮层随锚点定位、最多 3 项超出滚动（max-height 3 项 / 自身滚动）', 'dsb-modelrow-menu{box-sizing:border-box;max-width:100%;max-height:calc(3 * 30px + 8px);overflow-y:auto;overscroll-behavior:contain'],
 	['平台模型下拉已被其他行占用的模型灰显不可点', 'dsb-select-item-disabled{opacity:.45;cursor:not-allowed}'],
-	['厂商名 summary 与模型名块等高（summary 44px + 父级 1px 边框 = 45px）且字号 15px', 'dsb-catalog-summary{display:flex;align-items:center;justify-content:space-between;gap:8px;box-sizing:border-box;min-height:44px;padding:8px 2px;line-height:20px;color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600'],
+	['厂商名 summary 行高 38px、字号 14px（3.0.4 基线即如此）', 'dsb-catalog-summary{display:flex;align-items:center;justify-content:flex-start;gap:8px;box-sizing:border-box;min-height:38px;padding:7px 2px 3px 2px;line-height:20px;color:var(--dsw-alias-label-primary);font-size:14px;font-weight:500'],
 	['实验性功能胶囊样式（6px / 999px 圆角 / 1px 轻描边 / padding 1px 3px / line-height 10px）', 'dsb-experimental-badge{padding:1px 3px;border:1px solid var(--dsw-alias-separator-primary,rgba(127,127,127,.3));border-radius:999px;font-size:6px;line-height:10px;font-weight:400'],
 	['实验性功能角标按 x² 上标位置贴在标题右上角（vertical-align:super / margin-left:2px）', 'white-space:nowrap;vertical-align:super;margin-left:2px}'],
-	['模型名字号 13px（厂商名字号必须比它大）', 'dsb-model-name{color:var(--dsw-alias-label-primary);font-weight:400;font-size:13px}'],
+	['模型名字号 13px（厂商名字号必须比它大）', 'dsb-model-name{color:var(--dsw-alias-label-primary);font-weight:400;font-size:13px;line-height:18px}'],
 	['平台「适用模型」下拉文字左对齐、默认 13px 且强制单行', 'dsb-modelrow-select .dsb-select-btn{display:flex;width:100%;height:28px;box-sizing:border-box;font-size:13px;justify-content:flex-start;text-align:left;white-space:nowrap;overflow:hidden}'],
-	['厂商目录拖拽浮层与摘要行同款（左对齐、15px/600、padding 0 2px）', 'dsb-catalog-drag-card{justify-content:flex-start;text-align:left;padding:0 2px;font-size:15px;font-weight:600'],
-	['厂商目录拖拽浮层使用原行克隆（wrapper 不额外加 padding，pointer-events:none）', 'dsb-catalog-drag-ghost{display:block;padding:0;gap:0;justify-content:flex-start;align-items:stretch;pointer-events:none}'],
-	['厂商目录拖拽浮层 wrapper 带 dsb-settings 作用域类（portal 到 body 后克隆体仍能命中 .dsb-settings .dsb-catalog-summary / .dsb-handle 的原行完整样式）', 'dsb-settings dsb-drag-card dsb-catalog-drag-card dsb-catalog-drag-ghost'],
-	['厂商目录拖拽浮层克隆原行 summary（保留 .dsb-catalog-summary 类）', 'rowNode.querySelector(".dsb-catalog-summary")'],
 	['厂商姓名前的 chevron 由 .dsb-settings 作用域规则提供（浮层必须把作用域带过去，否则只剩文字和六个点）', '.dsb-settings .dsb-catalog-summary::before{content:"";flex:none;width:6px;height:6px'],
-	['目录最后一项不再多出 8px 底部留白（只保留左侧缩进）', 'dsb-catalog-list{display:flex;flex-direction:column;gap:0;padding:0 0 0 14px;min-width:0}'],
+	['目录最后一项不再多出 8px 底部留白（只保留左侧缩进 + 4px 上间距）', 'dsb-catalog-list{display:flex;flex-direction:column;gap:0;padding:0 0 0 14px;min-width:0;margin-top:4px}'],
 	['峰谷计价勾选只占自身宽度', 'dsb-inline-check{display:flex;align-self:flex-start'],
 	['勾选与计价单位同一行两端对齐', 'dsb-tier-head{display:flex;align-items:center;justify-content:space-between'],
 	['币种下拉：毛玻璃 + 大圆角（与气泡同材质）', 'border-radius:var(--dsw-radius-lg,16px);background:rgb(from var(--dsw-specific-menu'],
@@ -295,7 +293,11 @@ const GONE = [
 	['令牌条小段 2px 保底（用户拍板去掉：按实际比例显示，极小段看不见是预期）', '.dsb-bar-seg{flex:0 1 auto;min-width:2px'],
 	['条形图段内透明右边框的间隔方案（会吞掉 0.76%/0.29% 这类极小段，已回退成 gap:1px）', '.dsb-bar-seg:not(:last-child){border-right:1px solid transparent'],
 	['条形图分段 border-box（透明边框方案的一部分，已回退）', 'dsb-bar-seg{flex:0 1 auto;min-width:0;box-sizing:border-box'],
-	['积分套餐聚合行的悬停灰底（用户拍板不要，只保留 cursor:pointer）', '.dsb-meter-row-plain:hover']
+	['积分套餐聚合行的悬停灰底（用户拍板不要，只保留 cursor:pointer）', '.dsb-meter-row-plain:hover'],
+	/* 厂商目录拖拽浮层从未在 3.0.4 基线实现（当前 lib 也无 dsb-catalog-drag-*），旧断言属于超前规格，改成负断言防误加。 */
+	['厂商目录拖拽浮层（3.0.4 基线即无此实现）', 'dsb-catalog-drag-card'],
+	['厂商目录拖拽 ghost wrapper（3.0.4 基线即无此实现）', 'dsb-catalog-drag-ghost'],
+	['厂商目录拖拽克隆原行 summary（3.0.4 基线即无此实现）', 'rowNode.querySelector(".dsb-catalog-summary")']
 ];
 GONE.forEach(([label, needle]) => {
 	if (raw.indexOf(needle) >= 0) {

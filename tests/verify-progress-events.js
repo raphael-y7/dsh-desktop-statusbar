@@ -83,7 +83,7 @@ const applyAll = (proj, state, events) => events.reduce((one, event) => proj.app
 	assert.ok(proj !== undefined, '进度投影已注册');
 
 	/* 0. 版本必须升到 9：旧持久化状态（skills 是字符串数组）会被重建 */
-	assert.strictEqual(proj.stateVersion, 9, 'stateVersion 升到 9（skills 新增 sub 子能力标记）');
+	assert.strictEqual(proj.stateVersion, 10, 'stateVersion 升到 10（进度投影开始统计 PTC 派发子调用）');
 	let state = proj.init();
 	proj.stateSchema.parse(state);
 	assert.deepStrictEqual(state.skills, [], 'skills 初始为空数组');
@@ -213,6 +213,28 @@ const applyAll = (proj, state, events) => events.reduce((one, event) => proj.app
 		false,
 		'旧 compacts 缺 afterTurn 不再被接受'
 	);
+
+	/* 9b. PTC 派发（tool/ptc-dispatch-start）与 tool/call 同口径计数；
+	   结果事件 tool/ptc-dispatch 共用 subCallId ⇒ 绝不能重复计。 */
+	let ptc = proj.init();
+	ptc = applyAll(proj, ptc, [
+		{ type: 'tool/call', time: at(), data: { turn: 1, step: 1, callId: 'call_run', name: 'run_code', arguments: '{}' } },
+		{ type: 'tool/ptc-dispatch-start', time: at(), data: { name: 'grep', subCallId: 'call_run:ptc:1', arguments: { pattern: 'x' } } },
+		{ type: 'tool/ptc-dispatch-start', time: at(), data: { name: 'skill', subCallId: 'call_run:ptc:2', arguments: { name: 'i-have-adhd' } } },
+		{ type: 'tool/ptc-dispatch-start', time: at(), data: { name: 'ops_read_files', subCallId: 'call_run:ptc:3', arguments: { files: [{ path: 'C:/x/skills/ponytail/references/y/y.md' }] } } },
+		{ type: 'tool/ptc-dispatch', time: at(), data: { name: 'grep', subCallId: 'call_run:ptc:1', isError: true, content: [] } }
+	]);
+	proj.stateSchema.parse(ptc);
+	assert.strictEqual(ptc.toolCalls, 4, 'PTC：run_code + grep + skill + ops_read_files = 4（结果事件不计）');
+	assert.strictEqual(ptc.toolCounts.grep, 1, 'grep 只计 1（-start 计、结果事件不重复计）');
+	assert.strictEqual(ptc.toolCounts.skill, 1, 'skill 计入工具次数');
+	assert.strictEqual(ptc.toolCounts.ops_read_files, 1, 'ops_read_files 计入工具次数');
+	assert.deepStrictEqual(ptc.skills, [
+		{ name: 'i-have-adhd', manual: false },
+		{ name: 'y', manual: false, sub: true }
+	], 'PTC 的 skill 派发与子能力文档读取都记进注入列表');
+	console.log('PTC 派发投影：toolCalls=' + ptc.toolCalls + ' grep=' + ptc.toolCounts.grep
+		+ ' skills=' + JSON.stringify(ptc.skills));
 
 	/* 10. 无关事件不改变状态（投影要能安全地喂任何事件） */
 	const before = JSON.stringify(state);

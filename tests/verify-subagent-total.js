@@ -810,6 +810,34 @@ const zeroTokens = () => ({ input: 0, cacheRead: 0, cacheWrite: 0, output: 0 });
 		+ ') + deepRunning(' + mixedTeam.body.deepRunning + ') · teamContextPercent=' + mixedTeam.body.teamContextPercent
 		+ ' · deepContextPercent=' + mixedTeam.body.deepContextPercent);
 
+	/* ============ 一 25b：PTC 会话（tool/ptc-dispatch-start / tool/ptc-dispatch）下的分层识别 ============
+	   现场复现：ops-ptc 会话通过 run_code 里的 tools.subagent 派子智能体，原生面板显示在跑，
+	   但状态栏圆环不变色。根因：识别"团队外独立子智能体"只扫 tool/call + tool/result，
+	   而 PTC 派发是 tool/ptc-dispatch-start / tool/ptc-dispatch（spawn 文本在 data.content[].text）。
+	   夹具钉住：PTC 独立 subagent ⇒ deep；PTC spawn_teammate（无 spawn 文本）⇒ team。 */
+	const ptcDispatchStart = (seq, name, subCallId, args) => ({
+		type: 'tool/ptc-dispatch-start', seq: seq, time: ROUND_AT,
+		data: { name: name, subCallId: subCallId, arguments: args === undefined ? {} : args }
+	});
+	const ptcDispatchResult = (seq, name, subCallId, text) => ({
+		type: 'tool/ptc-dispatch', seq: seq, time: ROUND_AT,
+		data: { name: name, subCallId: subCallId, isError: false, content: [{ type: 'text', text: text }] }
+	});
+	const PTC_SUB = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+	const PTC_TEAM = 'ffffffff-0000-1111-2222-333333333333';
+	writeSession('p-ptc', null, [turnStartEvent(ROUND_AT)]
+		.concat([ptcDispatchStart(10, 'subagent', 'call_x:ptc:1'), ptcDispatchResult(11, 'subagent', 'call_x:ptc:1', 'started subagent ' + PTC_SUB)])
+		.concat([ptcDispatchStart(12, 'spawn_teammate', 'call_x:ptc:2'), ptcDispatchResult(13, 'spawn_teammate', 'call_x:ptc:2', 'teammate spawned ok')]));
+	writeSession(PTC_SUB, 'p-ptc', [turnStartEvent(ROUND_AT), contextEvent(ROUND_AT + 100, 1000000), usageTotalEvent(2, ROUND_AT + 200, 300000)]);
+	writeSession(PTC_TEAM, 'p-ptc', [turnStartEvent(ROUND_AT), contextEvent(ROUND_AT + 100, 1000000), usageTotalEvent(2, ROUND_AT + 200, 200000)]);
+	const ptcBody = (await get('sessionId=p-ptc&since=0')).body;
+	assert.strictEqual(ptcBody.running, 2, 'PTC：两个后代都在跑（实际 ' + ptcBody.running + '）');
+	assert.strictEqual(ptcBody.deepRunning, 1, 'PTC 独立 subagent 算 deep（实际 ' + ptcBody.deepRunning + '）');
+	assert.strictEqual(ptcBody.teamRunning, 1, 'PTC spawn_teammate 算 team（实际 ' + ptcBody.teamRunning + '）');
+	assert.strictEqual(ptcBody.running, ptcBody.teamRunning + ptcBody.deepRunning, 'PTC 也满足 running === team + deep');
+	assert.strictEqual(ptcBody.deepContextPercent, 30, 'PTC 深层占用 300000/1000000 = 30%（实际 ' + String(ptcBody.deepContextPercent) + '）');
+	console.log('一 25b PTC 分层：running=' + ptcBody.running + ' team=' + ptcBody.teamRunning + ' deep=' + ptcBody.deepRunning);
+
 	/* ============ 一 26：在跑判定「IDLE 白名单为主，其余默认活着」（task-59） ============
 	   用户实机报「没有任何东西在运行，圆环还在蓝色转圈」。根因：会话结束后系统还会在
 	   `turn/end` 之后写 `session/end-seed` / `session/title`，旧判据只认 `=== 'turn/end'`
