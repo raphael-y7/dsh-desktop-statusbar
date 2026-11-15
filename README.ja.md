@@ -18,7 +18,7 @@
 
 DSH デスクトップアプリのメッセージ入力欄下の統計行を、設定可能なステータスバーに置き換えます。フィールド、並び順、モデルごとの単価、通貨はいずれも設定でき、DeepSeek 公式のピーク／オフピーク料金でリアルタイムに費用を見積もります。
 
-https://github.com/user-attachments/assets/73f78ed6-cca3-433c-9a96-e1e579fcb2a1
+<video src="https://github.com/user-attachments/assets/5a4f7fd8-a445-490d-a557-1ec840c611df" controls muted playsinline width="720"></video>
 
 ## 機能
 

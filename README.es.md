@@ -18,7 +18,7 @@
 
 Reemplaza la línea de estadísticas bajo el campo de entrada de mensajes de la aplicación de escritorio DSH por una barra de estado configurable: los campos, el orden, los precios por modelo y la moneda son configurables, con estimaciones de coste en tiempo real según las tarifas oficiales de hora punta y valle de DeepSeek.
 
-https://github.com/user-attachments/assets/73f78ed6-cca3-433c-9a96-e1e579fcb2a1
+<video src="https://github.com/user-attachments/assets/5a4f7fd8-a445-490d-a557-1ec840c611df" controls muted playsinline width="720"></video>
 
 ## Características
 
