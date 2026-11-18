@@ -99,6 +99,12 @@ function usdTierPrice(input, output = 0, fee) {
   return entry;
 }
 
+/* 普通 CNY 价格条目：不带 feeMultiplier / feeConfigured。用于「relay 缺倍率」与「Magpie 默认模型价」。 */
+function plainTierPrice(input, output = 0) {
+  const tier = { input, cacheRead: 0, cacheWrite: 0, output };
+  return { tiered: false, currency: 'CNY', peak: { ...tier }, offPeak: { ...tier } };
+}
+
 function hit(handler, pathname, options = {}) {
   return new Promise((resolve, reject) => {
     const listeners = {};
@@ -213,6 +219,11 @@ async function main() {
   const postMagpie = async (feeMultiplier) => {
     const result = await post(API + '/relay-balance-config', { channelKey: 'Magpie', feeMultiplier });
     assert.equal(result.status, 200, 'Magpie multiplier config write succeeded');
+    return result.body;
+  };
+  const removeMagpie = async () => {
+    const result = await post(API + '/relay-balance-config', { channelKey: 'Magpie', remove: true });
+    assert.equal(result.status, 200, 'Magpie channel removal succeeded: ' + JSON.stringify(result.body));
     return result.body;
   };
   const postPrices = (models) => post(API + '/prices', { models });
@@ -838,6 +849,60 @@ assert.equal(fetched.length, magpieMark + 2, 'Magpie 走 quotas + models 两个�
   report = await daily();
   assert.equal(JSON.stringify(usdDayOnDisk(auditUsdDayFee)), usdAfterSecond, '重复执行幂等：USD 日费用不再变化');
   console.log('USD history audit: relay 有倍率重算 / 缺倍率转欠账 / official+points 保持 / 前缀与 provider 兜底 / 幂等。');
+
+  /* ---- Magpie 子代理费用：只走子代理聚合路径，按实际模型价计，缺倍率默认 1 ---- */
+  priceBook = Object.assign({}, priceBook, {
+    'deepseek-chat': plainTierPrice(2, 0),
+    'deepseek-reasoner': Object.assign(tierPrice(1, 0), { feeMultiplier: 2 }),
+    'plain-unpriced-model': plainTierPrice(2, 0),
+    'gpt-5-parent': tierPrice(1, 0),
+  });
+  const magpiePost = await postPrices(priceBook);
+  assert.equal(magpiePost.status, 200, 'Magpie subagent price book accepted');
+
+  const subagentCost = async (parentId, childId, childProvider, childModel, parentProvider, parentModel) => {
+    const parentEvents = parentProvider === undefined ? [] : [assistantMessage(1, OFF_PEAK_AT, parentProvider, parentModel, M)];
+    writeSession(parentId, null, parentEvents);
+    writeSession(childId, parentId, [assistantMessage(1, OFF_PEAK_AT, childProvider, childModel, M)]);
+    const res = await hit(handler, API + '/subagent-usage?sessionId=' + encodeURIComponent(parentId) + '&since=0');
+    assert.equal(res.status, 200, 'subagent route 200 for ' + parentId);
+    return { total: res.body.total, child: res.body.children[0] };
+  };
+
+  /* 父会话用 GPT 模型；子代理 provider magpie + DeepSeek 模型。Magpie 通道倍率=1 时按模型价 2 计（非零）。 */
+  await postMagpie(1);
+  let magpieRes = await subagentCost('magpie-parent-default', 'magpie-child-default', 'magpie', 'deepseek-chat', 'openai', 'gpt-5-parent');
+  assert.equal(magpieRes.total.calls, 1, 'Magpie 子代理 1 次调用');
+  assert.equal(magpieRes.total.cost, 2, 'Magpie 子代理默认按模型价 2 计（缺倍率默认 1，非零）');
+  assert.equal(magpieRes.child.cost, 2, 'Magpie 子代理明细与 total 一致');
+
+  /* 显式 Magpie 通道倍率 1.5，provider 别名 remote-magpie：2 × 1.5 = 3（准确乘算）。 */
+  await postMagpie(1.5);
+  magpieRes = await subagentCost('magpie-parent-fee', 'magpie-child-fee', 'remote-magpie', 'deepseek-chat');
+  assert.equal(magpieRes.total.cost, 3, '显式 Magpie 通道倍率 1.5 × 模型价 2 = 3');
+
+  /* 价格条目自带 feeMultiplier 2：模型价 1 × 通道 1.5 × 条目 2 = 3。 */
+  magpieRes = await subagentCost('magpie-parent-entry', 'magpie-child-entry', 'magpie', 'deepseek-reasoner');
+  assert.equal(magpieRes.total.cost, 3, 'Magpie 通道 1.5 × 价格条目 feeMultiplier 2 × 模型价 1 = 3');
+
+  /* 普通 relay 缺 feeConfigured：子代理聚合仍按旧行为，不按官方价误计（0）。 */
+  magpieRes = await subagentCost('plain-parent-sub', 'plain-child-sub', 'plain-provider', 'plain-unpriced-model');
+  assert.equal(magpieRes.total.cost, 0, '普通 relay 缺 feeConfigured 时子代理费用仍为 0（不按官方价误计）');
+
+  /* 真正没有 Magpie 通道倍率配置：移除通道后，Magpie + DeepSeek 子代理仍按模型价 2 × 1 计费（非零）。 */
+  await removeMagpie();
+  magpieRes = await subagentCost('magpie-parent-nocfg', 'magpie-child-nocfg', 'magpie', 'deepseek-chat');
+  assert.equal(magpieRes.total.calls, 1, '无 Magpie 配置时子代理仍计 1 次调用');
+  assert.equal(magpieRes.total.cost, 2, '无 Magpie 通道倍率配置时按模型价 2 × 默认 1 计（非零）');
+  assert.equal(magpieRes.child.cost, 2, '无 Magpie 配置时子代理明细同为 2');
+
+  /* 重新显式配置 Magpie 倍率 3：2 × 3 = 6，恢复后仍准确乘算。 */
+  await postMagpie(3);
+  magpieRes = await subagentCost('magpie-parent-restored', 'magpie-child-restored', 'magpie', 'deepseek-chat');
+  assert.equal(magpieRes.total.cost, 6, '恢复显式 Magpie 倍率 3 后准确乘算 2 × 3 = 6');
+  await postMagpie(1.5);
+
+  console.log('Magpie subagent: 默认模型价非零 / 无配置默认 1 倍 / 显式通道与条目倍率准确 / 普通 relay 缺倍率仍 0。');
   console.log('PROVIDER FEE CHECKS PASSED');
   console.log('Projection: message/attempt/summary providers, missing-provider defaults, provider-only calls (no event multiplier), replay version.');
   console.log('Overflow: 4004 calls retain 4000 and keep provider/model/peak buckets separate.');

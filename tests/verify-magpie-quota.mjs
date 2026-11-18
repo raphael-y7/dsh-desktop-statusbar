@@ -10,7 +10,8 @@
  * 用法：node tests/verify-magpie-quota.js（退出码 0 = 通过；网关没开时实时段自动跳过）
  */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -26,6 +27,28 @@ import {
 } from '../lib/index.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
+/* 隔离真实 ~/.dsh：否则本机 relay-balance.json 里遗留的同名平台档案会先于
+   Magpie providerHint 命中，测试结果随环境漂移。这里故意放一条 orbi 平台档案，
+   验证「没有明确平台通道（provider 未在模型页配置）时不能拦截 Magpie」。 */
+const TEMP_HOME = mkdtempSync(join(tmpdir(), 'dsb-magpie-quota-'))
+process.env.DSH_HOME = TEMP_HOME
+mkdirSync(join(TEMP_HOME, 'dsh-status-bar'), { recursive: true })
+writeFileSync(join(TEMP_HOME, 'dsh-status-bar', 'relay-balance.json'), JSON.stringify({
+  version: 2,
+  channels: [{
+    channelKey: 'orbi',
+    endpoint: 'https://orbi.invalid/api/user/self',
+    tokenHeader: 'authorization',
+    userIdHeader: 'New-Api-User',
+    tokenPrefix: 'Bearer ',
+    balancePath: 'data.quota',
+    currency: 'CNY',
+    feeMultiplier: 1,
+    balanceDivisor: 500000,
+    headerNames: [],
+  }],
+}), 'utf8')
+process.on('exit', () => { try { rmSync(TEMP_HOME, { recursive: true, force: true }) } catch (error) { /* best effort */ } })
 let passed = 0
 function check(name, fn) {
   fn()

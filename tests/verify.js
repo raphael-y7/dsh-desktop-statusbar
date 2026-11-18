@@ -1227,21 +1227,36 @@ assert.ok(code.includes('scroller.scrollTop = (typeof scroller.scrollTop === "nu
 	'按"底边 + 余量 − 容器可视底边"的差值加 scrollTop');
 assert.ok(code.includes('if (overflow <= 0) return;'), '没被遮住时一动不动（不平白往上滚）');
 assert.ok(code.includes('window.requestAnimationFrame(retry)'), '稳定后补滚一次走 rAF（不是定时器）');
-/* task-21/task-26：底边滚入统一成一个钩子 `useRevealBottom(ref, active, extraKey)`，**恰好三处调用**
-   （价格编辑浮层 / 币种菜单 / 平台编辑区）；平台模型下拉已改纯 CSS 行内绝对气泡，不再走 JS 跟随；
-   气泡、跟手浮层、悬停提示有意不接。 */
+/* task-21/task-26/task-14：底边滚入统一成一个钩子 `useRevealBottom(ref, active, extraKey)`，**恰好两处调用**
+   （价格编辑浮层 / 币种菜单）；平台编辑区改用自定义 effect（platformRevealLenRef）：首次打开 / 切换平台
+   直接返回不滚，只有同一平台 modelRows 增加才 revealBottom。平台模型下拉已改纯 CSS 行内绝对气泡，
+   不再走 JS 跟随；气泡、跟手浮层、悬停提示有意不接。 */
 const revealLines = code.split('\n').filter((one) => one.indexOf('useRevealBottom(') !== -1);
-assert.strictEqual(revealLines.length, 3,
-	'useRevealBottom 恰好三处调用（价格浮层 / 条目币种菜单 / 平台编辑区），实际 ' + revealLines.length);
+assert.strictEqual(revealLines.length, 2,
+	'useRevealBottom 恰好两处调用（价格浮层 / 条目币种菜单），实际 ' + revealLines.length);
 assert.strictEqual((code.match(/const useRevealBottom = \(ref, active, extraKey\)/g) || []).length, 1,
 	'只有一份实现（不要各写一份）');
 assert.ok(code.includes('useRevealBottom(editPopRef, editing !== null'), '第一处：价格编辑浮层（切卡也重滚，含新增自定义模型）');
 assert.ok(code.includes('useRevealBottom(currencyMenuRef, currencyOpen === true, null)'), '第二处：条目币种菜单');
-assert.ok(code.includes('useRevealBottom(platformEditRef, platformEditing !== null'), '第三处：平台编辑区（添加平台后滚到底部）');
-const wiredRefs = ['editPopRef', 'currencyMenuRef', 'platformEditRef'];
+/* 平台编辑区不再接 useRevealBottom，改用 platformRevealLenRef 自定义 effect（task-14）：
+   记录上次平台名 + 模型行数；首次打开 / 切换平台（prev 为空或平台名不同）直接返回不滚，
+   只有同一平台 modelRows 增加才 revealBottom（保留加模型行的自动露出）。 */
+assert.ok(!code.includes('useRevealBottom(platformEditRef'),
+	'平台编辑区不该再走 useRevealBottom（task-14 已改成自定义 effect）');
+assert.ok(code.includes('const platformRevealLenRef = react.useRef(null)'),
+	'平台编辑区用 platformRevealLenRef 记录上次平台名 + 模型行数');
+assert.ok(code.includes('platformRevealLenRef.current = { name: platformEditing, len: rows.length }'),
+	'记录当前平台名与模型行数，供下次比较');
+assert.ok(code.includes('if (prev === null || prev.name !== platformEditing || rows.length <= prev.len) return undefined;'),
+	'首次打开 / 切换平台（prev 为空或平台名不同）、以及行数未增加时直接返回，不滚动');
+assert.ok(code.includes('const retry = () => revealBottom(platformEditRef.current)'),
+	'只有同一平台 modelRows 增加时才 revealBottom（保留加模型行的自动露出）');
+assert.ok(code.includes('[platformEditing, platformDraft === null ? null : platformDraft.modelRows.length]'),
+	'effect 依赖平台名与模型行数（打开 / 切换 / 加行都会重算判定）');
+const wiredRefs = ['editPopRef', 'currencyMenuRef'];
 revealLines.forEach((one) => {
 	assert.ok(wiredRefs.some((ref) => one.indexOf(ref) !== -1),
-		'useRevealBottom 只允许接在这三个下拉/浮层上，实际这行：' + one.trim());
+		'useRevealBottom 只允许接在价格浮层 / 币种菜单上，实际这行：' + one.trim());
 });
 ['dsb-tip', 'dsb-drag-card', 'dsb-star-tip'].forEach((cls) => {
 	assert.ok(revealLines.every((one) => one.indexOf(cls) === -1),

@@ -670,6 +670,13 @@ process.env.DSH_HOME = HOME;
 		set: async (ref, value) => { relaySetCalls.push([ref, value]); relayStored.set(ref, value); },
 		unset: async (ref) => { relayUnsetCalls.push(ref); relayStored.delete(ref); }
 	};
+	/* 模型页 provider 配置：orbi 有 baseURL；空白地址保存时必须保持空（地址留给首次查询自动探测）。 */
+	const relaySettingsService = {
+		describe: () => [{
+			ns: 'include:llm-pi-ai',
+			value: { providers: { orbi: { baseURL: 'https://orbi.example/v1' } } }
+		}]
+	};
 	let relayHandler = null;
 	let trustedOrigin = 'http://127.0.0.1:19387';
 	mod.apply({
@@ -686,7 +693,11 @@ process.env.DSH_HOME = HOME;
 			}
 		},
 		credentials: relayCredentials,
-		get: (name) => name === 'credentials' ? relayCredentials : undefined
+		get: (name) => {
+			if (name === 'credentials') return relayCredentials;
+			if (name === 'settings') return relaySettingsService;
+			return undefined;
+		}
 	});
 	assert.ok(relayHandler !== null, 'relay config prefix route registered');
 	const relayCall = async (method, route, body, origin) => {
@@ -809,6 +820,49 @@ process.env.DSH_HOME = HOME;
 	const invalidListenerOrigin = await relayCall('POST', relayPath, originChannel('invalid-listener'), 'http://127.0.0.1:19387');
 	assert.strictEqual(invalidListenerOrigin.status, 403, 'invalid trusted listener origin fails closed');
 	console.log('= relay POST Origin: scheme, port, opaque, malformed and invalid listener cases');
+
+	/* ===== ③-6 删除平台后同名重建不残留 token/userId/header（task-25） ===== */
+	{
+		/* 第二个平台：验证“只清被删 channel，别的 channel 凭据仍在” */
+		const keeper = Object.assign({}, ordinaryRelay, {
+			channelKey: 'relay-keeper-channel',
+			token: 'keeper-token-sentinel', userId: 'keeper-user-sentinel',
+			headers: { 'x-keeper-secret': 'keeper-header-sentinel' }
+		});
+		const keeperCreate = await relayCall('POST', relayPath, keeper, undefined);
+		assert.strictEqual(keeperCreate.status, 200, '前置：第二个平台创建成功');
+		const refKeep = relaySetCalls[relaySetCalls.length - 1][0];
+		assert.strictEqual(relayStored.has(ref), false, '前置：被删平台的 credential ref 已不存在');
+		assert.strictEqual(relayStored.has(refKeep), true, '前置：第二平台凭据已存');
+		/* 同名空配置重新添加（模拟“删除后同名新建”，只填名字） */
+		const reAdd = await relayCall('POST', relayPath, { channelKey: ordinaryRelay.channelKey }, undefined);
+		assert.strictEqual(reAdd.status, 200, '同名空配置重新添加成功');
+		assert.strictEqual(relayStored.has(ref), true, '同名重建写入显式 envelope（不靠 ambient）');
+		assert.deepStrictEqual(JSON.parse(relayStored.get(ref)), { token: '', userId: '', headers: {} },
+			'同名重建不得继承 ambient/残留 token/userId/header');
+		const rebuiltGet = await relayCall('GET', relayPath);
+		const rebuilt = rebuiltGet.body.channels.find((one) => one.channelKey === ordinaryRelay.channelKey);
+		const kept = rebuiltGet.body.channels.find((one) => one.channelKey === keeper.channelKey);
+		assert.ok(rebuilt !== undefined && kept !== undefined, '两平台都在 GET 中');
+		assert.strictEqual(rebuilt.tokenConfigured, false, '同名重建后 tokenConfigured=false');
+		assert.strictEqual(rebuilt.userIdConfigured, false, '同名重建后 userIdConfigured=false');
+		assert.strictEqual(kept.tokenConfigured, true, '另一个平台 token 仍在');
+		assert.strictEqual(kept.userIdConfigured, true, '另一个平台 userId 仍在');
+		const rebuiltText = JSON.stringify(rebuiltGet.body);
+		for (const secret of ['ambient-token-sentinel', 'ambient-user-sentinel', 'ambient-header-sentinel']) {
+			assert.strictEqual(rebuiltText.includes(secret), false, '同名重建 GET 不暴露 ambient: ' + secret);
+		}
+		/* 清理：两平台都删掉，恢复空 Map，供后续「空白 endpoint」用例 */
+		const rmRebuilt = await relayCall('POST', relayPath, { remove: true, channelKey: ordinaryRelay.channelKey }, undefined);
+		const rmKeeper = await relayCall('POST', relayPath, { remove: true, channelKey: keeper.channelKey }, undefined);
+		assert.strictEqual(rmRebuilt.status, 200, '清理：删除同名重建平台');
+		assert.strictEqual(rmKeeper.status, 200, '清理：删除第二平台');
+		assert.strictEqual(relayStored.size, 0, '清理后 credential Map 清空');
+		console.log('= 删除后同名重建：token/userId/header 不残留，其他平台凭据保留');
+	}
+
+	/* 空白地址保存（endpoint 保持空、token/userId 不丢、只填部分字段也保存）是协议级用例，
+	   已由 tests/verify-relay-settings.js ⑧ 统一覆盖（直接驱动 updateRelayConfig）；此处不再重复断言。 */
 
 	/* ============= 第三方平台余额端到端：真实 HTTP stub 验证落库字段真的被用于查询 */
 	/* 预置当天汇率，避免 /balance 顺带拉一次外部汇率打乱请求计数 */

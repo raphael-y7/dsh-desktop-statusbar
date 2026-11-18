@@ -7,7 +7,7 @@
  *      删除后行消失、「恢复默认」找回（数据来自 docs/official-models.json）；
  *   ③ 模型价格气泡里**不再有**第三方平台字段（勾选 / 请求头 / 令牌 / 用户 ID / 地址 / 余额字段 / 倍率），
  *      改为价格卡下方独立的「第三方平台」区块：平台增删改、适用模型**自由输入行** → 按模型倍率写进价格条目、
- *      secret 一次性（不回显 / 不落 localStorage）、地址留空 = 只按倍率计费、档案里没填的字段存空
+ *      secret 一次性（不回显 / 不落 localStorage）、地址留空仍保存（endpoint 保持空，首次查询再自动探测）、档案里没填的字段存空
  *      （默认值只在向宿主 POST 余额配置时补）、旧 relay 配置迁移成平台；
  *   ③-2 平台名 123 / 英文 / 符号都能添加并立刻出现编辑行；「点别处」不会取消刚打开的平台编辑（task-41）；
  *   ④ 开发模式 0 次真实 fetch（中转站 GET 也要遵守）；
@@ -19,9 +19,10 @@
  */
 const fs = require('fs');
 const path = require('path');
-const vm = require('vm');
 const assert = require('assert');
 const os = require('os');
+const hostLib = require('./_host-lib');
+const { findAll, hasClass, textOf, makeFakeDocument, runPlugin } = require('./helpers/client-harness');
 
 const TEMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'dsb-test-home-relay-settings-'));
 process.env.DSH_HOME = TEMP_HOME;
@@ -91,8 +92,11 @@ function useStateSlot(init) {
 	];
 }
 
-function loadClient(fetchImpl, initialStore) {
+function loadClient(fetchImpl, initialStore, options) {
 	/* initialStore：模拟"用户机器上已有的 localStorage"（[key, value] 数组），用来测迁移播种 */
+	/* options.dom：传入 { platformNode } 时启用滚动模拟（给 getComputedStyle，并把平台编辑区
+	   节点挂到 platformEditRef 上），供 task-14 的「打开编辑区不滚动」回归测试使用。 */
+	const domOpt = options === undefined || options === null || options.dom === undefined ? null : options.dom;
 	const store = new Map(initialStore === undefined ? [] : initialStore);
 	const fetchLog = [];
 	const fakeWindow = {
@@ -106,6 +110,7 @@ function loadClient(fetchImpl, initialStore) {
 		addEventListener: () => {}, removeEventListener: () => {},
 		requestAnimationFrame: (fn) => { fn(); return 0; },
 		cancelAnimationFrame: () => {},
+		getComputedStyle: domOpt === null ? undefined : (node) => ({ overflowY: node !== null && node !== undefined && typeof node.__overflowY === 'string' ? node.__overflowY : '' }),
 		fetch: (url, init) => {
 			fetchLog.push({ url: String(url), init: init });
 			return fetchImpl === undefined
@@ -113,15 +118,22 @@ function loadClient(fetchImpl, initialStore) {
 				: fetchImpl(String(url), init);
 		}
 	};
-	let captured = null;
-	fakeWindow.__ModuleLoader__ = { load: (entry) => { captured = entry; } };
+
 
 	const reactStub = {
-		createElement: (type, props, ...children) => ({
-			type: type,
-			props: props === null || props === undefined ? {} : props,
-			children: children.flat(Infinity).filter((one) => one !== null && one !== undefined && one !== false)
-		}),
+		createElement: (type, props, ...children) => {
+			const node = {
+				type: type,
+				props: props === null || props === undefined ? {} : props,
+				children: children.flat(Infinity).filter((one) => one !== null && one !== undefined && one !== false)
+			};
+			/* domOpt：模拟 React 把平台编辑区 DOM 节点挂到 ref 上（滚动回归测试用） */
+			if (domOpt !== null && node.props.ref !== null && node.props.ref !== undefined && typeof node.props.ref === 'object'
+				&& typeof node.props.className === 'string' && node.props.className.split(' ').indexOf('dsb-platform-pop') !== -1) {
+				node.props.ref.current = domOpt.platformNode;
+			}
+			return node;
+		},
 		useState: (init) => useStateSlot(init),
 		useEffect: (fn, deps) => {
 			if (activeHooks === null || typeof fn !== 'function') return;
@@ -156,40 +168,9 @@ function loadClient(fetchImpl, initialStore) {
 
 	/* 文档级 click 监听：页面上的「点别处收起编辑区」靠它。测试里可以主动派发一次
 	   「点在编辑区外面」的点击，验证它不会把刚打开的平台编辑行顺手取消掉。 */
-	const docClicks = [];
-	const fakeDocument = {
-		documentElement: { classList: { add() {}, remove() {} } },
-		querySelector: () => null,
-		querySelectorAll: () => [],
-		createElement: () => ({ dataset: {}, style: {}, appendChild() {}, setAttribute() {}, className: '' }),
-		body: {}, head: { appendChild() {} },
-		addEventListener: (name, fn) => { if (name === 'click' && docClicks.indexOf(fn) === -1) docClicks.push(fn); },
-		removeEventListener: (name, fn) => {
-			const at = docClicks.indexOf(fn);
-			if (at !== -1) docClicks.splice(at, 1);
-		}
-	};
-	const sandbox = {
-		window: fakeWindow,
-		document: fakeDocument,
-		MutationObserver: class { observe() {} disconnect() {} },
-		react: reactStub,
-		console: console, Promise: Promise, Date: Date, Math: Math, JSON: JSON, Object: Object, Array: Array,
-		Number: Number, String: String, Boolean: Boolean, Symbol: Symbol, Set: Set, Map: Map, Error: Error,
-		setTimeout: setTimeout, clearTimeout: clearTimeout,
-		requestAnimationFrame: (fn) => { fn(); return 0; },
-		cancelAnimationFrame: () => {}
-	};
-	sandbox.globalThis = sandbox;
-	vm.createContext(sandbox);
-	vm.runInContext(injected, sandbox, { filename: 'client.js' });
-	assert.ok(captured !== null && captured.factory !== undefined, '插件工厂没被捕获');
-	const api = captured.factory((name) => {
-		if (name === 'react') return reactStub;
-		if (name === 'react-dom') throw new Error('no react-dom');
-		throw new Error('unexpected require: ' + name);
-	}).__test;
-	assert.ok(api !== undefined, '__test 插桩导出没拿到');
+
+	const { document: fakeDocument, docClicks } = makeFakeDocument();
+	const api = runPlugin(injected, reactStub, fakeWindow, fakeDocument);
 	return {
 		api: api, store: store, fetchLog: fetchLog, hooks: makeHooks,
 		/* 派发一次「点在编辑区外面」的文档点击（target 不是 DOM 节点 = 不在任何浮层里） */
@@ -209,30 +190,7 @@ function translator(api) {
 	};
 }
 const plain = (value) => JSON.parse(JSON.stringify(value));
-function textOf(node) {
-	const out = [];
-	(function step(one) {
-		if (typeof one === 'string' || typeof one === 'number') { out.push(String(one)); return; }
-		if (one === null || one === undefined || one === false || one === true) return;
-		if (Array.isArray(one)) { one.forEach(step); return; }
-		if (typeof one !== 'object') return;
-		(one.children || []).forEach(step);
-	})(node);
-	return out.join('');
-}
-function findAll(node, pred) {
-	const out = [];
-	(function step(one) {
-		if (one === null || one === undefined || one === false || one === true) return;
-		if (Array.isArray(one)) { one.forEach(step); return; }
-		if (typeof one !== 'object') return;
-		if (pred(one)) out.push(one);
-		(one.children || []).forEach(step);
-	})(node);
-	return out;
-}
-const classOf = (node) => (typeof node.props.className === 'string' ? node.props.className : '');
-const hasClass = (node, name) => classOf(node).split(' ').indexOf(name) !== -1;
+
 const buttonsByLabel = (tree, label) => findAll(tree, (node) => node.type === 'button'
 	&& hasClass(node, 'dsb-action') && textOf(node) === label);
 const findLabelInput = (tree, label) => {
@@ -581,17 +539,44 @@ console.log('\n===== ③ 第三方平台区块（独立于模型价格气泡） 
 const SECRET = 'sk-test-placeholder-0001';
 const USER_SECRET = 'user-42';
 {
-	const channels = [{ channelKey: 'my-relay', tokenConfigured: true, userIdConfigured: false }];
+	/* 模拟 Host relayConfigView：非密字段会带运行时默认值（New-Api-User / data.quota / 500000），
+	   这些默认值不是用户填过的值，编辑区不得据此回填。 */
+	const channels = [{
+		channelKey: 'my-relay',
+		endpoint: '',
+		tokenHeader: 'authorization',
+		userIdHeader: 'New-Api-User',
+		tokenPrefix: 'Bearer ',
+		balancePath: 'data.quota',
+		currency: 'CNY',
+		feeMultiplier: 1,
+		balanceDivisor: 500000,
+		tokenConfigured: true,
+		userIdConfigured: false
+	}];
 	const postBodies = [];
+	let relayPostOutcome = 'ok';
 	const inst = loadClient((url, init) => {
 		if (String(url).indexOf('/api/relay-balance-config') !== -1) {
 			if (init !== undefined && init.method === 'POST') {
 				postBodies.push(JSON.parse(init.body));
+				if (relayPostOutcome === 'fail') {
+					return Promise.resolve({ json: () => Promise.resolve({ ok: false, reason: 'relay-config-failed' }) });
+				}
+				if (relayPostOutcome === 'throw') return Promise.reject(new Error('relay network down'));
 				const body = postBodies[postBodies.length - 1];
 				return Promise.resolve({ json: () => Promise.resolve({
 					ok: true,
 					channels: body.remove === true ? [] : [{
 						channelKey: body.channelKey,
+						endpoint: body.endpoint,
+						tokenHeader: body.tokenHeader,
+						userIdHeader: body.userIdHeader,
+						tokenPrefix: body.tokenPrefix,
+						balancePath: body.balancePath,
+						currency: body.currency,
+						feeMultiplier: body.feeMultiplier,
+						balanceDivisor: body.balanceDivisor,
 						tokenConfigured: body.token !== undefined && body.token !== '',
 						userIdConfigured: body.userId !== undefined && body.userId !== ''
 					}]
@@ -626,7 +611,8 @@ const USER_SECRET = 'user-42';
 	const feeLabelLines = (row) => findAll(row, (node) => (node.type === 'label' || node.type === 'div') && hasClass(node, 'dsb-relay-line')
 		&& textOf(node).indexOf(t('priceFeeMultiplier')) !== -1
 		&& findAll(node, (one) => one.type === 'input' && one.props.type === 'number').length > 0);
-	const rowModelTrigger = (row, index) => findAll(modelLabelLines(row)[index], (node) => node.type === 'button' && hasClass(node, 'dsb-select-btn'))[0];
+	/* task-15：模型控件由 button 改为原生 input（可输入筛选），查找器按 input 找 */
+	const rowModelTrigger = (row, index) => findAll(modelLabelLines(row)[index], (node) => node.type === 'input' && hasClass(node, 'dsb-select-btn'))[0];
 	const rowModelMenu = (row, index) => findAll(modelLabelLines(row)[index], (node) => hasClass(node, 'dsb-select-menu'))[0];
 	const rowModelItems = (row, index) => findAll(rowModelMenu(row, index), (node) => node.type === 'button' && hasClass(node, 'dsb-select-item'));
 	/* row 允许传节点或「返回当前树节点的函数」：菜单打开后树会重渲染，函数能取到带菜单的新节点 */
@@ -638,7 +624,7 @@ const USER_SECRET = 'user-42';
 		const anchor = { getBoundingClientRect: () => rect, closest: (sel) => (sel === '.dsb-model' ? target : null) };
 		return { stopPropagation: () => {}, currentTarget: { closest: (sel) => (sel === '.dsb-select' ? anchor : null) } };
 	};
-	const clickModelTrigger = (row, index) => rowModelTrigger(rowNodeOf(row), index).props.onClick(menuEvent(rowNodeOf(row)));
+	const clickModelTrigger = (row, index) => rowModelTrigger(rowNodeOf(row), index).props.onFocus(menuEvent(rowNodeOf(row)));
 	const openModelMenu = (state, row, index) => {
 		clickModelTrigger(row, index);
 		rerender(state);
@@ -732,8 +718,10 @@ const USER_SECRET = 'user-42';
 	assert.ok(textOf(modelLabelLines(row())[0]).indexOf(t('platformModels')) === 0, '模型行自带「适用模型」标签（标签在左、下拉紧随其后）');
 	assert.ok(textOf(feeLabelLines(row())[0]).indexOf(t('priceFeeMultiplier')) === 0, '右半行以「费用倍率」标签开头（标签在左、输入框紧随其后）');
 	const modelTrigger = rowModelTrigger(row(), 0);
-	assert.ok(modelTrigger !== undefined, '每行有自定义下拉按钮');
-	assert.strictEqual(textOf(modelTrigger), t('platformModelSelectPh'), '新行显示「请选择模型」占位');
+	assert.ok(modelTrigger !== undefined, '每行有可输入筛选的模型框（原生 input）');
+	assert.strictEqual(modelTrigger.props.type, 'text', '模型框是原生文本输入');
+	assert.strictEqual(modelTrigger.props.role, 'combobox', '模型框保留 combobox 语义');
+	assert.strictEqual(modelTrigger.props.placeholder, t('platformModelSelectPh'), '新行显示「请选择模型」占位');
 	openModelMenu(state, row, 0);
 	const modelItems = rowModelItems(row(), 0);
 	const modelItemKeys = modelItems.map((node) => node.props.key);
@@ -741,7 +729,7 @@ const USER_SECRET = 'user-42';
 	assert.ok(modelItemKeys.indexOf('deepseek-flash') !== -1, '菜单选项来自价格库（按 catalogOrder 的厂商顺序）');
 	assert.strictEqual(textOf(modelItems[0]), 'DeepSeek-Flash', '菜单只含价格库模型名（displayModelName 显示）');
 	pickModel(state, row, 0, 'deepseek-flash');
-	assert.strictEqual(textOf(rowModelTrigger(row(), 0)), 'DeepSeek-Flash', '选中后按钮显示模型名');
+	assert.strictEqual(rowModelTrigger(row(), 0).props.value, 'DeepSeek-Flash', '选中后输入框显示模型名');
 	assert.ok(rowFeeIn(row(), 0) !== undefined, '模型行仍有费用倍率输入框');
 	assert.strictEqual(rowFeeIn(row(), 0).props.value, '', '倍率留空 = 1（不预填）');
 	assert.strictEqual(rowFeeIn(row(), 0).props.placeholder, t('platformFeePh'), '倍率输入框提示文案「如 0.02」');
@@ -781,9 +769,17 @@ const USER_SECRET = 'user-42';
 	openModelMenu(state, row, 2);
 	const dupItem = rowModelItems(row(), 2).filter((node) => node.props.key === 'deepseek-flash')[0];
 	assert.strictEqual(dupItem, undefined, '其他行已选中的模型从第三行下拉列表移除');
-	assert.strictEqual(rowModelItems(row(), 2).length, 0, '夹具唯一模型已被其他行占用 ⇒ 该行菜单为空（占位项已删，无项可选）');
-	clickModelTrigger(row, 2);
+	assert.strictEqual(rowModelItems(row(), 2).length, 0, '夹具唯一模型已被其他行占用 ⇒ 无候选可选');
+	assert.strictEqual(rowModelMenu(row(), 2), undefined, '无候选时完全不渲染 listbox');
+	assert.strictEqual(rowModelTrigger(row(), 2).props['aria-expanded'], 'false', '无候选时 aria-expanded=false');
+	rowModelTrigger(row(), 2).props.onChange({ target: { value: 'Custom-Model' } });
 	rerender(state);
+	assert.strictEqual(rowModelTrigger(row(), 2).props.value, 'Custom-Model', '自定义模型输入保留在筛选框');
+	assert.strictEqual(rowModelMenu(row(), 2), undefined, '自定义筛选文本不自动加入候选');
+	rowModelTrigger(row(), 2).props.onBlur({ currentTarget: { value: 'Custom-Model' } });
+	rerender(state);
+	assert.strictEqual(rowModelTrigger(row(), 2).props.value, 'Custom-Model', '失焦并重渲染后仍显示自定义模型');
+	assert.strictEqual(rowModelMenu(row(), 2), undefined, '失焦后关闭无匹配筛选菜单');
 	rowFeeIn(row(), 2).props.onChange({ target: { value: '0.5' } });
 	rerender(state);
 	buttonsByLabel(row(), t('priceSave'))[0].props.onClick();
@@ -799,8 +795,21 @@ const USER_SECRET = 'user-42';
 		balancePath: 'data.quota',
 		currency: 'CNY',
 		balanceDivisor: 500000,
-		models: [{ model: 'deepseek-flash', feeMultiplier: 2 }]
+		models: [{ model: 'deepseek-flash', feeMultiplier: 2 }, { model: 'Custom-Model', feeMultiplier: 0.5 }]
 	}, '平台档案存非密字段（没填就是空）+ 适用模型 + 倍率；空行忽略、同名宽容去重');
+	platformHead(row()).props.onClick();
+	rerender(state);
+	assert.strictEqual(rowModelTrigger(row(), 1).props.value, 'Custom-Model', '保存后重新打开平台编辑区仍回显自定义模型');
+	openModelMenu(state, row, 1);
+	assert.strictEqual(rowModelMenu(row(), 1), undefined, '重开后未知自定义模型不应进入下拉候选');
+	assert.strictEqual(rowModelTrigger(row(), 1).props['aria-expanded'], 'false', '重开后未知自定义模型菜单保持关闭');
+	rowModelTrigger(row(), 1).props.onChange({ target: { value: '' } });
+	rerender(state);
+	const reopenedItems = rowModelItems(row(), 1);
+	assert.strictEqual(reopenedItems.length, 0, '清空筛选后当前夹具无可用候选');
+	assert.strictEqual(reopenedItems.filter((node) => node.props.key === 'Custom-Model').length, 0, '清空筛选后候选仍不含未知自定义模型');
+	rowModelTrigger(row(), 1).props.onKeyDown({ key: 'Escape', preventDefault: () => {} });
+	rerender(state);
 	assert.strictEqual(savedModels(inst)['deepseek-flash'].feeMultiplier, 2, '适用模型写进价格条目倍率（宽容同名匹配到条目键）');
 	assert.strictEqual(JSON.stringify(Array.from(inst.store.values())).indexOf(SECRET), -1, '令牌不写 localStorage');
 	assert.strictEqual(JSON.stringify(Array.from(inst.store.values())).indexOf(USER_SECRET), -1, '用户 ID 不写 localStorage');
@@ -836,11 +845,13 @@ const USER_SECRET = 'user-42';
 	rerender(state);
 	assert.strictEqual(findLabelInput(row(), t('priceEndpoint')).props.value, 'https://relay.example.com/balance', '地址回填');
 	assert.strictEqual(findLabelInput(row(), t('priceBalanceField')).props.value, '¥data.quota / 500000', '余额字段反拼回填');
-	assert.strictEqual(findLabelInput(row(), t('priceTokenHeader')).props.value, '',
-		'请求头没填过 → 打开时仍为空（不再回填 New-Api-User）');
-	assert.strictEqual(modelLabelLines(row()).length, 1, '适用模型行按档案回填 1 行');
-	assert.strictEqual(textOf(rowModelTrigger(row(), 0)), 'DeepSeek-Flash', '已保存的模型在下拉按钮中回填');
+	assert.strictEqual(findLabelInput(row(), t('priceTokenHeader')).props.value, 'New-Api-User',
+		'地址可用（saved.endpoint 非空）→ Host 默认请求头能查到余额，回填 New-Api-User');
+	assert.strictEqual(modelLabelLines(row()).length, 2, '适用模型行按档案回填 2 行');
+	assert.strictEqual(rowModelTrigger(row(), 0).props.value, 'DeepSeek-Flash', '已保存的模型在输入框中回填');
 	assert.strictEqual(rowFeeIn(row(), 0).props.value, '2', '已存倍率回填');
+	assert.strictEqual(rowModelTrigger(row(), 1).props.value, 'Custom-Model', '保存的自定义模型在重开后回显');
+	assert.strictEqual(rowFeeIn(row(), 1).props.value, '0.5', '自定义模型倍率重开后回显');
 	assert.strictEqual(findLabelInput(row(), t('priceToken')).props.value, '', '令牌打开时仍为空');
 	assert.strictEqual(findLabelInput(row(), t('priceUserId')).props.value, '', '用户 ID 打开时仍为空');
 	assert.strictEqual(findLabelInput(row(), t('priceToken')).props.placeholder, t('platformSecretSaved'),
@@ -871,7 +882,11 @@ const USER_SECRET = 'user-42';
 	/* 删掉适用模型行 → 保存：价格条目上的倍率被清掉（平台档案里也不再列该模型） */
 	buttonsByLabel(feeLabelLines(row())[0], t('priceRemove'))[0].props.onClick();
 	rerender(state);
-	assert.strictEqual(modelLabelLines(row()).length, 0, '行尾删除 → 该行消失');
+	assert.strictEqual(modelLabelLines(row()).length, 1, '删除 DeepSeek 后自定义模型行仍在');
+	assert.strictEqual(rowModelTrigger(row(), 0).props.value, 'Custom-Model', '删除顺序留下自定义模型');
+	buttonsByLabel(feeLabelLines(row())[0], t('priceRemove'))[0].props.onClick();
+	rerender(state);
+	assert.strictEqual(modelLabelLines(row()).length, 0, '删除两行后模型行全部消失');
 	buttonsByLabel(row(), t('priceSave'))[0].props.onClick();
 	await settle();
 	rerender(state);
@@ -901,7 +916,7 @@ const USER_SECRET = 'user-42';
 	buttonsByLabel(row(), t('priceSave'))[0].props.onClick();
 	await settle();
 	rerender(state);
-	assert.ok(noticeShown(state, 'priceEndpointInvalid'), '地址非法 → 顶部提示');
+	assert.strictEqual(noticeShown(state, 'priceEndpointInvalid'), false, '地址非法 → 不显示顶部提示');
 	assert.strictEqual(plain(savedPlatforms()['my-relay']).endpoint, '', '非法地址按空地址落库（不拦截保存）');
 	platformHead(row()).props.onClick();
 	rerender(state);
@@ -938,8 +953,8 @@ const USER_SECRET = 'user-42';
 		'删除平台 → POST remove');
 	assert.strictEqual(postBodies.length, beforeRemove + 1, '只发一条 remove');
 
-	/* 只按倍率计费（地址留空）：不查余额、不发余额配置请求，但倍率仍写进条目；
-	   档案里没填的请求头 / 余额字段保持空（默认值只在向宿主 POST 时补） */
+	/* 只按倍率计费（地址留空）：仍要 POST（endpoint 空，Host 保存空地址；
+	   首次查询再用平台配置探测余额端点），倍率仍写进条目；档案里没填的请求头 / 余额字段保持空 */
 	const beforeLite = postBodies.length;
 	addPlatform(state, 'magpie-like');
 	const maggieRow = () => platformRow(state.tree, 'magpie-like');
@@ -963,12 +978,89 @@ const USER_SECRET = 'user-42';
 		models: [{ model: 'deepseek-flash', feeMultiplier: 0.02 }]
 	}, '地址为空 = 只按倍率计费；没填的余额字段与请求头**存空**，不塞默认值');
 	assert.strictEqual(savedModels(inst)['deepseek-flash'].feeMultiplier, 0.02, '折扣倍率 0.02 落库');
-	assert.strictEqual(postBodies.length, beforeLite, '地址留空不发余额配置请求');
+	assert.strictEqual(postBodies.length, beforeLite + 1, '地址留空仍提交（endpoint 空，交给 Host 保存并在首次查询时探测）');
+	assert.strictEqual(postBodies[postBodies.length - 1].endpoint, '', '地址留空 → POST 空 endpoint');
 	const maggieHead = findAll(maggieRow(), (node) => hasClass(node, 'dsb-model-head'))[0];
 	assert.ok(textOf(maggieHead).indexOf('magpie-like') !== -1, '平台头部只显示平台名');
 	assert.strictEqual(textOf(maggieHead).indexOf('DeepSeek-Flash'), -1, '平台头部不显示适用模型名摘要');
 	assert.strictEqual(textOf(maggieHead).indexOf('只按倍率计费'), -1, '平台头部不再显示「只按倍率计费」');
 	assert.strictEqual(textOf(maggieHead).indexOf('未填适用模型'), -1, '平台头部不再显示「未填适用模型」');
+
+	/* 空白地址 + 令牌 + 用户 ID：令牌只随 POST 走，地址没填也必须提交；重新打开显示已保存占位。 */
+	const openPlatform = (name) => {
+		platformHead(platformRow(state.tree, name)).props.onClick();
+		rerender(state);
+	};
+	const beforeBlankSecret = postBodies.length;
+	addPlatform(state, 'blank-secret');
+	openPlatform('blank-secret');
+	findLabelInput(platformRow(state.tree, 'blank-secret'), t('priceToken')).props.onChange({ target: { value: SECRET } });
+	rerender(state);
+	findLabelInput(platformRow(state.tree, 'blank-secret'), t('priceUserId')).props.onChange({ target: { value: USER_SECRET } });
+	rerender(state);
+	buttonsByLabel(platformRow(state.tree, 'blank-secret'), t('priceSave'))[0].props.onClick();
+	await settle();
+	rerender(state);
+	const blankSecretPost = postBodies[postBodies.length - 1];
+	assert.strictEqual(postBodies.length, beforeBlankSecret + 1, '空白地址 + 令牌 + 用户 ID → 仍发一条 POST');
+	assert.strictEqual(blankSecretPost.endpoint, '', '空白地址 → payload.endpoint 空串（Host 保存为空）');
+	assert.strictEqual(blankSecretPost.token, SECRET, '空白地址也要带上令牌');
+	assert.strictEqual(blankSecretPost.userId, USER_SECRET, '空白地址也要带上用户 ID');
+	assert.strictEqual(blankSecretPost.balancePath, 'data.quota', '空白地址 → 其余字段仍补默认 data.quota');
+	assert.strictEqual(blankSecretPost.balanceDivisor, 500000, '空白地址 → 其余字段仍补默认 500000');
+	openPlatform('blank-secret');
+	assert.strictEqual(findLabelInput(platformRow(state.tree, 'blank-secret'), t('priceToken')).props.value, '', '重新打开：令牌框不回显明文');
+	assert.strictEqual(findLabelInput(platformRow(state.tree, 'blank-secret'), t('priceToken')).props.placeholder, t('platformSecretSaved'), '重新打开：令牌显示「已保存」占位');
+	assert.strictEqual(findLabelInput(platformRow(state.tree, 'blank-secret'), t('priceUserId')).props.value, '', '重新打开：用户 ID 不回显明文');
+	assert.strictEqual(findLabelInput(platformRow(state.tree, 'blank-secret'), t('priceUserId')).props.placeholder, t('platformSecretSaved'), '重新打开：用户 ID 显示「已保存」占位');
+	/* 只填了令牌 / 用户 ID，请求头 / 地址 / 余额字段保持空：Host relayConfigView 回传的运行时默认值
+	   （New-Api-User / data.quota / 500000）不能当成用户填过的值回填。 */
+	assert.strictEqual(findLabelInput(platformRow(state.tree, 'blank-secret'), t('priceTokenHeader')).props.value, '', '重新打开：请求头仍为空（Host 默认值不回填）');
+	assert.strictEqual(findLabelInput(platformRow(state.tree, 'blank-secret'), t('priceEndpoint')).props.value, '', '重新打开：地址仍为空');
+	assert.strictEqual(findLabelInput(platformRow(state.tree, 'blank-secret'), t('priceBalanceField')).props.value, '', '重新打开：余额字段仍为空（Host 默认值不回填）');
+
+	/* task-26：空地址但已配 token/userId 的平台，删除也必须发幂等 remove。
+	   旧逻辑只在 endpoint 非空时 remove，空地址平台会跳过 → Host 不清 credential →
+	   同名重建仍残留 token/userId。这里补回归：删除空地址+已配 secret 的平台要发 remove。 */
+	const beforeBlankSecretRemove = postBodies.length;
+	buttonsByLabel(platformRow(state.tree, 'blank-secret'), t('priceRemove'))[0].props.onClick();
+	await settle();
+	rerender(state);
+	assert.deepStrictEqual(plain(postBodies[postBodies.length - 1]), { remove: true, channelKey: 'blank-secret' },
+		'空地址+已配 token/userId 的平台删除 → 仍发 remove');
+	assert.strictEqual(postBodies.length, beforeBlankSecretRemove + 1, '空地址删除只发一条 remove');
+	assert.strictEqual(plain(savedPlatforms())['blank-secret'], undefined, '空地址平台删除后本地档案消失');
+
+	/* 只填部分字段：只填令牌 / 只填用户 ID 也必须保存，另一个保持未配置。 */
+	addPlatform(state, 'blank-token-only');
+	openPlatform('blank-token-only');
+	findLabelInput(platformRow(state.tree, 'blank-token-only'), t('priceToken')).props.onChange({ target: { value: 'sk-only-token' } });
+	rerender(state);
+	buttonsByLabel(platformRow(state.tree, 'blank-token-only'), t('priceSave'))[0].props.onClick();
+	await settle();
+	rerender(state);
+	const tokenOnlyPost = postBodies[postBodies.length - 1];
+	assert.strictEqual(tokenOnlyPost.endpoint, '', '只填令牌：地址仍为空也要 POST');
+	assert.strictEqual(tokenOnlyPost.token, 'sk-only-token', '只填令牌：令牌要保存');
+	assert.strictEqual(tokenOnlyPost.userId, undefined, '只填令牌：不伪造用户 ID');
+	openPlatform('blank-token-only');
+	assert.strictEqual(findLabelInput(platformRow(state.tree, 'blank-token-only'), t('priceToken')).props.placeholder, t('platformSecretSaved'), '只填令牌：重新打开显示已保存');
+	assert.strictEqual(findLabelInput(platformRow(state.tree, 'blank-token-only'), t('priceUserId')).props.placeholder, t('priceUserIdHint'), '只填令牌：用户 ID 仍是未配置提示');
+
+	addPlatform(state, 'blank-user-only');
+	openPlatform('blank-user-only');
+	findLabelInput(platformRow(state.tree, 'blank-user-only'), t('priceUserId')).props.onChange({ target: { value: 'user-only-7' } });
+	rerender(state);
+	buttonsByLabel(platformRow(state.tree, 'blank-user-only'), t('priceSave'))[0].props.onClick();
+	await settle();
+	rerender(state);
+	const userOnlyPost = postBodies[postBodies.length - 1];
+	assert.strictEqual(userOnlyPost.endpoint, '', '只填用户 ID：地址仍为空也要 POST');
+	assert.strictEqual(userOnlyPost.userId, 'user-only-7', '只填用户 ID：用户 ID 要保存');
+	assert.strictEqual(userOnlyPost.token, undefined, '只填用户 ID：不伪造令牌');
+	openPlatform('blank-user-only');
+	assert.strictEqual(findLabelInput(platformRow(state.tree, 'blank-user-only'), t('priceUserId')).props.placeholder, t('platformSecretSaved'), '只填用户 ID：重新打开显示已保存');
+	assert.strictEqual(findLabelInput(platformRow(state.tree, 'blank-user-only'), t('priceToken')).props.placeholder, t('priceTokenHint'), '只填用户 ID：令牌仍是未配置提示');
 
 	/* 删模型：平台档案保留，但该模型从「适用模型」里摘掉（不会连带丢掉无关平台） */
 	const priceFlashCard = findAll(state.tree, (node) => hasClass(node, 'dsb-model') && node.props.key === 'deepseek-flash')[0];
@@ -1002,8 +1094,10 @@ const USER_SECRET = 'user-42';
 		'档案里这四项仍是空（默认值只在 POST 时补，不写回档案）');
 	platformHead(clearRow()).props.onClick();
 	rerender(state);
-	assert.strictEqual(findLabelInput(clearRow(), t('priceBalanceField')).props.value, '', '再次打开：余额字段仍为空');
-	assert.strictEqual(findLabelInput(clearRow(), t('priceTokenHeader')).props.value, '', '再次打开：请求头仍为空');
+	assert.strictEqual(findLabelInput(clearRow(), t('priceBalanceField')).props.value, '¥data.quota / 500000',
+		'再次打开：地址可用 → 默认余额字段能查到余额，回填默认值');
+	assert.strictEqual(findLabelInput(clearRow(), t('priceTokenHeader')).props.value, 'New-Api-User',
+		'再次打开：地址可用 → 默认请求头能查到余额，回填默认值');
 	findLabelInput(clearRow(), t('priceEndpoint')).props.onChange({ target: { value: '' } });
 	rerender(state);
 	const beforeClear = postBodies.length;
@@ -1053,11 +1147,15 @@ const USER_SECRET = 'user-42';
 			models: [{ model: 'deepseek-flash', feeMultiplier: 2 }]
 		}
 	}, '旧 relay 迁移成平台档案（平台名 = 模型名）');
+	assert.deepStrictEqual(plain(migratedSnap.relayPlatformOrder), ['deepseek-flash'],
+		'独立数组初始化：旧 relay 迁移出的平台进入显示顺序');
 	const reloaded = loadClient(undefined, [[CONFIG_KEY, migrated.store.get(CONFIG_KEY)]]);
 	assert.deepStrictEqual(plain(reloaded.api.snapshot().relayPlatforms), plain(migratedSnap.relayPlatforms),
 		'二次加载平台档案保持不变（迁移幂等）');
+	assert.deepStrictEqual(plain(reloaded.api.snapshot().relayPlatformOrder), ['deepseek-flash'],
+		'二次加载显示顺序保持不变');
 
-	/* 旧档案兼容：平台里已有但价格库没有的旧模型名，也必须出现在该行下拉选项里 */
+	/* 旧档案兼容：平台里已有但价格库没有的旧模型名只回显，不进入该行下拉选项 */
 	const LEGACY_PLATFORM_CONFIG = JSON.stringify({
 		version: 6, priceVersion: 7, currency: 'CNY',
 		models: CNY_BASE,
@@ -1085,37 +1183,76 @@ const USER_SECRET = 'user-42';
 	const legacyRow = () => findAll(legacyState.tree, (node) => hasClass(node, 'dsb-model') && node.props.key === 'legacy-p')[0];
 	findAll(legacyRow(), (node) => hasClass(node, 'dsb-platform-head'))[0].props.onClick();
 	legacyRender();
-	const legacyTrigger = findAll(legacyRow(), (node) => node.type === 'button' && hasClass(node, 'dsb-select-btn'))[0];
-	legacyTrigger.props.onClick(menuEvent(legacyRow()));
+	const legacyTrigger = findAll(legacyRow(), (node) => node.type === 'input' && hasClass(node, 'dsb-select-btn'))[0];
+	legacyTrigger.props.onFocus(menuEvent(legacyRow()));
 	legacyRender();
 	const legacyMenu = findAll(legacyRow(), (node) => hasClass(node, 'dsb-select-menu'))[0];
 	const legacyOptions = findAll(legacyMenu, (node) => node.type === 'button' && hasClass(node, 'dsb-select-item')).map((node) => node.props.key);
-	assert.ok(legacyOptions.indexOf('old-model') !== -1, '旧档案模型不在价格库时，下拉仍并入该选项');
-	const legacyTriggers = findAll(legacyRow(), (node) => node.type === 'button' && hasClass(node, 'dsb-select-btn'));
+	assert.strictEqual(legacyOptions.indexOf('old-model'), -1, '旧档案未知模型不进入下拉候选');
+	const legacyTriggers = findAll(legacyRow(), (node) => node.type === 'input' && hasClass(node, 'dsb-select-btn'));
 	assert.strictEqual(legacyTriggers.length, 3, '旧档案三行模型都渲染');
-	assert.strictEqual(textOf(legacyTriggers[1]), 'Mimo-V2.6-Pro-Ultraspeed', '24 字符长模型名完整显示');
-	assert.strictEqual(textOf(legacyTriggers[2]), 'Mimo-V2.6-Pro-Ultraspeed-Plus', '超长模型名完整显示');
-	/* 按容器宽度实测：scrollWidth 随当前字号等比缩放，模拟真实文本排版 */
-	const measureBtn = (baseWidth, clientWidth) => {
-		const el = { style: {}, clientWidth: clientWidth };
-		Object.defineProperty(el, 'scrollWidth', { get() { const size = parseFloat(el.style.fontSize || '13'); return Math.round(baseWidth * size / 13); } });
-		return el;
+	assert.strictEqual(legacyTriggers[1].props.value, 'Mimo-V2.6-Pro-Ultraspeed', '24 字符长模型名完整保留（原生 input value）');
+	assert.strictEqual(legacyTriggers[2].props.value, 'Mimo-V2.6-Pro-Ultraspeed-Plus', '超长模型名完整保留（原生 input value）');
+	/* 原生 input 不再按容器宽度缩字号：长名靠 CSS 省略号截断显示，数据层保留全名 */
+	legacyTriggers.forEach((trigger) => {
+		assert.strictEqual(trigger.type, 'input', '模型控件是原生 input');
+		assert.strictEqual(trigger.props.type, 'text', '模型控件是原生文本输入');
+		assert.strictEqual(trigger.props.role, 'combobox', '模型控件保留 combobox 语义');
+		assert.strictEqual(typeof trigger.props.onChange, 'function', '模型控件支持输入筛选');
+	});
+	/* Host 同步失败 / 抛错：只在 console.warn 留日志，平台区块不出现任何用户可见提示。
+	   成功与字段校验提示不受影响。 */
+	const relayFailureNotice = (reason) => t('priceRelaySyncFailed', { reason: reason });
+	const relayNoticeShown = () => {
+		const text = textOf(section(state.tree));
+		return text.indexOf(relayFailureNotice('relay-config-failed')) !== -1
+			|| text.indexOf(relayFailureNotice('failed')) !== -1
+			|| text.indexOf('第三方平台配置同步失败') !== -1;
 	};
-	const shortBtn = measureBtn(120, 240);
-	legacyTriggers[0].props.ref(shortBtn);
-	assert.strictEqual(shortBtn.style.fontSize, '13px', '短名不缩小，默认 13px');
-	const midBtn = measureBtn(210, 200);
-	legacyTriggers[1].props.ref(midBtn);
-	assert.strictEqual(midBtn.style.fontSize, '12px', '长名按容器宽度自适应缩小（12px 能放下）');
-	const longBtn = measureBtn(400, 180);
-	legacyTriggers[2].props.ref(longBtn);
-	assert.strictEqual(longBtn.style.fontSize, '10px', '超长名最多缩到 10px 下限');
-	const resetBtn = measureBtn(120, 240);
-	resetBtn.style.fontSize = '10px';
-	legacyTriggers[0].props.ref(resetBtn);
-	assert.strictEqual(resetBtn.style.fontSize, '13px', '每次重渲染重置 13px 再量');
-	assert.strictEqual(typeof legacyTriggers[0].props.ref, 'function', '模型按钮挂载 ref 自适应回调');
-	console.log('      气泡无第三方字段；平台增删改；模型下拉→倍率落库；secret 一次性；地址留空=只按倍率；旧 relay 迁移成平台；旧档案模型可选');
+	const withWarnCapture = async (fn) => {
+		const lines = [];
+		const original = console.warn;
+		console.warn = (...args) => { lines.push(args.map((one) => String(one)).join(' ')); };
+		try { await fn(); } finally { console.warn = original; }
+		return lines;
+	};
+	const saveNewPlatform = async (name, endpoint) => {
+		addPlatform(state, name);
+		const target = () => platformRow(state.tree, name);
+		platformHead(target()).props.onClick();
+		rerender(state);
+		if (endpoint !== undefined) {
+			findLabelInput(target(), t('priceEndpoint')).props.onChange({ target: { value: endpoint } });
+			rerender(state);
+		}
+		buttonsByLabel(target(), t('priceSave'))[0].props.onClick();
+		await settle();
+		rerender(state);
+	};
+	/* 成功：不显示同步失败提示 */
+	relayPostOutcome = 'ok';
+	await saveNewPlatform('sync-ok', 'https://relay.example.com/balance');
+	assert.strictEqual(relayNoticeShown(), false, '同步成功不显示 priceRelaySyncFailed');
+	/* postRelayState 返回 ok:false：不显示提示，只写 console.warn */
+	relayPostOutcome = 'fail';
+	const failWarns = await withWarnCapture(async () => { await saveNewPlatform('sync-fail', 'https://relay.example.com/balance'); });
+	assert.strictEqual(relayNoticeShown(), false, 'postRelayState 返回失败时平台编辑区不出现 priceRelaySyncFailed');
+	assert.ok(failWarns.some((line) => line.indexOf(relayFailureNotice('relay-config-failed')) !== -1),
+		'同步失败只写 console.warn（带 Host 返回的 reason）');
+	/* postRelayState 抛错：同样不显示提示，只写 console.warn */
+	relayPostOutcome = 'throw';
+	const throwWarns = await withWarnCapture(async () => { await saveNewPlatform('sync-throw', 'https://relay.example.com/balance'); });
+	assert.strictEqual(relayNoticeShown(), false, 'postRelayState 抛错时平台编辑区不出现 priceRelaySyncFailed');
+	assert.ok(throwWarns.some((line) => line.indexOf(relayFailureNotice('failed')) !== -1),
+		'同步抛错只写 console.warn（reason=failed）');
+	/* 字段校验提示不受影响：同步失败的同一轮仍显示地址非法提示 */
+	relayPostOutcome = 'fail';
+	await saveNewPlatform('sync-validation', 'not-a-url');
+	assert.strictEqual(relayNoticeShown(), false, '同步失败不出现 priceRelaySyncFailed');
+	assert.strictEqual(noticeShown(state, 'priceEndpointInvalid'), false, '同步失败时不显示 priceEndpointInvalid');
+	relayPostOutcome = 'ok';
+	console.log('      同步失败/抛错只 console.warn，不显示 priceRelaySyncFailed；校验提示照常');
+	console.log('      气泡无第三方字段；平台增删改；模型下拉→倍率落库；secret 一次性；地址留空=只按倍率；旧 relay 迁移成平台；旧档案模型只回显');
 }
 
 /* ====================================================================
@@ -1220,6 +1357,828 @@ console.log('\n===== ③-2 平台名 123/英文/符号都能添加；点别处�
 	assert.strictEqual(findAll(afterClick, (node) => hasClass(node, 'dsb-platform-pop')).length, 1,
 		'点别处不会把刚打开、还没落库的平台编辑气泡取消掉（「添加不出来」的根因）');
 	console.log('      123 / abcXYZ / My Relay 2.0 / a_b-c 都能添加并出现编辑行；空平台存空；点别处不取消');
+}
+
+/* ====================================================================
+   ③-2b 平台显示顺序：纯数字名排最后 / 旧配置迁移 / 删除重加
+   ==================================================================== */
+console.log('\n===== ③-2b 平台显示顺序（纯数字名 35326 排最后） =====');
+{
+	const inst = loadClient();
+	const api = inst.api;
+	const t = translator(api);
+	api.setConfig({ models: CNY_BASE, modelOrder: ['deepseek-flash'], priceConfigured: true, relayPlatforms: {} });
+	const props = { t: t, useProjection: () => undefined };
+	const bucket = inst.hooks();
+	const state = { bucket: bucket, tree: withHooks(bucket, () => api.SettingsSection(props)) };
+	const rerender = () => { state.tree = withHooks(state.bucket, () => api.SettingsSection(props)); };
+	const section = () => findAll(state.tree, (node) => hasClass(node, 'dsb-section') && node.props.key === '__platforms')[0];
+	const platformRow = (name) => findAll(section(), (node) => hasClass(node, 'dsb-model') && node.props.key === name)[0];
+	const rowNames = () => findAll(section(), (node) => hasClass(node, 'dsb-model') && typeof node.props.key === 'string').map((node) => node.props.key);
+	const typeName = (value) => {
+		const input = findAll(section(), (node) => node.type === 'input' && node.props.placeholder === t('platformNewPh'))[0];
+		input.props.onChange({ target: { value: value } });
+		rerender();
+	};
+	const clickAdd = () => { buttonsByLabel(section(), t('platformAdd'))[0].props.onClick(); rerender(); };
+	const addPlatform = (name) => { typeName(name); clickAdd(); };
+
+	addPlatform('alpha');
+	addPlatform('beta');
+	addPlatform('35326');
+	assert.deepStrictEqual(plain(api.snapshot().relayPlatformOrder), ['alpha', 'beta', '35326'],
+		'添加顺序写进 relayPlatformOrder');
+	assert.deepStrictEqual(rowNames(), ['alpha', 'beta', '35326'],
+		'渲染顺序：纯数字平台 35326 排最后（不因 JS 键序跑到前面）');
+
+	/* 保存平台不改顺序 */
+	findAll(platformRow('alpha'), (node) => hasClass(node, 'dsb-platform-head'))[0].props.onClick();
+	rerender();
+	buttonsByLabel(platformRow('alpha'), t('priceSave'))[0].props.onClick();
+	rerender();
+	assert.deepStrictEqual(plain(api.snapshot().relayPlatformOrder), ['alpha', 'beta', '35326'],
+		'保存平台不改顺序');
+
+	/* 删除中间平台 → 数组同步移除；重加同名平台 → 回到末尾 */
+	buttonsByLabel(platformRow('beta'), t('priceRemove'))[0].props.onClick();
+	rerender();
+	assert.ok(platformRow('beta') === undefined, '删除平台后行消失');
+	assert.deepStrictEqual(plain(api.snapshot().relayPlatformOrder), ['alpha', '35326'],
+		'删除平台从 relayPlatformOrder 移除');
+	addPlatform('beta');
+	assert.deepStrictEqual(plain(api.snapshot().relayPlatformOrder), ['alpha', '35326', 'beta'],
+		'重新添加同名平台回到末尾');
+	assert.deepStrictEqual(rowNames(), ['alpha', '35326', 'beta'],
+		'渲染顺序同步（重加不插回原位置）');
+
+	/* setConfig 更新其它字段时保留顺序 */
+	api.setConfig({ models: CNY_BASE });
+	assert.deepStrictEqual(plain(api.snapshot().relayPlatformOrder), ['alpha', '35326', 'beta'],
+		'setConfig 更新价格库时保留 relayPlatformOrder');
+
+	/* 持久化重载：顺序与平台表一起存进 localStorage，重载后不丢 */
+	const reloaded = loadClient(undefined, [[api.STORAGE_KEY, inst.store.get(api.STORAGE_KEY)]]);
+	assert.deepStrictEqual(plain(reloaded.api.snapshot().relayPlatformOrder), ['alpha', '35326', 'beta'],
+		'持久化重载后平台顺序保持不变');
+	assert.deepStrictEqual(Object.keys(plain(reloaded.api.snapshot().relayPlatforms)).sort(), ['35326', 'alpha', 'beta'],
+		'持久化重载后平台不丢');
+	console.log('      35326 添加后排最后；保存不改顺序；删除移除、重加回末尾；重载顺序保持');
+}
+
+/* 旧配置没有 relayPlatformOrder：按当前 Object.keys(relayPlatforms) 初始化，保留既有显示顺序 */
+{
+	const probe = loadClient();
+	const CONFIG_KEY = probe.api.STORAGE_KEY;
+	const LEGACY_ORDER_CONFIG = JSON.stringify({
+		version: 6,
+		priceVersion: 8,
+		currency: 'CNY',
+		models: CNY_BASE,
+		modelOrder: ['deepseek-flash'],
+		relayPlatforms: {
+			zeta: { endpoint: '', models: [] },
+			alpha: { endpoint: '', models: [] },
+			beta: { endpoint: '', models: [] }
+		}
+	});
+	const legacyInst = loadClient(undefined, [[CONFIG_KEY, LEGACY_ORDER_CONFIG]]);
+	const legacyApi = legacyInst.api;
+	const legacySnap = legacyApi.snapshot();
+	assert.deepStrictEqual(plain(legacySnap.relayPlatformOrder), ['zeta', 'alpha', 'beta'],
+		'旧配置迁移：按 Object.keys(relayPlatforms) 初始化，保留既有显示顺序');
+	assert.deepStrictEqual(Object.keys(plain(legacySnap.relayPlatforms)).sort(), ['alpha', 'beta', 'zeta'],
+		'迁移不丢任何平台');
+	const legacyT = translator(legacyApi);
+	const legacyTree = withHooks(legacyInst.hooks(), () => legacyApi.SettingsSection({ t: legacyT, useProjection: () => undefined }));
+	const legacySection = findAll(legacyTree, (node) => hasClass(node, 'dsb-section') && node.props.key === '__platforms')[0];
+	const legacyNames = findAll(legacySection, (node) => hasClass(node, 'dsb-model') && typeof node.props.key === 'string').map((node) => node.props.key);
+	assert.deepStrictEqual(legacyNames, ['zeta', 'alpha', 'beta'], '迁移后渲染顺序与旧显示顺序一致');
+
+	/* 手改配置：数组只列了部分平台（还带已删除的脏名字）→ 仍存在的按数组顺序，缺的按 Object.keys 补末尾 */
+	const PARTIAL_CONFIG = JSON.stringify({
+		version: 6,
+		priceVersion: 8,
+		currency: 'CNY',
+		models: CNY_BASE,
+		modelOrder: ['deepseek-flash'],
+		relayPlatforms: {
+			alpha: { endpoint: '', models: [] },
+			beta: { endpoint: '', models: [] },
+			gamma: { endpoint: '', models: [] }
+		},
+		relayPlatformOrder: ['ghost', 'beta']
+	});
+	const partial = loadClient(undefined, [[CONFIG_KEY, PARTIAL_CONFIG]]);
+	assert.deepStrictEqual(plain(partial.api.snapshot().relayPlatformOrder), ['beta', 'alpha', 'gamma'],
+		'手改配置：数组里缺的平台按 Object.keys 补末尾，脏名字丢弃');
+	console.log('      旧配置迁移保留 zeta→alpha→beta；缺项按 Object.keys 补末尾且不丢平台');
+}
+
+/* ====================================================================
+   ③-3 Host 默认值只在 saved.endpoint 非空（地址可用）时回显
+   ==================================================================== */
+console.log('\n===== ③-3 Host 默认值仅在地址可用时回显 =====');
+{
+	const inst = loadClient((url) => {
+		if (String(url).indexOf('/api/relay-balance-config') !== -1) {
+			return Promise.resolve({ json: () => Promise.resolve({ ok: true, channels: [
+				{
+					channelKey: 'probed',
+					endpoint: 'https://relay.example.com/balance',
+					tokenHeader: 'authorization',
+					userIdHeader: 'New-Api-User',
+					tokenPrefix: 'Bearer ',
+					balancePath: 'data.quota',
+					currency: 'CNY',
+					feeMultiplier: 1,
+					balanceDivisor: 500000,
+					tokenConfigured: true,
+					userIdConfigured: true
+				},
+				{
+					channelKey: 'unprobed',
+					endpoint: '',
+					tokenHeader: 'authorization',
+					userIdHeader: 'New-Api-User',
+					tokenPrefix: 'Bearer ',
+					balancePath: 'data.quota',
+					currency: 'CNY',
+					feeMultiplier: 1,
+					balanceDivisor: 500000,
+					tokenConfigured: true,
+					userIdConfigured: true
+				}
+			] }) });
+		}
+		return Promise.resolve({ json: () => Promise.resolve({ ok: false, reason: 'test' }) });
+	});
+	const api = inst.api;
+	const t = translator(api);
+	const emptyPlatform = { endpoint: '', tokenHeader: 'authorization', userIdHeader: '', balancePath: '', currency: '', balanceDivisor: null, models: [] };
+	api.setConfig({
+		models: CNY_BASE,
+		modelOrder: ['deepseek-flash'],
+		priceConfigured: true,
+		relayPlatforms: { probed: plain(emptyPlatform), unprobed: plain(emptyPlatform) }
+	});
+	await api.ensureRelayState();
+	const props = { t: t, useProjection: () => undefined };
+	const bucket = inst.hooks();
+	const state = { bucket: bucket, tree: withHooks(bucket, () => api.SettingsSection(props)) };
+	const rerender = () => { state.tree = withHooks(state.bucket, () => api.SettingsSection(props)); };
+	const section = () => findAll(state.tree, (node) => hasClass(node, 'dsb-section') && node.props.key === '__platforms')[0];
+	const platformRow = (name) => findAll(section(), (node) => hasClass(node, 'dsb-model') && node.props.key === name)[0];
+	const open = (name) => {
+		findAll(platformRow(name), (node) => hasClass(node, 'dsb-platform-head'))[0].props.onClick();
+		rerender();
+	};
+	open('probed');
+	assert.strictEqual(findLabelInput(platformRow('probed'), t('priceTokenHeader')).props.value, 'New-Api-User',
+		'地址可用 → 回显宿主默认请求头 New-Api-User');
+	assert.strictEqual(findLabelInput(platformRow('probed'), t('priceBalanceField')).props.value, '¥data.quota / 500000',
+		'地址可用 → 回显宿主默认余额字段 ¥data.quota / 500000');
+	assert.strictEqual(findLabelInput(platformRow('probed'), t('priceEndpoint')).props.value, 'https://relay.example.com/balance',
+		'地址可用 → 回显宿主可用地址');
+	assert.strictEqual(findLabelInput(platformRow('probed'), t('priceToken')).props.placeholder, t('platformSecretSaved'),
+		'地址可用 → 令牌仍是已保存状态');
+	assert.strictEqual(findLabelInput(platformRow('probed'), t('priceUserId')).props.placeholder, t('platformSecretSaved'),
+		'地址可用 → 用户 ID 仍是已保存状态');
+	open('unprobed');
+	assert.strictEqual(findLabelInput(platformRow('unprobed'), t('priceTokenHeader')).props.value, '',
+		'地址为空 → 不回显默认请求头');
+	assert.strictEqual(findLabelInput(platformRow('unprobed'), t('priceBalanceField')).props.value, '',
+		'地址为空 → 不回显默认余额字段');
+	assert.strictEqual(findLabelInput(platformRow('unprobed'), t('priceEndpoint')).props.value, '',
+		'地址为空 → 地址保持空');
+	assert.strictEqual(findLabelInput(platformRow('unprobed'), t('priceToken')).props.placeholder, t('platformSecretSaved'),
+		'地址为空 → 令牌仍是已保存状态');
+	assert.strictEqual(findLabelInput(platformRow('unprobed'), t('priceUserId')).props.placeholder, t('platformSecretSaved'),
+		'地址为空 → 用户 ID 仍是已保存状态');
+	console.log('      saved.endpoint 非空 → 显示 Host 默认值；endpoint 为空 → 只显示本地显式值（空）');
+}
+/* ====================================================================
+   ③-4 清空 Host 自动探测地址：不残留运行时默认值 / 显式值保留 / 真 remove
+   ==================================================================== */
+console.log('\n===== ③-4 清空 Host 探测地址：不残留默认值 / 显式值保留 / 真 remove =====');
+{
+	/* fake 宿主：只维护一个 channel 内存表；GET 返回它，POST 按 payload 更新 / remove。
+	   用于模拟「Host 自动探测写入 endpoint，而本地旧档案 endpoint 为空」。 */
+	const hostChannels = new Map();
+	const posts = [];
+	const inst = loadClient((url, init) => {
+		if (String(url).indexOf('/api/relay-balance-config') === -1) {
+			return Promise.resolve({ json: () => Promise.resolve({ ok: false, reason: 'test' }) });
+		}
+		if (init !== undefined && init !== null && init.method === 'POST') {
+			const body = JSON.parse(init.body);
+			posts.push(body);
+			if (body.remove === true) {
+				hostChannels.delete(body.channelKey);
+			} else {
+				hostChannels.set(body.channelKey, {
+					channelKey: body.channelKey,
+					endpoint: body.endpoint,
+					tokenHeader: body.tokenHeader,
+					userIdHeader: body.userIdHeader,
+					tokenPrefix: body.tokenPrefix,
+					balancePath: body.balancePath,
+					currency: body.currency,
+					feeMultiplier: body.feeMultiplier,
+					balanceDivisor: body.balanceDivisor,
+					tokenConfigured: body.token !== undefined && body.token !== '',
+					userIdConfigured: body.userId !== undefined && body.userId !== ''
+				});
+			}
+			return Promise.resolve({ json: () => Promise.resolve({ ok: true, channels: Array.from(hostChannels.values()) }) });
+		}
+		return Promise.resolve({ json: () => Promise.resolve({ ok: true, channels: Array.from(hostChannels.values()) }) });
+	});
+	const api = inst.api;
+	const t = translator(api);
+	const emptyPlatform = { endpoint: '', tokenHeader: 'authorization', userIdHeader: '', balancePath: '', currency: '', balanceDivisor: null, models: [] };
+	/* Host 已自动探测出可用地址（endpoint 非空），但本地旧档案 endpoint 为空、默认字段也为空 */
+	const probedChannel = (key) => ({
+		channelKey: key,
+		endpoint: 'https://host.example.com/balance',
+		tokenHeader: 'authorization',
+		userIdHeader: 'New-Api-User',
+		tokenPrefix: 'Bearer ',
+		balancePath: 'data.quota',
+		currency: 'CNY',
+		feeMultiplier: 1,
+		balanceDivisor: 500000,
+		tokenConfigured: true,
+		userIdConfigured: true
+	});
+	hostChannels.set('probed-clear', probedChannel('probed-clear'));
+	hostChannels.set('probed-explicit', probedChannel('probed-explicit'));
+		hostChannels.set('probed-retype-user', probedChannel('probed-retype-user'));
+		hostChannels.set('probed-retype-balance', probedChannel('probed-retype-balance'));
+	/* task-29：Host 自动探测出 credits 余额（balanceKind=credits，balancePath 保留原始 '$.balance'，精确 divisor/currency） */
+	hostChannels.set('probed-credits', {
+		channelKey: 'probed-credits',
+		endpoint: 'https://credits.example.com/api/balance',
+		tokenHeader: 'authorization',
+		userIdHeader: 'New-Api-User',
+		tokenPrefix: 'Bearer ',
+		balancePath: '$.balance',
+		currency: 'USD',
+		feeMultiplier: 1,
+		balanceDivisor: 1,
+		balanceKind: 'credits',
+		tokenConfigured: true,
+		userIdConfigured: true
+	});
+	api.setConfig({
+		models: CNY_BASE,
+		modelOrder: ['deepseek-flash'],
+		priceConfigured: true,
+			relayPlatforms: { 'probed-clear': plain(emptyPlatform), 'probed-explicit': plain(emptyPlatform), 'probed-retype-user': plain(emptyPlatform), 'probed-retype-balance': plain(emptyPlatform), 'probed-credits': plain(emptyPlatform) }
+	});
+	await api.ensureRelayState();
+	const props = { t: t, useProjection: () => undefined };
+	const bucket = inst.hooks();
+	const state = { bucket: bucket, tree: withHooks(bucket, () => api.SettingsSection(props)) };
+	const rerender = () => { state.tree = withHooks(state.bucket, () => api.SettingsSection(props)); };
+	const section = () => findAll(state.tree, (node) => hasClass(node, 'dsb-section') && node.props.key === '__platforms')[0];
+	const platformRow = (name) => findAll(section(), (node) => hasClass(node, 'dsb-model') && node.props.key === name)[0];
+	const open = (name) => {
+		findAll(platformRow(name), (node) => hasClass(node, 'dsb-platform-head'))[0].props.onClick();
+		rerender();
+	};
+	const savedPlatforms = () => JSON.parse(inst.store.get(api.STORAGE_KEY)).relayPlatforms;
+
+	/* —— 场景一：清空 Host 探测地址 → 真 remove，且本地不残留运行时默认值 —— */
+	open('probed-clear');
+	assert.strictEqual(findLabelInput(platformRow('probed-clear'), t('priceTokenHeader')).props.value, 'New-Api-User',
+		'前置：地址可用 → 回显 Host 默认请求头');
+	findLabelInput(platformRow('probed-clear'), t('priceEndpoint')).props.onChange({ target: { value: '' } });
+	rerender();
+	buttonsByLabel(platformRow('probed-clear'), t('priceSave'))[0].props.onClick();
+	await settle();
+	rerender();
+	assert.deepStrictEqual(plain(posts[posts.length - 1]), { remove: true, channelKey: 'probed-clear' },
+		'Host 当前有地址、本地为空 → 清空时必须是 remove，不能 POST 空 endpoint');
+	const cleared = plain(savedPlatforms()['probed-clear']);
+	assert.strictEqual(cleared.endpoint, '', '本地 endpoint 保持空');
+	assert.deepStrictEqual([cleared.userIdHeader, cleared.balancePath, cleared.currency, cleared.balanceDivisor], ['', '', '', null],
+		'Host 预填的请求头 / 余额字段不能变成永久本地值');
+	open('probed-clear');
+	assert.strictEqual(findLabelInput(platformRow('probed-clear'), t('priceTokenHeader')).props.value, '', '清空后重开：不再残留默认请求头');
+	assert.strictEqual(findLabelInput(platformRow('probed-clear'), t('priceBalanceField')).props.value, '', '清空后重开：不再残留默认余额字段');
+	assert.strictEqual(findLabelInput(platformRow('probed-clear'), t('priceEndpoint')).props.value, '', '清空后重开：地址仍为空');
+
+	/* —— 场景二：用户明确改过的值仍保留（自动值不残留） —— */
+	open('probed-explicit');
+	findLabelInput(platformRow('probed-explicit'), t('priceTokenHeader')).props.onChange({ target: { value: 'X-Custom-Id' } });
+	rerender();
+	findLabelInput(platformRow('probed-explicit'), t('priceEndpoint')).props.onChange({ target: { value: '' } });
+	rerender();
+	const beforeExplicit = posts.length;
+	buttonsByLabel(platformRow('probed-explicit'), t('priceSave'))[0].props.onClick();
+	await settle();
+	rerender();
+	assert.deepStrictEqual(plain(posts[posts.length - 1]), { remove: true, channelKey: 'probed-explicit' },
+		'显式改过请求头后清空地址 → 仍是 remove');
+	assert.strictEqual(posts.length, beforeExplicit + 1, '清空地址只发一条 remove');
+	const explicitSaved = plain(savedPlatforms()['probed-explicit']);
+	assert.strictEqual(explicitSaved.userIdHeader, 'X-Custom-Id', '用户明确改过的请求头保留');
+	assert.deepStrictEqual([explicitSaved.balancePath, explicitSaved.currency, explicitSaved.balanceDivisor], ['', '', null],
+		'未改动的默认余额字段不残留');
+	open('probed-explicit');
+	assert.strictEqual(findLabelInput(platformRow('probed-explicit'), t('priceTokenHeader')).props.value, 'X-Custom-Id',
+		'重开：显式请求头保留');
+	assert.strictEqual(findLabelInput(platformRow('probed-explicit'), t('priceBalanceField')).props.value, '',
+		'重开：自动余额字段仍为空');
+	/* —— 场景三：重新输入的请求头恰好等于 Host 默认值 → 仍作为显式值保留 —— */
+	open('probed-retype-user');
+	findLabelInput(platformRow('probed-retype-user'), t('priceTokenHeader')).props.onChange({ target: { value: 'New-Api-User' } });
+	rerender();
+	findLabelInput(platformRow('probed-retype-user'), t('priceEndpoint')).props.onChange({ target: { value: '' } });
+	rerender();
+	buttonsByLabel(platformRow('probed-retype-user'), t('priceSave'))[0].props.onClick();
+	await settle();
+	rerender();
+	assert.deepStrictEqual(plain(posts[posts.length - 1]), { remove: true, channelKey: 'probed-retype-user' }, '重新输入默认请求头后清空地址 → remove');
+	const retypeUser = plain(savedPlatforms()['probed-retype-user']);
+	assert.strictEqual(retypeUser.userIdHeader, 'New-Api-User', '明确重新输入的默认请求头必须保留（不因等于 Host 默认而被清）');
+	assert.deepStrictEqual([retypeUser.balancePath, retypeUser.currency, retypeUser.balanceDivisor], ['', '', null], '未改动的余额字段仍不残留');
+	open('probed-retype-user');
+	assert.strictEqual(findLabelInput(platformRow('probed-retype-user'), t('priceTokenHeader')).props.value, 'New-Api-User', '重开：保留重新输入的默认请求头');
+
+	/* —— 场景四：重新输入的余额字段恰好等于 Host 默认值 → 仍作为显式值保留 —— */
+	open('probed-retype-balance');
+	findLabelInput(platformRow('probed-retype-balance'), t('priceBalanceField')).props.onChange({ target: { value: '¥data.quota / 500000' } });
+	rerender();
+	findLabelInput(platformRow('probed-retype-balance'), t('priceEndpoint')).props.onChange({ target: { value: '' } });
+	rerender();
+	buttonsByLabel(platformRow('probed-retype-balance'), t('priceSave'))[0].props.onClick();
+	await settle();
+	rerender();
+	assert.deepStrictEqual(plain(posts[posts.length - 1]), { remove: true, channelKey: 'probed-retype-balance' }, '重新输入默认余额字段后清空地址 → remove');
+	const retypeBal = plain(savedPlatforms()['probed-retype-balance']);
+	assert.deepStrictEqual([retypeBal.balancePath, retypeBal.currency, retypeBal.balanceDivisor], ['data.quota', 'CNY', 500000], '明确重新输入的默认余额字段必须保留');
+	assert.strictEqual(retypeBal.userIdHeader, '', '未改动的请求头不残留');
+	open('probed-retype-balance');
+	assert.strictEqual(findLabelInput(platformRow('probed-retype-balance'), t('priceBalanceField')).props.value, '¥data.quota / 500000', '重开：保留重新输入的默认余额字段');
+	assert.strictEqual(findLabelInput(platformRow('probed-retype-balance'), t('priceTokenHeader')).props.value, '', '重开：未改动请求头仍为空');
+
+	/* —— 场景五（task-29）：Host 自动探测 credits 余额，打开后未触碰字段直接保存 ——
+	   POST 必须沿用 Host 的精确解析字段（$.balance / 1 / USD），不得回填 data.quota/500000；
+	   否则 Server 视为解析字段变化会清 balanceKind → 后续同 endpoint 查询永久 invalid-balance。 */
+	open('probed-credits');
+	const beforeCreditsSave = posts.length;
+	buttonsByLabel(platformRow('probed-credits'), t('priceSave'))[0].props.onClick();
+	await settle();
+	rerender(state);
+	const creditsPost = posts[posts.length - 1];
+	assert.strictEqual(posts.length, beforeCreditsSave + 1, 'credits 平台自动保存发出一条 POST');
+	assert.strictEqual(creditsPost.channelKey, 'probed-credits', 'POST 目标是 credits 平台');
+	assert.strictEqual(creditsPost.endpoint, 'https://credits.example.com/api/balance', '地址保持 Host 已探测地址');
+	assert.strictEqual(creditsPost.balancePath, '$.balance', '保留 Host 原始 balancePath($.balance)，不回退 data.quota');
+	assert.strictEqual(creditsPost.balanceDivisor, 1, '保留 Host 精确 balanceDivisor(1)，不回退 500000');
+	assert.strictEqual(creditsPost.currency, 'USD', '保留 Host 精确 currency(USD)');
+	assert.strictEqual(creditsPost.balanceKind, undefined, '客户端不把 balanceKind 写给 Host（服务端按相同字段自然保留）');
+	const creditsLocal = plain(savedPlatforms()['probed-credits']);
+	assert.deepStrictEqual([creditsLocal.balancePath, creditsLocal.currency, creditsLocal.balanceDivisor], ['', '', null],
+		'本地档案仍不写入 Host 解析字段（运行时默认不落本地）');
+	assert.strictEqual(creditsLocal.endpoint, 'https://credits.example.com/api/balance', '本地档案记录已探测地址');
+	open('probed-credits');
+	assert.strictEqual(findLabelInput(platformRow('probed-credits'), t('priceBalanceField')).props.value, '$balance',
+		'重开：仍显示 Host 原始余额字段，未变成 ¥data.quota / 500000');
+	console.log('      credits 自动探测：自动保存 POST 保留 $.balance/1/USD，不回退 data.quota/500000');
+	console.log('      清空 Host 探测地址 → remove；自动默认值不残留；显式值保留');
+}
+
+/* ====================================================================
+   ③-6 打开平台前强制刷新 Host 快照（task-31：陈旧空快照不得覆盖自动探测结果）
+   ==================================================================== */
+console.log('\n===== ③-6 已加载空快照后 Host 自动探测 credits：打开平台强制刷新 =====');
+{
+	/* 初始 Host 快照为空：客户端先加载到空快照（模拟设置页挂载后只 GET 一次）。 */
+	let hostList = [];
+	const posts = [];
+	const creditChannel = {
+		channelKey: 'stale-credits',
+		endpoint: 'https://credits.example.com/api/balance',
+		tokenHeader: 'authorization',
+		userIdHeader: 'New-Api-User',
+		tokenPrefix: 'Bearer ',
+		balancePath: '$.balance',
+		currency: 'USD',
+		feeMultiplier: 1,
+		balanceDivisor: 1,
+		balanceKind: 'credits',
+		tokenConfigured: true,
+		userIdConfigured: true
+	};
+	const inst = loadClient((url, init) => {
+		if (String(url).indexOf('/api/relay-balance-config') === -1) {
+			return Promise.resolve({ json: () => Promise.resolve({ ok: false, reason: 'test' }) });
+		}
+		if (init !== undefined && init !== null && init.method === 'POST') {
+			posts.push(JSON.parse(init.body));
+		}
+		return Promise.resolve({ json: () => Promise.resolve({ ok: true, channels: hostList }) });
+	});
+	const api = inst.api;
+	const t = translator(api);
+	const emptyPlatform = { endpoint: '', tokenHeader: 'authorization', userIdHeader: '', balancePath: '', currency: '', balanceDivisor: null, models: [] };
+	api.setConfig({ models: CNY_BASE, modelOrder: ['deepseek-flash'], priceConfigured: true, relayPlatforms: { 'stale-credits': plain(emptyPlatform) } });
+	await api.ensureRelayState();  /* 客户端加载“空快照” */
+	const props = { t: t, useProjection: () => undefined };
+	const bucket = inst.hooks();
+	const state = { bucket: bucket, tree: withHooks(bucket, () => api.SettingsSection(props)) };
+	const rerender = () => { state.tree = withHooks(state.bucket, () => api.SettingsSection(props)); };
+	const section = () => findAll(state.tree, (node) => hasClass(node, 'dsb-section') && node.props.key === '__platforms')[0];
+	const platformRow = (name) => findAll(section(), (node) => hasClass(node, 'dsb-model') && node.props.key === name)[0];
+	const open = (name) => { findAll(platformRow(name), (node) => hasClass(node, 'dsb-platform-head'))[0].props.onClick(); rerender(); };
+	/* 服务端后台自动探测完成：Host 快照出现 credits channel，而客户端仍是旧的空快照 */
+	hostList = [ JSON.parse(JSON.stringify(creditChannel)) ];
+	/* 打开平台：应强制刷新 Host 快照并用最新数据初始化 draft（不是旧空快照） */
+	open('stale-credits');
+	await settle();
+	rerender();
+	assert.strictEqual(findLabelInput(platformRow('stale-credits'), t('priceEndpoint')).props.value,
+		'https://credits.example.com/api/balance', '打开平台强制刷新：draft 用最新 Host endpoint（不是空/旧地址）');
+	assert.strictEqual(findLabelInput(platformRow('stale-credits'), t('priceBalanceField')).props.value,
+		'$balance', '打开平台强制刷新：draft 用最新 Host 解析字段（$balance）');
+	/* 点击头部触发自动保存（与“点外部 → savePlatform”同一保存路径） */
+	const beforeSave = posts.length;
+	open('stale-credits');
+	await settle();
+	rerender();
+	const saved = posts[posts.length - 1];
+	assert.strictEqual(posts.length, beforeSave + 1, '自动保存发出一条 POST');
+	assert.strictEqual(saved.endpoint, 'https://credits.example.com/api/balance', '保存保留 Host endpoint，不被空地址覆盖');
+	assert.strictEqual(saved.balancePath, '$.balance', '保存保留 $.balance，不回退 data.quota');
+	assert.strictEqual(saved.balanceDivisor, 1, '保存保留 divisor 1，不回退 500000');
+	assert.strictEqual(saved.currency, 'USD', '保存保留 currency USD');
+	assert.strictEqual(saved.balanceKind, undefined, '客户端不写 balanceKind（由服务端按相同字段保留）');
+	const localPlatform = plain(JSON.parse(inst.store.get(api.STORAGE_KEY)).relayPlatforms['stale-credits']);
+	assert.deepStrictEqual([localPlatform.balancePath, localPlatform.currency, localPlatform.balanceDivisor], ['', '', null],
+		'本地档案仍不落 Host 运行时默认值');
+	assert.strictEqual(localPlatform.endpoint, 'https://credits.example.com/api/balance', '本地档案记录已探测地址');
+	console.log('      空快照→后台探测 credits→打开强制刷新→自动保存：保留 endpoint/$.balance/1/USD');
+}
+
+/* ====================================================================
+   ③-7 刷新尚未返回时立即点外部保存的竞态（task-33）
+   ==================================================================== */
+console.log('\n===== ③-7 刷新未返回即点外部保存：不用旧空快照覆盖自动探测结果 =====');
+{
+	let hostList = [];
+	const posts = [];
+	const creditChannel = {
+		channelKey: 'race-credits',
+		endpoint: 'https://credits.example.com/api/balance',
+		tokenHeader: 'authorization',
+		userIdHeader: 'New-Api-User',
+		tokenPrefix: 'Bearer ',
+		balancePath: '$.balance',
+		currency: 'USD',
+		feeMultiplier: 1,
+		balanceDivisor: 1,
+		balanceKind: 'credits',
+		tokenConfigured: true,
+		userIdConfigured: true
+	};
+	const inst = loadClient((url, init) => {
+		if (String(url).indexOf('/api/relay-balance-config') === -1) {
+			return Promise.resolve({ json: () => Promise.resolve({ ok: false, reason: 'test' }) });
+		}
+		if (init !== undefined && init !== null && init.method === 'POST') {
+			posts.push(JSON.parse(init.body));
+		}
+		return Promise.resolve({ json: () => Promise.resolve({ ok: true, channels: hostList }) });
+	});
+	const api = inst.api;
+	const t = translator(api);
+	const emptyPlatform = { endpoint: '', tokenHeader: 'authorization', userIdHeader: '', balancePath: '', currency: '', balanceDivisor: null, models: [] };
+	api.setConfig({ models: CNY_BASE, modelOrder: ['deepseek-flash'], priceConfigured: true, relayPlatforms: { 'race-credits': plain(emptyPlatform) } });
+	await api.ensureRelayState();  /* 客户端加载“空快照” */
+	const props = { t: t, useProjection: () => undefined };
+	const bucket = inst.hooks();
+	const state = { bucket: bucket, tree: withHooks(bucket, () => api.SettingsSection(props)) };
+	const rerender = () => { state.tree = withHooks(state.bucket, () => api.SettingsSection(props)); };
+	const section = () => findAll(state.tree, (node) => hasClass(node, 'dsb-section') && node.props.key === '__platforms')[0];
+	const platformRow = (name) => findAll(section(), (node) => hasClass(node, 'dsb-model') && node.props.key === name)[0];
+	const headOf = (name) => findAll(platformRow(name), (node) => hasClass(node, 'dsb-platform-head'))[0];
+	/* 服务端后台自动探测完成：Host 快照出现 credits channel，而客户端仍是旧空快照 */
+	hostList = [ JSON.parse(JSON.stringify(creditChannel)) ];
+	/* 打开平台：触发强制刷新，但**不等待 GET 返回** */
+	headOf('race-credits').props.onClick();
+	rerender();
+	/* 刷新尚未返回就立即点头部保存（= 点外部 pointerdown 自动保存的同一 savePlatform 路径） */
+	const before = posts.length;
+	headOf('race-credits').props.onClick();
+	await settle();
+	rerender();
+	const saved = posts[posts.length - 1];
+	assert.strictEqual(posts.length, before + 1, '竞态下仍只发一条保存 POST');
+	assert.strictEqual(saved.endpoint, 'https://credits.example.com/api/balance', '竞态保存不发送空 endpoint（不覆盖 Host 已探测地址）');
+	assert.strictEqual(saved.balancePath, '$.balance', '竞态保存保留 $.balance，不回退 data.quota');
+	assert.strictEqual(saved.balanceDivisor, 1, '竞态保存保留 divisor 1，不回退 500000');
+	assert.strictEqual(saved.currency, 'USD', '竞态保存保留 currency USD');
+	assert.strictEqual(saved.balanceKind, undefined, '竞态保存不写 balanceKind（服务端按相同字段保留 credits）');
+	const local = plain(JSON.parse(inst.store.get(api.STORAGE_KEY)).relayPlatforms['race-credits']);
+	assert.deepStrictEqual([local.balancePath, local.currency, local.balanceDivisor], ['', '', null], '本地仍不落 Host 默认');
+	assert.strictEqual(local.endpoint, 'https://credits.example.com/api/balance', '本地记录已探测地址');
+	console.log('      刷新未回→立即保存：仍保留 endpoint/$.balance/1/USD（未用空快照覆盖）');
+}
+
+/* ====================================================================
+   ③-8 强制刷新 GET 失败：不发送 fallback，交给 Host existing 合并（task-35）
+   ==================================================================== */
+console.log('\n===== ③-8 强制刷新 GET 失败：不发 fallback，Host existing 保留自动探测 =====');
+{
+	let hostChannel = null;            /* Host 服务端已有（自动探测）credits channel，客户端起初不知道 */
+	const failGet = { on: false };
+	const posts = [];
+	const creditsChannel = {
+		channelKey: 'failing-credits',
+		endpoint: 'https://credits.example.com/api/balance',
+		tokenHeader: 'authorization',
+		userIdHeader: 'New-Api-User',
+		tokenPrefix: 'Bearer ',
+		balancePath: '$.balance',
+		currency: 'USD',
+		feeMultiplier: 1,
+		balanceDivisor: 1,
+		balanceKind: 'credits',
+		tokenConfigured: true,
+		userIdConfigured: true
+	};
+	/* 模拟 Host updateRelayConfig 的 existing 合并：payload 未提供的字段沿用现有配置。 */
+	const hostMerge = (body) => {
+		const existing = hostChannel === null ? {} : hostChannel;
+		const pick = (key, fallback) => body[key] === undefined ? (existing[key] === undefined ? fallback : existing[key]) : body[key];
+		const next = {
+			channelKey: body.channelKey,
+			endpoint: pick('endpoint', ''),
+			tokenHeader: pick('tokenHeader', 'authorization'),
+			userIdHeader: pick('userIdHeader', 'x-user-id'),
+			tokenPrefix: pick('tokenPrefix', 'Bearer '),
+			balancePath: pick('balancePath', '$.balance'),
+			currency: pick('currency', 'CNY'),
+			balanceDivisor: pick('balanceDivisor', 1),
+			balanceKind: pick('balanceKind', undefined),
+			feeMultiplier: 1,
+			tokenConfigured: body.token === undefined ? (existing.tokenConfigured === true) : body.token !== '',
+			userIdConfigured: body.userId === undefined ? (existing.userIdConfigured === true) : body.userId !== ''
+		};
+		hostChannel = next;
+		return next;
+	};
+	const inst = loadClient((url, init) => {
+		if (String(url).indexOf('/api/relay-balance-config') === -1) return Promise.resolve({ json: () => Promise.resolve({ ok: false, reason: 'test' }) });
+		if (init !== undefined && init !== null && init.method === 'POST') {
+			const body = JSON.parse(init.body);
+			posts.push(body);
+			return Promise.resolve({ json: () => Promise.resolve({ ok: true, channels: [hostMerge(body)] }) });
+		}
+		if (failGet.on === true) return Promise.reject(new Error('relay-config GET failed'));
+		return Promise.resolve({ json: () => Promise.resolve({ ok: true, channels: hostChannel === null ? [] : [hostChannel] }) });
+	});
+	const api = inst.api;
+	const t = translator(api);
+	const emptyPlatform = { endpoint: '', tokenHeader: 'authorization', userIdHeader: '', balancePath: '', currency: '', balanceDivisor: null, models: [] };
+	api.setConfig({ models: CNY_BASE, modelOrder: ['deepseek-flash'], priceConfigured: true, relayPlatforms: { 'failing-credits': plain(emptyPlatform) } });
+	await api.ensureRelayState();   /* 客户端读到“空快照”（Host 此刻返回空） */
+	/* Host 后台自动探测出 credits；随后编辑时的强制 GET 失败 */
+	hostChannel = JSON.parse(JSON.stringify(creditsChannel));
+	failGet.on = true;
+	const props = { t: t, useProjection: () => undefined };
+	const bucket = inst.hooks();
+	const state = { bucket: bucket, tree: withHooks(bucket, () => api.SettingsSection(props)) };
+	const rerender = () => { state.tree = withHooks(state.bucket, () => api.SettingsSection(props)); };
+	const section = () => findAll(state.tree, (node) => hasClass(node, 'dsb-section') && node.props.key === '__platforms')[0];
+	const platformRow = (name) => findAll(section(), (node) => hasClass(node, 'dsb-model') && node.props.key === name)[0];
+	const headOf = (name) => findAll(platformRow(name), (node) => hasClass(node, 'dsb-platform-head'))[0];
+	headOf('failing-credits').props.onClick();  /* 打开：触发强制刷新（将失败） */
+	await settle();
+	rerender();
+	/* 未编辑，直接保存（点头部 = savePlatform） */
+	const before = posts.length;
+	headOf('failing-credits').props.onClick();
+	await settle();
+	rerender();
+	const post = posts[posts.length - 1];
+	assert.strictEqual(posts.length, before + 1, '刷新失败时未编辑保存仍发一条 POST');
+	assert.strictEqual('endpoint' in post, false, '刷新失败：POST 不发送 endpoint（不覆盖 Host 已探测地址）');
+	assert.strictEqual('balancePath' in post, false, '刷新失败：POST 不发送 balancePath');
+	assert.strictEqual('currency' in post, false, '刷新失败：POST 不发送 currency');
+	assert.strictEqual('balanceDivisor' in post, false, '刷新失败：POST 不发送 balanceDivisor');
+	assert.strictEqual('balanceKind' in post, false, '刷新失败：客户端也不写 balanceKind');
+	assert.strictEqual(hostChannel.endpoint, 'https://credits.example.com/api/balance', 'Host existing merge 保留 endpoint');
+	assert.strictEqual(hostChannel.balancePath, '$.balance', 'Host existing merge 保留 balancePath');
+	assert.strictEqual(hostChannel.currency, 'USD', 'Host existing merge 保留 currency');
+	assert.strictEqual(hostChannel.balanceDivisor, 1, 'Host existing merge 保留 divisor');
+	assert.strictEqual(hostChannel.balanceKind, 'credits', 'Host existing merge 保留 balanceKind=credits（解析逻辑不变）');
+	const local = plain(JSON.parse(inst.store.get(api.STORAGE_KEY)).relayPlatforms['failing-credits']);
+	assert.deepStrictEqual([local.balancePath, local.currency, local.balanceDivisor], ['', '', null], '本地仍不落 runtime 默认值');
+	console.log('      GET 失败→未编辑保存：不发 fallback，Host existing 保留 endpoint/$.balance/USD/1/credits');
+}
+
+/* ====================================================================
+   ③-9 stale-empty-channel / 本地显式 parser 对照（task-37）
+   ==================================================================== */
+console.log('\n===== ③-9 快照已有空 endpoint channel：GET 失败保存不覆盖；本地显式保留 =====');
+{
+	/* 模拟“客户端已加载一个 endpoint='' 的 channel” + “服务端后台已探测 credits” + “打开时 GET 失败”。 */
+	const buildScenario = (opts) => {
+		const st = { snapshot: opts.snapshot, server: opts.server, fail: false, posts: [] };
+		const hostMerge = (body) => {
+			const existing = st.server === null ? {} : st.server;
+			const pick = (key, fallback) => body[key] === undefined ? (existing[key] === undefined ? fallback : existing[key]) : body[key];
+			const parseProvided = body.balancePath !== undefined || body.balanceDivisor !== undefined;
+			const next = {
+				channelKey: body.channelKey,
+				endpoint: pick('endpoint', ''),
+				tokenHeader: pick('tokenHeader', 'authorization'),
+				userIdHeader: pick('userIdHeader', 'x-user-id'),
+				tokenPrefix: pick('tokenPrefix', 'Bearer '),
+				balancePath: pick('balancePath', '$.balance'),
+				currency: pick('currency', 'CNY'),
+				balanceDivisor: pick('balanceDivisor', 1),
+				balanceKind: parseProvided ? undefined : pick('balanceKind', undefined),
+				feeMultiplier: 1,
+				tokenConfigured: body.token === undefined ? existing.tokenConfigured === true : body.token !== '',
+				userIdConfigured: body.userId === undefined ? existing.userIdConfigured === true : body.userId !== ''
+			};
+			st.server = next;
+			return next;
+		};
+		const inst = loadClient((url, init) => {
+			if (String(url).indexOf('/api/relay-balance-config') === -1) return Promise.resolve({ json: () => Promise.resolve({ ok: false, reason: 'test' }) });
+			if (init !== undefined && init !== null && init.method === 'POST') {
+				const body = JSON.parse(init.body);
+				st.posts.push(body);
+				return Promise.resolve({ json: () => Promise.resolve({ ok: true, channels: [hostMerge(body)] }) });
+			}
+			if (st.fail === true) return Promise.reject(new Error('relay-config GET failed'));
+			return Promise.resolve({ json: () => Promise.resolve({ ok: true, channels: st.snapshot }) });
+		});
+		return { inst: inst, st: st };
+	};
+	const mountScenario = async (sc, platformName, localPlatform) => {
+		const api = sc.inst.api;
+		const t = translator(api);
+		api.setConfig({ models: CNY_BASE, modelOrder: ['deepseek-flash'], priceConfigured: true, relayPlatforms: { [platformName]: plain(localPlatform) } });
+		await api.ensureRelayState();   /* 客户端先加载快照（此时 snapshot 里已有一个 endpoint='' 的 channel） */
+		sc.st.fail = true;              /* 之后编辑时强制 GET 失败 */
+		const props = { t: t, useProjection: () => undefined };
+		const bucket = sc.inst.hooks();
+		const state = { bucket: bucket, tree: withHooks(bucket, () => api.SettingsSection(props)) };
+		const rerender = () => { state.tree = withHooks(state.bucket, () => api.SettingsSection(props)); };
+		const section = () => findAll(state.tree, (node) => hasClass(node, 'dsb-section') && node.props.key === '__platforms')[0];
+		const platformRow = (name) => findAll(section(), (node) => hasClass(node, 'dsb-model') && node.props.key === name)[0];
+		const headOf = (name) => findAll(platformRow(name), (node) => hasClass(node, 'dsb-platform-head'))[0];
+		headOf(platformName).props.onClick();   /* 打开：触发强制刷新（GET 失败） */
+		await settle();
+		rerender();
+		const before = sc.st.posts.length;
+		headOf(platformName).props.onClick();   /* 未编辑直接保存 */
+		await settle();
+		rerender();
+		return { api: api, t: t, posts: sc.st.posts, before: before };
+	};
+	/* 场景 A：本地空，Host existing 应保留 credits endpoint / 解析字段 / balanceKind。 */
+	{
+		const emptyChannelSnap = {
+			channelKey: 'stale-empty', endpoint: '', tokenHeader: 'authorization', userIdHeader: '',
+			tokenPrefix: 'Bearer ', balancePath: '$.balance', currency: 'CNY', balanceDivisor: 1,
+			tokenConfigured: true, userIdConfigured: false
+		};
+		const sc = buildScenario({
+			snapshot: [ JSON.parse(JSON.stringify(emptyChannelSnap)) ],
+			server: { channelKey: 'stale-empty', endpoint: 'https://credits.example.com/api/balance', tokenHeader: 'authorization', userIdHeader: 'New-Api-User', tokenPrefix: 'Bearer ', balancePath: '$.balance', currency: 'USD', balanceDivisor: 1, balanceKind: 'credits', feeMultiplier: 1, tokenConfigured: true, userIdConfigured: true }
+		});
+		const emptyPlatform = { endpoint: '', tokenHeader: 'authorization', userIdHeader: '', balancePath: '', currency: '', balanceDivisor: null, models: [] };
+		const run = await mountScenario(sc, 'stale-empty', emptyPlatform);
+		const post = run.posts[run.posts.length - 1];
+		assert.strictEqual(run.posts.length, run.before + 1, 'A：未编辑保存仍发一条 POST');
+		assert.strictEqual('endpoint' in post, false, 'A：snapshot 已有空 channel（GET 失败）→ POST 不发 endpoint，交给 existing 合并');
+		assert.strictEqual('balancePath' in post, false, 'A：POST 不发 balancePath');
+		assert.strictEqual('currency' in post, false, 'A：POST 不发 currency');
+		assert.strictEqual('balanceDivisor' in post, false, 'A：POST 不发 balanceDivisor');
+		const serverA = sc.st.server;
+		assert.strictEqual(serverA.endpoint, 'https://credits.example.com/api/balance', 'A：existing merge 保留 endpoint');
+		assert.strictEqual(serverA.balancePath, '$.balance', 'A：保留 balancePath');
+		assert.strictEqual(serverA.currency, 'USD', 'A：保留 currency');
+		assert.strictEqual(serverA.balanceDivisor, 1, 'A：保留 divisor');
+		assert.strictEqual(serverA.balanceKind, 'credits', 'A：保留 balanceKind=credits');
+		const localA = plain(JSON.parse(sc.inst.store.get(run.api.STORAGE_KEY)).relayPlatforms['stale-empty']);
+		assert.deepStrictEqual([localA.balancePath, localA.currency, localA.balanceDivisor], ['', '', null], 'A：本地仍不落 runtime 默认值');
+		console.log('      A 快照已有空 channel→GET失败保存：不发 fallback，existing 保留 credits endpoint/kind');
+	}
+	/* 场景 B：本地已有显式 header / parser，必须照常发给 Host（不被 omit 丢掉）。 */
+	{
+		const emptyChannelSnap = {
+			channelKey: 'explicit-local', endpoint: '', tokenHeader: 'authorization', userIdHeader: '',
+			tokenPrefix: 'Bearer ', balancePath: '', currency: '', balanceDivisor: null,
+			tokenConfigured: true, userIdConfigured: false
+		};
+		const sc = buildScenario({
+			snapshot: [ JSON.parse(JSON.stringify(emptyChannelSnap)) ],
+			server: { channelKey: 'explicit-local', endpoint: 'https://credits.example.com/api/balance', tokenHeader: 'authorization', userIdHeader: 'New-Api-User', tokenPrefix: 'Bearer ', balancePath: '$.balance', currency: 'USD', balanceDivisor: 1, balanceKind: 'credits', feeMultiplier: 1, tokenConfigured: true, userIdConfigured: true }
+		});
+		const explicitLocal = { endpoint: '', tokenHeader: 'authorization', userIdHeader: 'X-Custom-User', balancePath: 'data.custom', currency: 'CNY', balanceDivisor: 2, models: [] };
+		const run = await mountScenario(sc, 'explicit-local', explicitLocal);
+		const post = run.posts[run.posts.length - 1];
+		assert.strictEqual('endpoint' in post, false, 'B：仍不发送 endpoint（本地地址空、未更改）');
+		assert.strictEqual(post.userIdHeader, 'X-Custom-User', 'B：本地显式请求头必须照常发出（不丢配置）');
+		assert.strictEqual(post.balancePath, 'data.custom', 'B：本地显式 balancePath 必须照常发出');
+		assert.strictEqual(post.currency, 'CNY', 'B：本地显式 currency 必须照常发出');
+		assert.strictEqual(post.balanceDivisor, 2, 'B：本地显式 divisor 必须照常发出');
+		const serverB = sc.st.server;
+		assert.strictEqual(serverB.endpoint, 'https://credits.example.com/api/balance', 'B：endpoint 仍由 existing 保留');
+		assert.strictEqual(serverB.balancePath, 'data.custom', 'B：显式 parser 已写入 Host');
+		assert.strictEqual(serverB.currency, 'CNY', 'B：显式 currency 已写入 Host');
+		assert.strictEqual(serverB.balanceDivisor, 2, 'B：显式 divisor 已写入 Host');
+		const localB = plain(JSON.parse(sc.inst.store.get(run.api.STORAGE_KEY)).relayPlatforms['explicit-local']);
+		assert.deepStrictEqual([localB.userIdHeader, localB.balancePath, localB.currency, localB.balanceDivisor], ['X-Custom-User', 'data.custom', 'CNY', 2], 'B：本地显式配置保留');
+		console.log('      B 本地显式 header/parser→GET失败保存：照常发送，不丢配置');
+	}
+}
+
+/* ====================================================================
+   ③-10 首次 GET 也未成功（无快照）：GET 一直失败时保存仍交给 Host existing（task-39）
+   ==================================================================== */
+console.log('\n===== ③-10 首次 GET 从未成功、无快照：GET 一直失败保存仍保留 Host 自动探测 =====');
+{
+	/* Host 服务端已有 credits channel；客户端连首次 ensure GET 都失败，从未拿到任何快照。 */
+	let serverChannel = {
+		channelKey: 'never-loaded',
+		endpoint: 'https://credits.example.com/api/balance',
+		tokenHeader: 'authorization', userIdHeader: 'New-Api-User', tokenPrefix: 'Bearer ',
+		balancePath: '$.balance', currency: 'USD', balanceDivisor: 1, balanceKind: 'credits',
+		feeMultiplier: 1, tokenConfigured: true, userIdConfigured: true
+	};
+	const posts = [];
+	const hostMerge = (body) => {
+		const existing = serverChannel;
+		const pick = (key, fallback) => body[key] === undefined ? (existing[key] === undefined ? fallback : existing[key]) : body[key];
+		const parseProvided = body.balancePath !== undefined || body.balanceDivisor !== undefined;
+		const next = {
+			channelKey: body.channelKey,
+			endpoint: pick('endpoint', ''),
+			tokenHeader: pick('tokenHeader', 'authorization'),
+			userIdHeader: pick('userIdHeader', 'x-user-id'),
+			tokenPrefix: pick('tokenPrefix', 'Bearer '),
+			balancePath: pick('balancePath', '$.balance'),
+			currency: pick('currency', 'CNY'),
+			balanceDivisor: pick('balanceDivisor', 1),
+			balanceKind: parseProvided ? undefined : pick('balanceKind', undefined),
+			feeMultiplier: 1,
+			tokenConfigured: body.token === undefined ? true : body.token !== '',
+			userIdConfigured: body.userId === undefined ? true : body.userId !== ''
+		};
+		serverChannel = next;
+		return next;
+	};
+	const inst = loadClient((url, init) => {
+		if (String(url).indexOf('/api/relay-balance-config') === -1) return Promise.resolve({ json: () => Promise.resolve({ ok: false, reason: 'test' }) });
+		if (init !== undefined && init !== null && init.method === 'POST') {
+			const body = JSON.parse(init.body);
+			posts.push(body);
+			return Promise.resolve({ json: () => Promise.resolve({ ok: true, channels: [hostMerge(body)] }) });
+		}
+		return Promise.reject(new Error('relay-config GET always fails'));
+	});
+	const api = inst.api;
+	const t = translator(api);
+	const emptyPlatform = { endpoint: '', tokenHeader: 'authorization', userIdHeader: '', balancePath: '', currency: '', balanceDivisor: null, models: [] };
+	api.setConfig({ models: CNY_BASE, modelOrder: ['deepseek-flash'], priceConfigured: true, relayPlatforms: { 'never-loaded': plain(emptyPlatform) } });
+	await api.ensureRelayState();   /* 首次 GET reject：从未拿到快照 */
+	const props = { t: t, useProjection: () => undefined };
+	const bucket = inst.hooks();
+	const state = { bucket: bucket, tree: withHooks(bucket, () => api.SettingsSection(props)) };
+	const rerender = () => { state.tree = withHooks(state.bucket, () => api.SettingsSection(props)); };
+	const section = () => findAll(state.tree, (node) => hasClass(node, 'dsb-section') && node.props.key === '__platforms')[0];
+	const platformRow = (name) => findAll(section(), (node) => hasClass(node, 'dsb-model') && node.props.key === name)[0];
+	const headOf = (name) => findAll(platformRow(name), (node) => hasClass(node, 'dsb-platform-head'))[0];
+	headOf('never-loaded').props.onClick();   /* 打开：强制 refresh 也 reject */
+	await settle();
+	rerender();
+	const before = posts.length;
+	headOf('never-loaded').props.onClick();   /* 未编辑直接保存 */
+	await settle();
+	rerender();
+	const post = posts[posts.length - 1];
+	assert.strictEqual(posts.length, before + 1, '首次 GET 也失败时未编辑保存仍发一条 POST');
+	assert.strictEqual('endpoint' in post, false, '无快照+GET失败：不发 endpoint，交给 existing 合并');
+	assert.strictEqual('balancePath' in post, false, '不发 balancePath');
+	assert.strictEqual('currency' in post, false, '不发 currency');
+	assert.strictEqual('balanceDivisor' in post, false, '不发 balanceDivisor');
+	assert.strictEqual(serverChannel.endpoint, 'https://credits.example.com/api/balance', 'Host existing merge 保留 endpoint');
+	assert.strictEqual(serverChannel.balancePath, '$.balance', '保留 balancePath');
+	assert.strictEqual(serverChannel.currency, 'USD', '保留 currency');
+	assert.strictEqual(serverChannel.balanceDivisor, 1, '保留 divisor');
+	assert.strictEqual(serverChannel.balanceKind, 'credits', '保留 balanceKind=credits');
+	const local = plain(JSON.parse(inst.store.get(api.STORAGE_KEY)).relayPlatforms['never-loaded']);
+	assert.deepStrictEqual([local.balancePath, local.currency, local.balanceDivisor], ['', '', null], '本地仍不落 runtime 默认值');
+	console.log('      首次 GET 也失败+无快照：未编辑保存不发 fallback，Host existing 保留 credits');
 }
 
 /* ====================================================================
@@ -1384,6 +2343,98 @@ console.log('\n===== ⑦ 余额请求追加 &relay=平台名 =====');
 	assert.strictEqual(plainUrls[0].indexOf('relay='), -1, '取不到归属就不带 relay：' + plainUrls[0]);
 	console.log('      归属平台 → &relay=' + PLATFORM + '；无归属 → 不带 relay');
 }
+
+/* ====================================================================
+   ⑧ Host：空白 endpoint 保存为空（不预填默认地址），token/userId 仍保存
+   ==================================================================== */
+console.log('\n===== ⑧ Host 空白 endpoint 保持为空 =====');
+{
+	const HOST_TMP = path.join(__dirname, '.tmp-host-relay-settings');
+	const source = hostLib.prepare(HOST_TMP, ['updateRelayConfig', 'readRelayConfig']);
+	try {
+		const host = await hostLib.loadHost(source, 'relay-default-endpoint');
+		const secrets = new Map();
+		const credentials = {
+			resolve: async (ref) => (secrets.has(ref) ? { value: secrets.get(ref), source: 'test' } : null),
+			set: async (ref, value) => { secrets.set(ref, value); },
+			unset: async (ref) => { secrets.delete(ref); }
+		};
+		const settings = {
+			describe: () => [{
+				ns: 'include:llm-pi-ai',
+				value: { providers: { orbi: { baseURL: 'https://orbi.example/v1' } } }
+			}]
+		};
+		const ctx = {
+			credentials: credentials,
+			get: (name) => name === 'settings' ? settings : (name === 'credentials' ? credentials : undefined)
+		};
+		const saved = await host.updateRelayConfig(ctx, {
+			channelKey: 'orbi', endpoint: '', token: 'orbi-token-sentinel', userId: 'orbi-user-sentinel',
+			userIdHeader: 'New-Api-User', balancePath: 'data.quota', currency: 'CNY', balanceDivisor: 500000, feeMultiplier: 1
+		});
+		assert.strictEqual(saved.status, 200, '空白 endpoint + token/userId 保存成功');
+		const channel = host.readRelayConfig().channels.find((one) => one.channelKey === 'orbi');
+		assert.ok(channel !== undefined, 'orbi 平台档案已写入');
+		assert.strictEqual(channel.endpoint, '', '地址为空就保持空（不预填 /api/user/self）');
+		assert.strictEqual(secrets.size, 1, 'token/userId 已写入凭据服务');
+		const envelope = JSON.parse(Array.from(secrets.values())[0]);
+		assert.strictEqual(envelope.token, 'orbi-token-sentinel', 'token 已保存');
+		assert.strictEqual(envelope.userId, 'orbi-user-sentinel', 'userId 已保存');
+		/* 没有 provider baseURL 时不能因为地址空就拒绝保存/清空 */
+		const noBase = await host.updateRelayConfig(ctx, { channelKey: 'no-base', endpoint: '', token: 'no-base-token', userId: 'no-base-user' });
+		assert.strictEqual(noBase.status, 200, '没有 provider baseURL 也能保存');
+		const noBaseChannel = host.readRelayConfig().channels.find((one) => one.channelKey === 'no-base');
+		assert.ok(noBaseChannel !== undefined, '无 baseURL 的平台档案保留');
+		assert.strictEqual(noBaseChannel.endpoint, '', '没有 provider baseURL 时 endpoint 也保持空');
+		console.log('      空白 endpoint：保存为空；token/userId 仍保存');
+	} finally {
+		hostLib.cleanup(HOST_TMP);
+	}
+}
+
+	/* ====================================================================
+	   ③-5 打开已有平台编辑区不自动滚动（task-14）；加模型行仍自动露出
+	   ==================================================================== */
+	console.log('\n===== ③-5 打开已有平台：scrollTop 不变；加模型行仍露出 =====');
+	{
+		const scroller = {
+			__overflowY: 'auto', scrollHeight: 2000, clientHeight: 500, scrollTop: 300, parentElement: null,
+			getBoundingClientRect: () => ({ left: 0, top: 0, right: 900, bottom: 100, width: 900, height: 500 })
+		};
+		const platformNode = {
+			parentElement: scroller,
+			getBoundingClientRect: () => ({ left: 0, top: 200, right: 900, bottom: 600, width: 900, height: 400 })
+		};
+		const inst = loadClient(undefined, undefined, { dom: { platformNode: platformNode } });
+		const api = inst.api;
+		const t = translator(api);
+		const props = { t: t, useProjection: () => undefined };
+		const state = { bucket: inst.hooks(), tree: null };
+		const rerender = () => { state.tree = withHooks(state.bucket, () => api.SettingsSection(props)); };
+		const section = () => findAll(state.tree, (node) => hasClass(node, 'dsb-section') && node.props.key === '__platforms')[0];
+		const platformRow = (name) => findAll(section(), (node) => hasClass(node, 'dsb-model') && node.props.key === name)[0];
+		const platformHead = (name) => findAll(platformRow(name), (one) => hasClass(one, 'dsb-platform-head'))[0];
+		rerender();
+		/* 新建平台并落库（addPlatform 即写 config）；随后点头部 = 打开已有平台编辑区 */
+		const nameInput = findAll(section(), (node) => node.type === 'input' && node.props.placeholder === t('platformNewPh'))[0];
+		nameInput.props.onChange({ target: { value: 'existing-relay' } });
+		rerender();
+		buttonsByLabel(section(), t('platformAdd'))[0].props.onClick();
+		rerender();
+		assert.ok(platformRow('existing-relay') !== undefined, '前置：平台行已存在（已落库）');
+		/* 用户原本滚到某个位置：打开编辑区不得把它挪走 */
+		scroller.scrollTop = 300;
+		platformHead('existing-relay').props.onClick();
+		rerender();
+		assert.strictEqual(findAll(platformRow('existing-relay'), (node) => hasClass(node, 'dsb-platform-pop')).length, 1, '前置：编辑区已打开');
+		assert.strictEqual(scroller.scrollTop, 300, '打开已有平台编辑区不得滚动（scrollTop 必须保持原值）');
+		/* 保留原行为：点「添加模型」新增行后仍把编辑区底边带进视野 */
+		buttonsByLabel(platformRow('existing-relay'), t('platformAddModel'))[0].props.onClick();
+		rerender();
+		assert.ok(scroller.scrollTop > 300, '新增模型行仍应把编辑区底边带进视野（保留原露出行为）');
+		console.log('      打开已有平台 scrollTop 保持不变（300）；加模型行后自动露出（' + scroller.scrollTop + '）');
+	}
 
 console.log('\n全部通过');
 }

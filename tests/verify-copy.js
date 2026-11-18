@@ -218,7 +218,10 @@ const STYLES = [
 	['价格行不换行（「全时段」/高峰/低谷与价格框始终同一行）', 'dsb-tier{display:flex;align-items:center;gap:8px;flex-wrap:nowrap}'],
 	['价格输入框刚好显示 XXX.XX（calc(6ch + 18px) 宽、24px 高；选择器带 input[type] 才压得住通用规则）', 'dsb-field input[type=text],.dsb-settings .dsb-field input[type=number]{width:calc(6ch + 18px);min-width:calc(6ch + 18px);flex:none;height:24px;text-align:right}'],
 	['费用倍率输入框刚好显示 xx.xx（calc(5ch + 18px)）', 'dsb-modelrow-fee input[type=number]{width:calc(5ch + 18px);min-width:calc(5ch + 18px);text-align:left}'],
-	['平台模型下拉浮层随锚点定位、最多 3 项超出滚动（max-height 3 项 / 自身滚动）', 'dsb-modelrow-menu{box-sizing:border-box;max-width:100%;max-height:calc(3 * 30px + 8px);overflow-y:auto;overscroll-behavior:contain'],
+	['平台模型下拉 body portal 用非作用域选择器 + fixed 定位（不再被 .dsb-settings 裁切）', '.dsb-modelrow-menu{box-sizing:border-box;position:fixed;'],
+	['平台模型下拉最多 3 项完整高度（max-height 3×30px+8px=98px）+ 自身滚动 + overscroll contain', ';max-width:100%;max-height:calc(3 * 30px + 8px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none}'],
+	['平台模型下拉选项整行（宽 100% / 高 30px / 单行省略）', '.dsb-modelrow-menu .dsb-select-item{display:flex;align-items:center;width:100%;height:30px;box-sizing:border-box;padding:0 10px;'],
+	['平台模型下拉选项 hover 统一普通灰底（与 hover 变量一致）', '.dsb-modelrow-menu .dsb-select-item:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}'],
 	['平台模型下拉已被其他行占用的模型灰显不可点', 'dsb-select-item-disabled{opacity:.45;cursor:not-allowed}'],
 	['厂商名 summary 行高 38px、字号 14px（3.0.4 基线即如此）', 'dsb-catalog-summary{display:flex;align-items:center;justify-content:flex-start;gap:8px;box-sizing:border-box;min-height:38px;padding:7px 2px 3px 2px;line-height:20px;color:var(--dsw-alias-label-primary);font-size:14px;font-weight:500'],
 	['实验性功能胶囊样式（6px / 999px 圆角 / 1px 轻描边 / padding 1px 3px / line-height 10px）', 'dsb-experimental-badge{padding:1px 3px;border:1px solid var(--dsw-alias-separator-primary,rgba(127,127,127,.3));border-radius:999px;font-size:6px;line-height:10px;font-weight:400'],
@@ -297,7 +300,8 @@ const GONE = [
 	/* 厂商目录拖拽浮层从未在 3.0.4 基线实现（当前 lib 也无 dsb-catalog-drag-*），旧断言属于超前规格，改成负断言防误加。 */
 	['厂商目录拖拽浮层（3.0.4 基线即无此实现）', 'dsb-catalog-drag-card'],
 	['厂商目录拖拽 ghost wrapper（3.0.4 基线即无此实现）', 'dsb-catalog-drag-ghost'],
-	['厂商目录拖拽克隆原行 summary（3.0.4 基线即无此实现）', 'rowNode.querySelector(".dsb-catalog-summary")']
+	['厂商目录拖拽克隆原行 summary（3.0.4 基线即无此实现）', 'rowNode.querySelector(".dsb-catalog-summary")'],
+	['模型下拉旧的作用域样式（body portal 后菜单挂到 body，已改非作用域 .dsb-modelrow-menu）', '.dsb-settings .dsb-modelrow-menu{'],
 ];
 GONE.forEach(([label, needle]) => {
 	if (raw.indexOf(needle) >= 0) {
