@@ -112,8 +112,12 @@ assert.deepStrictEqual(Array.from(dash.rows), [], '空态没有图例行');
 assert.deepStrictEqual(Array.from(dash.segments), [], '空态没有分段');
 assert.strictEqual(dash.compact, null, '空态没有压缩点缺口');
 const dashRing = api.contextRing(dash.percent, 'idle');
-assert.strictEqual(Array.from(dashRing.children).length, 2, '空态圆环照旧是底环 + 进度弧');
+assert.strictEqual(Array.from(dashRing.children).length, 3, '圆环 = 底环 + 进度弧 + 环心数字');
 assert.strictEqual(Array.from(dashRing.children)[1].props.strokeDashoffset, 2 * Math.PI * 5.5, '0% 时进度弧整段留空');
+assert.strictEqual(Array.from(dashRing.children)[2].props.className, 'dsb-ring-percent', '第三项是环心占用数字');
+/* 空态（没有占用数据）环心留空：contextMeter.empty === true / 没有数据时都不显示数字 */
+assert.strictEqual(String(Array.from(dashRing.children)[2].children[0]), '', '空态环心留空');
+assert.strictEqual(Array.from(api.contextRing(0, 'idle', null, null).children)[2].children[0], '', '没有 labelPercent 数据时环心也留空');
 console.log('= 缺占用数据 → 空环 + 横杠（不再整块消失）');
 
 /* ------------------------------------------------------------- 段渲染 */
@@ -141,7 +145,7 @@ assert.strictEqual(contextMeter.compact, null, '没有 capacity 时压缩点为�
 console.log('= 圆环带上下文占用气泡；压缩点随模型自适应；token 计数段已并入总计，峰谷可点');
 
 /* ------------------------------------------------------------- 圆环几何 */
-const ring = api.contextRing(62, 'idle');
+const ring = api.contextRing(62, 'idle', null, 62);
 assert.strictEqual(ring.type, 'svg', '圆环是 svg');
 assert.ok(String(ring.props.className).indexOf('dsb-ring') === 0, '圆环类名');
 const circles = Array.from(ring.children);
@@ -150,6 +154,22 @@ assert.strictEqual(circles[1].props.className, 'dsb-ring-fill', '进度弧');
 assert.strictEqual(circles[1].props.transform, 'rotate(-90 7 7)', '起点在 12 点方向（整体转 -90°）');
 assert.strictEqual(Math.round(circles[1].props.strokeDasharray), Math.round(2 * Math.PI * 5.5), '周长 = 2πr');
 assert.strictEqual(Math.round(circles[1].props.strokeDashoffset), Math.round(2 * Math.PI * 5.5 * 0.38), '62% 时留 38% 的缺口');
+/* 环心数字：显示**主会话自己**的占用（第 4 参 labelPercent），与弧长（第 1 参 percent）不同源。
+   用户拍板：弧长在团队运行时切到成员/深层数据，环心数字永远只显示主会话自己的百分比。 */
+assert.strictEqual(circles[2].props.className, 'dsb-ring-percent', '环心是占用数字 text');
+assert.strictEqual(String(circles[2].children[0]), '62', '环心数字 = labelPercent（无 % 号）');
+assert.strictEqual(circles[2].props.fontSize, undefined, '不再写动态 fontSize（字号只由 CSS 固定 6px）');
+assert.strictEqual(circles[2].props['aria-hidden'], 'true', '环心数字对读屏隐藏（气泡已读百分比）');
+/* 主会话百分比 vs 团队弧长不同源：弧长 55% 但环心数字显示主会话自己的 20 */
+const mixed = Array.from(api.contextRing(55, 'teamRunning', null, 20).children);
+assert.ok(Math.abs(mixed[1].props.strokeDashoffset - 2 * Math.PI * 5.5 * 0.45) < 1e-9, '弧长按第 1 参 55%（团队级）');
+assert.strictEqual(String(mixed[2].children[0]), '20', '环心数字按第 4 参 20（主会话自己），不是团队的 55');
+/* 小数取整：32.6 → 33（四舍五入，不显示小数点） */
+assert.strictEqual(String(Array.from(api.contextRing(32.6, 'idle', null, 32.6).children)[2].children[0]), '33', '小数四舍五入成整数');
+assert.strictEqual(String(Array.from(api.contextRing(33.4, 'idle', null, 33.4).children)[2].children[0]), '33', '33.4 向下取整为 33');
+/* 100 留空：14px 环心塞不下三位 */
+assert.strictEqual(String(Array.from(api.contextRing(100, 'idle', null, 100).children)[2].children[0]), '', '达到 100 时环心留空');
+assert.strictEqual(String(Array.from(api.contextRing(99.6, 'idle', null, 99.6).children)[2].children[0]), '', '99.6 四舍五入成 100 后同样留空');
 assert.ok(String(api.contextRing(62, 'running').props.className).includes('dsb-ring-running'), '运行中 → 绿色');
 assert.ok(String(api.contextRing(62, 'error').props.className).includes('dsb-ring-error'), '报错 → 红色');
 assert.ok(String(api.contextRing(62, 'approval').props.className).includes('dsb-ring-approval'), '待审批 → 黄色');
@@ -164,7 +184,7 @@ assert.strictEqual(notchDashes.length, 3, '缺口 = 画-空-画 三段');
 assert.strictEqual(notchDashes[1], 3, '空洞 = 净宽 1 + 描边 2（圆头各向洞内啃半个线宽）');
 assert.ok(Math.abs(notchDashes[0] + notchDashes[1] + notchDashes[2] - 2 * Math.PI * 5.5) < 1e-12, '三段之和精确等于周长');
 assert.ok(Math.abs((notchDashes[0] + notchDashes[1] / 2) - 2 * Math.PI * 5.5 * 0.550464) < 1e-12, '缺口中心落在压缩点上');
-console.log('= 圆环：12 点起、周长与进度正确、颜色随状态；压缩点处开圆头缺口');
+console.log('= 圆环：12 点起、周长与进度正确、颜色随状态；压缩点处开圆头缺口；环心同源显示占用数字');
 
 /* 点击与收起的契约：圆环包在按钮里（hover/展开有灰底），面板点别处收起 */
 const source = fs.readFileSync(PLUGIN, 'utf8');

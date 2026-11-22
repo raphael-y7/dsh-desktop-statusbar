@@ -513,6 +513,36 @@ const bookOf = (entry) => ({ x: entry });
 		}
 	}
 
+	console.log('\n===== ⑯ 官方状态栏只藏官方节点：官方选择器定位 + observer 过滤 =====');
+	/* 3.0.7 用户实测两条要求：
+	   ① 隐藏必须**只认官方节点**：旧的"从 .dsb-root 逐层向上把非本插件兄弟节点全 display:none"
+	      会把第三方插件后插入的节点也误藏。改成与 CSS 相同的官方选择器精确定位、只藏官方节点。
+	   ② MutationObserver 只在新增节点匹配（或包含匹配）官方选择器时重扫一次，普通流式文字变化
+	      不触发，避免卡顿；卸载只还原被我们藏过的官方节点。 */
+	assert.ok(/new MutationObserver\(/.test(clientCode), '藏官方底栏必须用 MutationObserver（不能只跑一次）');
+	assert.ok(/observer\.observe\(dock,\s*\{\s*childList:\s*true/.test(clientCode), '观察 dock 的 childList 变动（不观察 attributes，避免自激）');
+	assert.ok(/observer\.disconnect\(\)/.test(clientCode), '卸载时必须断开 observer');
+	assert.ok(/hidden\.forEach\(\(prev, el\) => \{ el\.style\.display = prev; \}\)/.test(clientCode),
+		'卸载时把藏过的节点逐个还原（关侧栏/关插件都不留异常）');
+	assert.ok(/typeof MutationObserver === "function"/.test(clientCode), '老环境无 MutationObserver 时要优雅降级（退回单次清扫）');
+	/* ① 只认官方选择器：三条官方选择器都在，且用 querySelectorAll 定位；
+	     不许再出现"逐层向上扫兄弟节点"的 indexOf 循环（node = parent / parent.children）。 */
+	assert.ok(/aria-label\*="上下文"/.test(clientCode) && /aria-label\*="context used"/.test(clientCode),
+		'必须用官方上下文按钮的 aria-label 选择器定位');
+	assert.ok(/span\[class\$="_root"\]>button\[aria-haspopup="dialog"\]\[class\$="_trigger"\]/.test(clientCode),
+		'必须用官方用量按钮的结构选择器（span[class$=_root]>button[..._trigger]）定位');
+	assert.ok(/const OFFICIAL_SELECTORS = \[/.test(clientCode), '官方选择器应集中成一个常量表，与 CSS 同源');
+	assert.ok(/dock\.querySelectorAll\(OFFICIAL\)/.test(clientCode), '只对官方选择器匹配的节点做隐藏（querySelectorAll(OFFICIAL)）');
+	assert.ok(!/while \(node && node !== dock\)/.test(clientCode),
+		'不许再有"从 .dsb-root 逐层向上到 dock"的兄弟节点清扫循环（会误藏第三方插件节点）');
+	assert.ok(!/child\.contains\(barRoot\)/.test(clientCode),
+		'不许再用 child.contains(barRoot) 判断兄弟节点并整层 display:none');
+	/* ② observer 有官方节点过滤：回调里遍历 addedNodes，touchesOfficial(node) 命中才 sweep。 */
+	assert.ok(/const touchesOfficial = \(node\)/.test(clientCode), 'observer 回调必须有"是否牵涉官方节点"的过滤函数');
+	assert.ok(/record\.addedNodes/.test(clientCode), 'observer 只检查 addedNodes（新增节点）');
+	assert.ok(/if \(relevant\) sweep\(\);/.test(clientCode), '只有新增节点牵涉官方节点时才重扫（普通文字变化不触发）');
+	console.log('      只认官方选择器、无兄弟全隐藏循环；observer 有官方节点过滤，卸载只还原官方节点');
+
 	console.log('\nFIX REGRESSION CHECKS PASSED');
 })().catch((error) => {
 	console.error('FIX REGRESSION CHECKS FAILED:', error && error.message ? error.message : error);

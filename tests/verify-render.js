@@ -370,6 +370,13 @@ function renderTree() {
 	assert.ok(reduced[0].includes('.dsb-ring-team') && reduced[0].includes('.dsb-ring-deep'),
 		'reduced-motion 那条必须同时包含蓝档与紫档（与绿色同待遇，不能只停一个）：' + (reduced === null ? '' : reduced[0]));
 
+	/* ⑧-4b 环心占用数字的 CSS 必须存在：字号 / 填充 / pointer-events 缺一不可（用户 3.0.7） */
+	assert.ok(/\.dsb-ring-percent\{[^}]*pointer-events:none/.test(cssSource),
+		'环心数字 .dsb-ring-percent 必须 pointer-events:none（否则挡住圆环按钮的点击/悬停）');
+	assert.ok(/\.dsb-ring-percent\{[^}]*font-size:/.test(cssSource), '环心数字必须显式给字号，否则 SVG text 默认 16px 会溢出 14px 环');
+	assert.ok(/\.dsb-ring-percent\{[^}]*fill:/.test(cssSource), '环心数字必须有显式填充色（跟随主题文字色）');
+
+
 	/* ⑧-5 弧长：teamRunning 用成员级最大（55），不是 Lead 自己的占用 */
 	const circumference = api.METER_CIRCUMFERENCE;
 	const percentToOffset = (pc) => circumference * (1 - pc / 100);

@@ -590,7 +590,9 @@ assert.equal(fetched.length, magpieMark + 2, 'Magpie 走 quotas + models 两个�
   const costAfterDebt = await dayCostNow();
   assert.equal(costAfterDebt - costWithDebt, 4, 'settled debt adds the multiplied amount to day cost');
 
-  /* Tolerant model-name matching: provider prefix + separator variants hit the same price entry. */
+  /* Tolerant model-name matching: provider prefix + separator variants hit the same price entry.
+     remote-magpie/ 前缀归 Magpie，先清空通道配置让倍率=1，避免残留配置干扰命中价断言。 */
+  await removeMagpie();
   const tolerantBefore = await dayCostNow();
   priceBook = {
     ...priceBook,
@@ -902,6 +904,69 @@ assert.equal(fetched.length, magpieMark + 2, 'Magpie 走 quotas + models 两个�
   assert.equal(magpieRes.total.cost, 6, '恢复显式 Magpie 倍率 3 后准确乘算 2 × 3 = 6');
   await postMagpie(1.5);
 
+  /* ---- Magpie 主会话（非子代理）：走通用 tokenCost 也必须按「缺倍率默认 1」计价 ---- */
+  /* 用户报的缺陷：主会话里 provider=magpie / 模型 remote-magpie/ 时，providerAffiliation 判为 relay，
+     tokenCost 走「缺 feeConfigured 就返回 0 / 记欠账」，于是走 Magpie 的调用有时不被计费。
+     修复后：Magpie 归属缺倍率默认 1；配置了通道倍率 / 条目倍率仍照乘。 */
+  priceBook = Object.assign({}, priceBook, {
+    'magpie-main-model': plainTierPrice(2, 0),
+    'magpie-main-entry': Object.assign(tierPrice(1, 0), { feeMultiplier: 2 }),
+  });
+  await postPrices(priceBook);
+  const magpieDayCost = async () => {
+    const rep = await daily();
+    const d = rep.body.days.find((entry) => entry.date === DAY);
+    return d === undefined ? 0 : d.cost;
+  };
+  /* a) 主会话 provider=magpie，无任何倍率配置 ⇒ 按模型价 2 计（非零，且 ≠ 欠账） */
+  await removeMagpie();
+  let before = await magpieDayCost();
+  writeSession('main-magpie-nocfg', null, [assistantMessage(1, OFF_PEAK_AT, 'magpie', 'magpie-main-model', M)]);
+  let after = await magpieDayCost();
+  assert.equal(after - before, 2, '主会话 Magpie 无配置：按模型价 2 计（修复前为 0）');
+  { const diskDay = JSON.parse(fs.readFileSync(LEDGER_FILE, 'utf8')).days[DAY] || {};
+    assert.ok((diskDay.unpricedByProvider || []).every((one) => one.model !== 'magpie-main-model'),
+      '主会话 Magpie 无配置不再挂欠账'); }
+
+  /* b) remote-magpie/ 是局域网 Magpie 的模型命名空间：即使 provider 为空，模型前缀本身
+     也归 Magpie，按模型价计（非零）、不挂欠账。不再降级成通用 relay。 */
+  await removeMagpie();
+  before = await magpieDayCost();
+  writeSession('main-prefix-magpie', null, [assistantMessage(1, OFF_PEAK_AT, '', 'remote-magpie/group/magpie-main-model', M)]);
+  after = await magpieDayCost();
+  assert.equal(after - before, 2, 'provider 为空 + remote-magpie/ 前缀：按 Magpie 模型价 2 计（非零）');
+  /* 欠账读台账文件（/api/daily-usage 的响应体不暴露这类欠账，与其它审计用例一致从盘上读）。 */
+  const prefixDiskDay = JSON.parse(fs.readFileSync(LEDGER_FILE, 'utf8')).days[DAY] || {};
+  assert.ok((prefixDiskDay.unpricedByProvider || []).every((one) => one.model !== 'remote-magpie/group/magpie-main-model'),
+    'provider 为空 + remote-magpie/ 前缀不再挂欠账');
+
+  /* c) 配置 Magpie 通道倍率 2 ⇒ 2 × 2 = 4（配置必须生效） */
+  await removeMagpie();
+  await postMagpie(2);
+  before = await magpieDayCost();
+  writeSession('main-magpie-chan2', null, [assistantMessage(1, OFF_PEAK_AT, 'magpie', 'magpie-main-model', M)]);
+  after = await magpieDayCost();
+  assert.equal(after - before, 4, '主会话 Magpie 通道倍率 2 ⇒ 2 × 2 = 4');
+
+  /* d) 通道倍率 1.5 × 价格条目 feeMultiplier 2 × 模型价 1 = 3（与子代理口径一致） */
+  await removeMagpie();
+  await postMagpie(1.5);
+  before = await magpieDayCost();
+  writeSession('main-magpie-entry', null, [assistantMessage(1, OFF_PEAK_AT, 'magpie', 'magpie-main-entry', M)]);
+  after = await magpieDayCost();
+  assert.equal(after - before, 3, '主会话 Magpie 通道 1.5 × 条目 2 × 模型价 1 = 3');
+
+  /* e) 反证：普通自建 relay（plain-provider）主会话缺 feeConfigured 仍记 0 / 欠账（行为不许改） */
+  await removeMagpie();
+  before = await magpieDayCost();
+  writeSession('main-plain-relay', null, [assistantMessage(1, OFF_PEAK_AT, 'plain-provider', 'plain-unpriced-model', M)]);
+  after = await magpieDayCost();
+  assert.equal(after - before, 0, '普通 relay 主会话缺倍率仍为 0（不按官方价误计）');
+  { const diskDay = JSON.parse(fs.readFileSync(LEDGER_FILE, 'utf8')).days[DAY] || {};
+    assert.ok((diskDay.unpricedByProvider || []).some((one) => one.provider === 'plain-provider' && one.model === 'plain-unpriced-model'),
+      '普通 relay 主会话缺倍率仍记欠账（行为不变）'); }
+
+  console.log('Magpie 主会话: 无配置按模型价非零 / remote-magpie 前缀同上 / 通道与条目倍率照乘 / 普通 relay 缺倍率仍 0 且记欠账。');
   console.log('Magpie subagent: 默认模型价非零 / 无配置默认 1 倍 / 显式通道与条目倍率准确 / 普通 relay 缺倍率仍 0。');
   console.log('PROVIDER FEE CHECKS PASSED');
   console.log('Projection: message/attempt/summary providers, missing-provider defaults, provider-only calls (no event multiplier), replay version.');
