@@ -305,7 +305,7 @@ console.log('\n===== ② 官方目录：默认全部已加入（价格卡），�
 	const models = api.snapshot().models;
 
 	/* 播种：官方模型全部进价格库；已有条目一律不动 */
-	assert.strictEqual(api.snapshot().priceVersion, 8, '迁移后价格库版本应为 8');
+	assert.strictEqual(api.snapshot().priceVersion, 10, '迁移后价格库版本应为 10');
 	CATALOG_NAMES.forEach((name) => {
 		assert.ok(models[name] !== undefined, '官方模型应默认加入价格库：' + name);
 	});
@@ -355,7 +355,7 @@ console.log('\n===== ② 官方目录：默认全部已加入（价格卡），�
 	const migrated = loadClient(undefined, [[CONFIG_KEY, RETIRED_CONFIG]]);
 	const migratedApi = migrated.api;
 	const migratedModels = migratedApi.snapshot().models;
-	assert.strictEqual(migratedApi.snapshot().priceVersion, 8, '旧配置迁移后价格库版本应为 8');
+	assert.strictEqual(migratedApi.snapshot().priceVersion, 10, '旧配置迁移后价格库版本应为 10');
 	assert.strictEqual(migratedModels['GLM-5.2'], undefined, '已下架官方模型迁移时应被清理');
 	assert.strictEqual(migratedModels['muse-spark-1.1'], undefined, '小写 muse 键同样按确切名字清理');
 	assert.ok(migratedModels['my-model'] !== undefined, '真正自建条目必须保留');
@@ -374,7 +374,7 @@ console.log('\n===== ② 官方目录：默认全部已加入（价格卡），�
 	assert.ok(JSON.stringify(savedModels(migrated)).length > 0 && migratedBefore.length > 0, '配置非空');
 
 
-	/* v6/v8 补播：老用户的 priceVersion=5 价格库（官方目录 27 条里缺 kimi-k3）→ 自动补上 kimi-k3；
+	/* v6/v8/v10 补播：老用户的 priceVersion=5 价格库（官方目录 29 条里缺 kimi-k3）→ 自动补上 kimi-k3；
 	   已有条目一律不动；已下架模型不会被补回来。 */
 	const catalogModelOf = (name) => {
 		for (let i = 0; i < CATALOG_VENDORS.length; i += 1) {
@@ -408,7 +408,7 @@ console.log('\n===== ② 官方目录：默认全部已加入（价格卡），�
 	});
 	const backfilled = loadClient(undefined, [[CONFIG_KEY, V5_CONFIG]]);
 	const backfilledModels = backfilled.api.snapshot().models;
-	assert.strictEqual(backfilled.api.snapshot().priceVersion, 8, 'v5 → v8 迁移后版本号升到 8');
+	assert.strictEqual(backfilled.api.snapshot().priceVersion, 10, 'v5 → v10 迁移后版本号升到 10');
 	assert.deepStrictEqual(plain(backfilledModels['kimi-k3']), {
 		tiered: false, currency: 'CNY',
 		peak: { input: 20, cacheRead: 2, cacheWrite: 20, output: 100 },
@@ -430,13 +430,13 @@ console.log('\n===== ② 官方目录：默认全部已加入（价格卡），�
 	}, 'v6 补播不动自建条目');
 	assert.strictEqual(backfilledModels['GLM-5.2'], undefined, 'v6 补播不会把已下架的官方模型加回来');
 	assert.deepStrictEqual(Object.keys(backfilledModels).sort(), CATALOG_NAMES.concat(['my-model']).sort(),
-		'v6/v8 补播只补当前官方目录缺失项：27 条官方 + 1 条自建');
+		'v6/v8/v10 补播只补当前官方目录缺失项：29 条官方 + 1 条自建');
 	/* 二次加载：版本已是 6，不再补播、也不改动 */
 	const reloaded = loadClient(undefined, [[CONFIG_KEY, backfilled.store.get(CONFIG_KEY)]]);
-	assert.strictEqual(reloaded.api.snapshot().priceVersion, 8, '已迁移配置再次加载不回退版本');
+	assert.strictEqual(reloaded.api.snapshot().priceVersion, 10, '已迁移配置再次加载不回退版本');
 	assert.deepStrictEqual(Object.keys(reloaded.api.snapshot().models).sort(), CATALOG_NAMES.concat(['my-model']).sort(),
 		'二次加载模型集合不变（不会重复补播）');
-	console.log('      v6/v8 补播：v5 价格库自动补上 kimi-k3（27 条），用户条目不动、已下架模型不回流');
+	console.log('      v6/v8/v10 补播：v5 价格库自动补上 kimi-k3（29 条），用户条目不动、已下架模型不回流');
 
 
 	/* v7 迁移：缺 base 的旧条目补「当前值 + 当前币种」，数值一字不动 */
@@ -450,7 +450,7 @@ console.log('\n===== ② 官方目录：默认全部已加入（价格卡），�
 	});
 	const noBase = loadClient(undefined, [[CONFIG_KEY, NO_BASE_CONFIG]]);
 	const noBaseModels = noBase.api.snapshot().models;
-	assert.strictEqual(noBase.api.snapshot().priceVersion, 8, 'v6 → v8 迁移后版本号升到 8');
+	assert.strictEqual(noBase.api.snapshot().priceVersion, 10, 'v6 → v10 迁移后版本号升到 10');
 	assert.deepStrictEqual(plain(noBaseModels['my-usd']), {
 		/* 3.0.4 起：USD 显示值折成 CNY（4 × 6.742424 = 26.97 …），原始 USD 值进 base。 */
 		tiered: false, currency: 'CNY',

@@ -16,13 +16,14 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   adaptersFor,
-  magpieModelProvider, magpieModelPrefix, magpieBalanceOf,
+  magpieModelProvider, magpieModelPrefix, magpieModelQuotaProvider, magpieBalanceOf,
   magpieAccountFromRoute, magpieParseMoney, magpieQuotaEntries,
 } from '../lib/balance-api.js'
 import {
   queryBalanceForTest,
   providerConfigFromSettings,
   parseGenericRelayBalance,
+  parseGenericRelayBalanceAny,
   queryGenericRelayBalance,
 } from '../lib/index.js'
 
@@ -158,6 +159,166 @@ check('models 的 owned_by 与模型前缀兜底', () => {
   assert.equal(magpieModelProvider(models, 'gpt-6-astra'), null) /* 多个 owner：不猜 */
   assert.equal(magpieModelPrefix('group/deepseek-flash'), 'group')
   assert.equal(magpieModelPrefix('nope'), null)
+})
+
+/* 订阅型配额：used/remaining 是百分比窗口（没有 unit=credits），必须按 percent 解析，不能当积分。 */
+check('work/codex 订阅百分比窗口（5h/7d）解析为 percent，不是 credits', () => {
+  const quotas = {
+    data: [{
+      provider: 'work/codex', name: 'codex', kind: 'subscription', user: 'u1',
+      windows: [
+        { name: '5 hours', used: 19, remaining: 81 },
+        { name: '7 days', used: 45, remaining: 55 },
+      ],
+    }],
+  }
+  const value = magpieBalanceOf(quotas, { provider: 'work/codex' })
+  assert.equal(value.ok, true)
+  assert.equal(value.mode, 'percent')
+  assert.equal(value.isPercent, true)
+  assert.equal(value.isCredits, undefined, 'percent 不能标成积分')
+  /* primary 优先「五小时」窗口：total = 5 hours 的已用 19% */
+  assert.equal(value.total, '19.00%')
+  assert.equal(value.currency, '', '百分比不带货币')
+  /* 完整 windows 透传（供客户端画五小时/七天进度条） */
+  assert.ok(Array.isArray(value.windows), 'percent 应带 windows 数组')
+  assert.equal(value.windows.length, 2)
+  assert.equal(value.windows[0].name, '5 hours')
+  assert.equal(value.windows[0].used, 19)
+  assert.equal(value.windows[0].remaining, 81)
+  assert.equal(value.windows[1].name, '7 days')
+  assert.equal(value.windows[1].used, 45)
+})
+
+check('percent 无五小时窗口时 primary = 合并后 used 最大的一类', () => {
+  const quotas = {
+    data: [{
+      provider: 'p3', kind: 'subscription', user: 'u',
+      windows: [
+        { name: 'monthly', used: 10, remaining: 90 },
+        { name: 'weekly', used: 45, remaining: 55 },
+      ],
+    }],
+  }
+  const value = magpieBalanceOf(quotas, { provider: 'p3' })
+  assert.equal(value.mode, 'percent')
+  assert.equal(value.total, '45.00%', '无五小时 → 合并后 used 最大的一类（weekly 45%）')
+  assert.equal(value.windows.length, 2)
+})
+
+check('percent 多账号：5h/7d 各账号合并为综合百分比（不取单账号）', () => {
+  const quotas = {
+    data: [
+      { provider: 'p5', kind: 'subscription', user: 'a',
+        windows: [{ name: '5 hours', used: 20, remaining: 80 }, { name: '7 days', used: 30, remaining: 70 }] },
+      { provider: 'p5', kind: 'subscription', user: 'b',
+        windows: [{ name: '5 hours', used: 60, remaining: 40 }, { name: '7 days', used: 50, remaining: 50 }] },
+    ],
+  }
+  const value = magpieBalanceOf(quotas, { provider: 'p5' })
+  assert.equal(value.mode, 'percent')
+  assert.equal(value.windows.length, 2)
+  /* 无 limit ⇒ 按账号数等权平均：5h remaining (80+40)/2=60%，used (20+60)/2=40%；
+     7d remaining (70+50)/2=60%，used (30+50)/2=40%。total = fiveHour 合并 used = 40%。 */
+  assert.equal(value.windows[0].name, '5 hours')
+  assert.equal(value.windows[0].remaining, 60, '5h 综合剩余 60%（不是单取任一账号 80/40）')
+  assert.equal(value.windows[0].used, 40)
+  assert.equal(value.windows[1].name, '7 days')
+  assert.equal(value.windows[1].remaining, 60, '7d 综合剩余 60%')
+  assert.equal(value.total, '40.00%', 'total 取 fiveHour 合并后的 used 40%')
+  /* 每个合并窗口带 items（逐账号明细）：5h 两条，分别是 a 剩余 80、b 剩余 40 */
+  const fiveItems = value.windows[0].items
+  assert.ok(Array.isArray(fiveItems) && fiveItems.length === 2, '5h 窗口带 2 条账号明细')
+  assert.deepEqual(fiveItems.map((one) => one.name), ['a', 'b'], '5h 明细账号名')
+  assert.equal(fiveItems[0].remaining, 80, 'a 的 5h 剩余 80')
+  assert.equal(fiveItems[1].remaining, 40, 'b 的 5h 剩余 40')
+  /* 合并窗口带通用 key（建议修-3）：fiveHour / sevenDay，供客户端本地化优先使用。 */
+  assert.equal(value.windows[0].key, 'fiveHour', '5h 合并窗口 key=fiveHour')
+  assert.equal(value.windows[1].key, 'sevenDay', '7d 合并窗口 key=sevenDay')
+  const sevenItems = value.windows[1].items
+  assert.ok(Array.isArray(sevenItems) && sevenItems.length === 2, '7d 窗口带 2 条账号明细')
+  assert.equal(sevenItems[1].remaining, 50, 'b 的 7d 剩余 50')
+})
+
+check('percent 多账号带 limit：按 limit 加权平均', () => {
+  const quotas = {
+    data: [
+      { provider: 'p6', kind: 'subscription', user: 'a',
+        windows: [{ name: '5 hours', used: 0, remaining: 100, limit: 100 }] },
+      { provider: 'p6', kind: 'subscription', user: 'b',
+        windows: [{ name: '5 hours', used: 50, remaining: 50, limit: 300 }] },
+    ],
+  }
+  const value = magpieBalanceOf(quotas, { provider: 'p6' })
+  /* limit 加权：remaining = (100*100 + 50*300)/(100+300) = (10000+15000)/400 = 62.5 */
+  const win = value.windows[0]
+  assert.ok(Math.abs(win.remaining - 62.5) < 1e-9, 'remaining 按 limit 加权 = 62.5，实际 ' + win.remaining)
+  assert.ok(Math.abs(win.used - 37.5) < 1e-9, 'used 按 limit 加权 = 37.5')
+  assert.equal(value.total, '37.50%')
+})
+
+check('percent 指定 account 也只汇总全部账号（与 WorkBuddy 统一口径）', () => {
+  const quotas = {
+    data: [
+      { provider: 'p7', kind: 'subscription', user: 'a',
+        windows: [{ name: '5 hours', used: 20, remaining: 80 }] },
+      { provider: 'p7', kind: 'subscription', user: 'b',
+        windows: [{ name: '5 hours', used: 60, remaining: 40 }] },
+    ],
+  }
+  /* options.account='a'（模拟 Magpie route 指定账号）：percent 仍须汇总 a+b。 */
+  const value = magpieBalanceOf(quotas, { provider: 'p7', account: 'a' })
+  assert.equal(value.mode, 'percent')
+  assert.equal(value.windows[0].remaining, 60, '5h 综合剩余 (80+40)/2=60%，不受 account=a 影响')
+  assert.equal(value.total, '40.00%', 'total 取合并 used 40%')
+  assert.equal(value.windows[0].items.length, 2, 'items 仍包含 a 和 b 两个账号')
+  assert.deepEqual(value.windows[0].items.map((one) => one.name), ['a', 'b'])
+})
+
+check('percent 窗口：忽略 image-only 与文本占位窗口', () => {
+  const quotas = {
+    data: [{
+      provider: 'p1', kind: 'subscription', user: 'u',
+      windows: [
+        { name: 'image gen', used: 80, remaining: 20 },
+        { name: '5 hours', used: 12, remaining: 88 },
+        { name: 'bad', used: 'x', remaining: null },
+      ],
+    }],
+  }
+  const value = magpieBalanceOf(quotas, { provider: 'p1' })
+  assert.equal(value.mode, 'percent')
+  assert.equal(value.total, '12.00%', 'image-only 与坏数据被忽略，取真正的时间窗口')
+})
+
+check('credits 窗口优先于 percent 窗口（有 unit=credits 时不按百分比）', () => {
+  const quotas = {
+    data: [{
+      provider: 'p2', kind: 'subscription', user: 'u',
+      windows: [
+        { name: 'Credits', used: 5, remaining: 95, limit: 100, amount: 5, unit: 'credits' },
+        { name: '5 hours', used: 12, remaining: 88 },
+      ],
+    }],
+  }
+  const value = magpieBalanceOf(quotas, { provider: 'p2' })
+  assert.equal(value.mode, 'credits')
+  assert.equal(value.isCredits, true)
+  assert.equal(value.isPercent, undefined)
+})
+
+check('模型 work/codex/gpt-6-luna → quotas provider work/codex（通用最长前缀匹配）', () => {
+  const quotas = { data: [
+    { provider: 'work/codex', kind: 'subscription', windows: [{ name: '5 hours', used: 19, remaining: 81 }] },
+    { provider: 'work', kind: 'subscription', windows: [] },
+    { provider: 'other', kind: 'subscription', windows: [] },
+  ] }
+  /* owned_by 是 work，前缀只取第一段也是 work，都不是 quotas 里的完整 provider；
+     最长前缀匹配应命中 work/codex。 */
+  assert.equal(magpieModelProvider({ data: [{ id: 'work/codex/gpt-6-luna', owned_by: 'work' }] }, 'work/codex/gpt-6-luna'), 'work')
+  assert.equal(magpieModelQuotaProvider(quotas, 'work/codex/gpt-6-luna'), 'work/codex')
+  assert.equal(magpieModelQuotaProvider(quotas, 'nope/x'), null)
+  assert.equal(magpieModelQuotaProvider(quotas, 'work/codex/gpt-6-luna/extra'), 'work/codex')
 })
 
 check('orbi 别名：magpieQuotaEntries 能命中 quotas 里的 orbis', () => {
@@ -380,6 +541,67 @@ check('queryGenericRelayBalance：dashboard 与 /v1/credits 两条兜底端点',
   assert.equal(genericCredits.total, '5.00')
 })
 
+check('parseGenericRelayBalanceAny：{balance,unit} 无路径也能通用解析', () => {
+  const parsed = parseGenericRelayBalanceAny({ balance: 34.5, unit: 'USD' })
+  assert.equal(parsed.currency, 'USD')
+  assert.equal(parsed.total, '34.50')
+  assert.equal(parseGenericRelayBalanceAny({ nope: true }), null)
+})
+
+/* 配置了 endpoint、但 balancePath 解析不出来（默认 data.quota）→ 按同一响应通用回退为 34.50。
+   走 queryBalanceForTest，用一个临时 relay-balance.json 平台档案 + credentials。 */
+let relayFallback = null
+{
+  const relayFile = join(TEMP_HOME, 'dsh-status-bar', 'relay-balance.json')
+  const previous = readFileSync(relayFile, 'utf8')
+  writeFileSync(relayFile, JSON.stringify({
+    version: 2,
+    channels: [{
+      channelKey: 'compat-relay',
+      endpoint: 'https://compat.example/v1/balance',
+      tokenHeader: 'authorization', userIdHeader: 'x-user-id', tokenPrefix: 'Bearer ',
+      balancePath: 'data.quota', currency: 'CNY', feeMultiplier: 1, balanceDivisor: 1, headerNames: [],
+    }],
+  }), 'utf8')
+  const creds = { resolve: async () => ({ value: JSON.stringify({ token: 'tk', userId: 'u', headers: {} }), source: 'test' }), set: async () => {}, unset: async () => {} }
+  const relayCtx = { logger: { info: () => {} }, credentials: creds, get: (n) => (n === 'credentials' ? creds : null) }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    if (text.indexOf('compat.example') >= 0) {
+      /* queryRelayBalance 走 readLimitedRelayJson：需要 headers.get(content-length) 与 reader.releaseLock。 */
+      const buf = Buffer.from(JSON.stringify({ balance: 34.5, unit: 'USD' }), 'utf8')
+      return {
+        ok: true, status: 200,
+        headers: { get: (name) => (String(name).toLowerCase() === 'content-length' ? String(buf.byteLength) : null) },
+        body: {
+          getReader() {
+            let done = false
+            return {
+              async read() { if (done) return { done: true }; done = true; return { done: false, value: new Uint8Array(buf) } },
+              async cancel() {},
+              releaseLock() {},
+            }
+          },
+        },
+      }
+    }
+    throw new Error('unexpected url ' + text)
+  }
+  try {
+    relayFallback = await queryBalanceForTest(relayCtx, false, 'compat-relay', 'm', 'compat-relay', '')
+  } finally {
+    globalThis.fetch = originalFetch
+    writeFileSync(relayFile, previous, 'utf8')
+  }
+}
+check('queryRelayBalance：balancePath=data.quota 解析失败 → 通用形状回退为 34.50', () => {
+  assert.equal(relayFallback.ok, true)
+  assert.equal(relayFallback.source, 'relay')
+  assert.equal(relayFallback.total, '34.50')
+  assert.equal(relayFallback.currency, 'USD')
+})
+
 /* queryBalance 接线：没有专用适配器的 provider 先走 settings + credentials + 通用探测，命中即返回。 */
 let genericWired = null
 {
@@ -419,6 +641,111 @@ check('queryBalance：通用中转站命中时直接返回（不依赖 Magpie）
   assert.equal(genericWired.source, 'generic-relay')
   assert.equal(genericWired.provider, 'foo')
   assert.equal(genericWired.total, '7.00')
+})
+
+/* provider 配置缺失（settings 里没有该 provider）时，用 cordis.patch.yml 的 baseURL + 引用名 key 兜底探测。
+   patch 文件在 DSH_HOME/dsh-status-bar/... 由 providerBaseUrls() 读取；这里写一份临时 patch 验证取到 baseURL。 */
+let genericPatchFallback = null
+{
+  /* providerBaseUrls() 只在存在当前 profile 目录时读它的 cordis.patch.yml：
+     用 DSH_PROFILE 指定一个临时 profile，把 patch 写进 <DSH_HOME>/profiles/<name>/。 */
+  const profileName = 'testprofile'
+  const patchDir = join(TEMP_HOME, 'profiles', profileName)
+  mkdirSync(patchDir, { recursive: true })
+  process.env.DSH_PROFILE = profileName
+  writeFileSync(join(patchDir, 'cordis.patch.yml'), [
+    '- id: llm-pi-ai',
+    '  config:',
+    '    providers:',
+    '      patchrelay:',
+    '        baseURL: https://patchrelay.example/v1',
+    '',
+  ].join('\n'), 'utf8')
+  const creds = {
+    resolve: async (ref) => (ref === 'PATCHRELAY_API_KEY' ? { value: 'pk', source: 'test' } : undefined),
+    set: async () => {}, unset: async () => {},
+  }
+  const patchCtx = { logger: { info: () => {} }, credentials: creds, get: (n) => (n === 'credentials' ? creds : null) }
+  const originalFetch = globalThis.fetch
+  const urls = []
+  globalThis.fetch = async (url) => {
+    urls.push(String(url))
+    if (String(url).indexOf('patchrelay.example') >= 0) return reply({ balance: 12, unit: 'USD' })
+    throw new Error('unexpected url ' + String(url))
+  }
+  try {
+    genericPatchFallback = await queryBalanceForTest(patchCtx, false, 'patchrelay', 'm', null, '')
+  } finally {
+    globalThis.fetch = originalFetch
+    delete process.env.DSH_PROFILE
+  }
+  assert.equal(urls[0], 'https://patchrelay.example/v1/usage', '走 patch baseURL 的通用探测')
+}
+check('queryBalance：provider 配置缺失时用 baseURL/key 兜底（不回归）', () => {
+  assert.equal(genericPatchFallback.ok, true)
+  assert.equal(genericPatchFallback.source, 'generic-relay')
+  assert.equal(genericPatchFallback.total, '12.00')
+})
+
+/* Magpie 透传：直连失败、但 quotas 有该 provider（按 providerHint 命中），返回 magpie-quotas 余额。 */
+let relayPassthrough = null
+let relayNoMagpie = null
+{
+  const relayFile = join(TEMP_HOME, 'dsh-status-bar', 'relay-balance.json')
+  const previous = readFileSync(relayFile, 'utf8')
+  writeFileSync(relayFile, JSON.stringify({
+    version: 2,
+    channels: [{
+      channelKey: 'relay-up', endpoint: 'https://rm.example/v1/balance',
+      tokenHeader: 'authorization', userIdHeader: 'x-user-id', tokenPrefix: 'Bearer ',
+      balancePath: 'data.quota', currency: 'CNY', feeMultiplier: 1, balanceDivisor: 1, headerNames: [],
+    }],
+  }), 'utf8')
+  const creds = { resolve: async () => ({ value: JSON.stringify({ token: 'tk', userId: 'u', headers: {} }), source: 'test' }), set: async () => {}, unset: async () => {} }
+  const rctx = { logger: { info: () => {} }, credentials: creds, get: (n) => (n === 'credentials' ? creds : null) }
+  const QUOTA_PCT = { data: [{ provider: 'relay-up', kind: 'subscription', user: 'u', windows: [{ name: '5 hours', used: 30, remaining: 70 }, { name: '7 days', used: 60, remaining: 40 }] }] }
+  const directFail = (url) => {
+    const text = String(url)
+    if (text.indexOf('rm.example') >= 0) return { ok: true, status: 200, headers: { get: () => null }, body: { getReader() { let d = false; const buf = Buffer.from(JSON.stringify({ nope: 1 })); return { async read() { if (d) return { done: true }; d = true; return { done: false, value: new Uint8Array(buf) } }, async cancel() {}, releaseLock() {} } } } }
+    return null
+  }
+  const originalFetch = globalThis.fetch
+  /* 1) 直连失败 + Magpie 有该 provider（providerHint=relay-magpie 命中 quotas） */
+  globalThis.fetch = async (url) => {
+    const text = String(url)
+    if (text.indexOf('/v1/magpie/quotas') >= 0) return reply(QUOTA_PCT)
+    if (text.indexOf('/v1/magpie/route') >= 0) return reply({ route: null })
+    if (text.indexOf('/v1/models') >= 0) return reply({ data: [] })
+    return directFail(url)
+  }
+  try {
+    relayPassthrough = await queryBalanceForTest(rctx, false, 'relay-up', 'm', 'relay-up', '')
+  } finally {
+    /* 2) 直连失败 + Magpie 没有该 provider → 原 relay 失败 */
+    globalThis.fetch = async (url) => {
+      const text = String(url)
+      if (text.indexOf('/v1/magpie/quotas') >= 0) return reply({ data: [] })
+      if (text.indexOf('/v1/magpie/route') >= 0) return reply({ route: null })
+      if (text.indexOf('/v1/models') >= 0) return reply({ data: [] })
+      return directFail(url)
+    }
+    try {
+      relayNoMagpie = await queryBalanceForTest(rctx, false, 'relay-up', 'm', 'relay-up', '')
+    } finally {
+      globalThis.fetch = originalFetch
+      writeFileSync(relayFile, previous, 'utf8')
+    }
+  }
+}
+check('queryBalance：直连失败但 Magpie 有余额 → 透传 magpie-quotas（viaMagpie）', () => {
+  assert.equal(relayPassthrough.ok, true)
+  assert.equal(relayPassthrough.source, 'magpie-quotas')
+  assert.equal(relayPassthrough.upstream, 'relay-up')
+  assert.equal(relayPassthrough.isPercent, true)
+  assert.equal(relayPassthrough.viaMagpie, true, '透传结果打 viaMagpie:true（source 仍 magpie-quotas）')
+})
+check('queryBalance：直连失败且 Magpie 无该 provider → 原 relay 失败（不伪造）', () => {
+  assert.equal(relayNoMagpie.ok, false)
 })
 
 /* --------------------------------------- ② queryMagpieBalance 编排（替换 fetch） */

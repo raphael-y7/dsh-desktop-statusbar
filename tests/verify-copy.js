@@ -172,7 +172,7 @@ const STYLES = [
 	['占位文字更淡', 'input::placeholder{color:var(--dsw-alias-label-tertiary);opacity:.5}'],
 	['最后一条模型贴齐卡片底', 'dsb-model:last-child{padding-bottom:0}'],
 	['数字输入右对齐（价格框那条规则一并管宽度与高度）', 'dsb-field input[type=text],.dsb-settings .dsb-field input[type=number]{width:calc(6ch + 18px);min-width:calc(6ch + 18px);flex:none;height:24px;text-align:right}'],
-	['藏官方统计行挂在 html.dsb-on 上（关掉开关就恢复）', 'html.dsb-on [data-slot="conversation.composer.dock"] > *:not(.dsb-root):not(:has(.dsb-root)){display:none !important}'],
+	['藏官方统计行挂在 html.dsb-on 上（只藏含官方特征的直接子节点，第三方不藏）', 'html.dsb-on [data-slot="conversation.composer.dock"] > *:not(.dsb-root):not(:has(.dsb-root)):has([data-composer-stat],button[aria-haspopup="dialog"]'],
 	['藏官方上下文按钮同样挂在 html.dsb-on 上', 'html.dsb-on button[aria-haspopup="dialog"][aria-label*="上下文"]'],
 	['藏官方「用量」按钮（TurnUsagePanel）', 'html.dsb-on span[class$="_root"]>button[aria-haspopup="dialog"][class$="_trigger"]'],
 	['气泡宽度按内容自适应', 'width:max-content;max-width:min(560px,100vw - 24px)'],

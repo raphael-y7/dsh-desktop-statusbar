@@ -70,6 +70,8 @@ const TEMPLATES = {
 	segTps: '输出速度',
 	segSessionTime: '运行用时',
 	segBalance: '余额',
+	quotaFiveHour: '5 小时额度',
+	quotaSevenDay: '7 天额度',
 	tipModelTime: '模型用时',
 	tipToolTime: '工具调用',
 	tipWaitTime: '等待用时',
@@ -569,6 +571,91 @@ assert.strictEqual(quota.segments[1].color, 'transparent', '第二段是已用�
 assert.strictEqual(quota.segments[1].width, 62.5, '已用那段宽 = 已用百分比 62.5%');
 assert.strictEqual(quota.segments[0].width + quota.segments[1].width, 100, '两段加起来正好 100%');
 console.log('余额气泡:', values(gifted.rows).join(' / '));
+
+/* --------------------------------------------- 订阅配额窗口（五小时/七天）→ quota 气泡
+ * 用户要求：底栏默认显示五小时额度；点击底栏出现五小时和七天额度进度条。
+ * 数据来自 host 的 balance.windows（percent 模式携带完整窗口）。这里断言：
+ *   ① 底栏文字仍按 total（已用→剩余）显示，不受窗口影响；
+ *   ② tip.kind === 'quota'，面板两个窗口各一行（本地化名称 + 剩余百分比）；
+ *   ③ 复用 creditsPanel 渲染出两行两根进度条（灰=剩余、透明=已用）。 */
+const quotaWinView = api.segmentView('balance', Object.assign({}, src, {
+	balance: {
+		ok: true, isPercent: true, total: '19.00%', currency: '',
+		windows: [
+			{ key: 'fiveHour', name: '5 hours', used: 19, remaining: 81, items: [
+				{ name: 'acct-a', used: 10, remaining: 90 }, { name: 'acct-b', used: 28, remaining: 72 }
+			] },
+			{ key: 'sevenDay', name: '7 days', used: 45, remaining: 55, items: [
+				{ name: 'acct-a', used: 40, remaining: 60 }, { name: 'acct-b', used: 50, remaining: 50 }
+			] }
+		]
+	}
+}), t);
+assert.strictEqual(quotaWinView.text, '余额 81.00%', '底栏文字仍按 total 剩余显示（100-19=81%）');
+assert.strictEqual(quotaWinView.tip.kind, 'quota', '有 windows 的配额 → tip.kind=quota');
+const qp = quotaWinView.tip.panel;
+assert.strictEqual(qp.rewards.length, 2, '两个窗口两行');
+assert.deepStrictEqual(Array.from(qp.rewards, (one) => one.label), ['5 小时额度', '7 天额度'], '五小时/七天窗口名本地化');
+assert.strictEqual(qp.rewards[0].valueText, '81.00%', '五小时剩余 81%');
+/* 每个 reward 带 name=本地化 label（下钻子视图标题用它）；totalText 填第一行剩余（不再空串）。 */
+assert.strictEqual(qp.rewards[0].name, '5 小时额度', 'reward.name = 本地化 label（下钻标题用）');
+assert.strictEqual(qp.rewards[1].name, '7 天额度', 'reward.name = 本地化 label（7 天）');
+assert.strictEqual(qp.totalText, '81.00%', 'totalText 填第一行剩余（此前空串）');
+assert.strictEqual(qp.rewards[1].valueText, '55.00%', '七天剩余 55%');
+assert.strictEqual(qp.rewards[1].percent, 45, '七天已用 45%（进度条宽度口径）');
+/* 建议修-3：优先按 key 本地化 —— 即使 name 不含 5/hour/7/day，只要 key=fiveHour/sevenDay 也能本地化。 */
+const keyOnly = api.segmentView('balance', Object.assign({}, src, {
+	balance: { ok: true, isPercent: true, total: '10.00%', currency: '', windows: [
+		{ key: 'fiveHour', name: 'rolling', used: 10, remaining: 90 },
+		{ key: 'sevenDay', name: 'weekly', used: 20, remaining: 80 }
+	] }
+}), t).tip.panel;
+assert.strictEqual(keyOnly.rewards[0].label, '5 小时额度', 'key=fiveHour 优先本地化（name=rolling 也认）');
+assert.strictEqual(keyOnly.rewards[1].label, '7 天额度', 'key=sevenDay 优先本地化（name=weekly 也认）');
+assert.strictEqual(keyOnly.totalText, '90.00%', 'key 路径下 totalText = 第一行剩余 90%');
+/* 每个 reward 带 count/items：多账号下钻用。5h 两条账号明细。 */
+assert.strictEqual(qp.rewards[0].count, 2, '5h 聚合行 count=2（可下钻）');
+assert.strictEqual(qp.rewards[1].count, 2, '7d 聚合行 count=2');
+assert.strictEqual(qp.rewards[0].items.length, 2, '5h 带 2 条账号明细');
+assert.deepStrictEqual(Array.from(qp.rewards[0].items, (one) => one.label), ['acct-a', 'acct-b'], '5h 明细账号名');
+assert.strictEqual(qp.rewards[0].items[0].valueText, '90.00%', 'acct-a 5h 剩余 90%');
+assert.strictEqual(qp.rewards[0].items[1].valueText, '72.00%', 'acct-b 5h 剩余 72%');
+assert.strictEqual(qp.rewards[1].items[1].valueText, '50.00%', 'acct-b 7d 剩余 50%');
+/* 渲染路径：tipPanelInner 的 quota 分支直接调 creditsPanel —— 这里同样直接渲染，验两行两根 bar。 */
+const quotaPanelNode = api.creditsPanel(qp, '余额', { left: 0, top: 0 }, () => ({}), { id: null, open() {}, back() {} });
+const qbars = [];
+const qrows = [];
+(function walk(node) {
+	if (node === null || node === undefined || node === false) return;
+	if (Array.isArray(node)) { node.forEach(walk); return }
+	if (typeof node !== 'object') return;
+	if (node.props !== undefined && typeof node.props.className === 'string' && node.props.className.split(' ').indexOf('dsb-bar') >= 0) qbars.push(node);
+	if (node.props !== undefined && typeof node.props.className === 'string' && node.props.className.split(' ').indexOf('dsb-meter-row') >= 0) qrows.push(node);
+	(node.children || []).forEach(walk);
+})(quotaPanelNode);
+assert.strictEqual(qrows.length, 2, '渲染出两行（五小时/七天），实际 ' + qrows.length);
+assert.strictEqual(qbars.length, 2, '渲染出两根进度条，实际 ' + qbars.length);
+/* 第一根（五小时）：灰剩余 81% 在左、透明已用 19% 在右 */
+const q0 = (qbars[0].children || []).filter((n) => n !== null && n !== undefined && n !== false);
+assert.strictEqual(q0[0].props.style.backgroundColor, 'var(--dsw-static-neutral-bluish-400)', '五小时条第一段灰（剩余）');
+assert.strictEqual(q0[0].props.style.width, '81%', '五小时灰段宽 81%');
+assert.strictEqual(q0[1].props.style.backgroundColor, 'transparent', '五小时条第二段透明（已用）');
+assert.strictEqual(q0[1].props.style.width, '19%', '五小时透明段宽 19%');
+/* 下钻：creditsPanel 传 sub.id=0（点开第一个聚合行）→ 子视图只列该窗口的 items（2 条账号行）。 */
+const quotaDown = api.creditsPanel(qp, '余额', { left: 0, top: 0 }, () => ({}), { id: 0, open() {}, back() {} });
+const dRows = [];
+const dBars = [];
+(function walk(node) {
+	if (node === null || node === undefined || node === false) return;
+	if (Array.isArray(node)) { node.forEach(walk); return }
+	if (typeof node !== 'object') return;
+	if (node.props !== undefined && typeof node.props.className === 'string' && node.props.className.split(' ').indexOf('dsb-meter-row') >= 0) dRows.push(node);
+	if (node.props !== undefined && typeof node.props.className === 'string' && node.props.className.split(' ').indexOf('dsb-bar') >= 0) dBars.push(node);
+	(node.children || []).forEach(walk);
+})(quotaDown);
+assert.strictEqual(dRows.length, 2, '下钻子视图列出该窗口 2 条账号行，实际 ' + dRows.length);
+assert.strictEqual(dBars.length, 2, '下钻子视图 2 根账号进度条，实际 ' + dBars.length);
+console.log('订阅配额气泡: 5 小时 81% / 7 天 55%（两行两根条，下钻逐账号 2 行）');
 
 /* --------------------------------------------- 积分套餐条：灰=剩余、从**左**起
  * 用户拍板原话「灰条从左边起」（来回改过一次，这条断言把最终方向钉死）。

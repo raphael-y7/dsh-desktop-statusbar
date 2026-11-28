@@ -370,12 +370,19 @@ function renderTree() {
 	assert.ok(reduced[0].includes('.dsb-ring-team') && reduced[0].includes('.dsb-ring-deep'),
 		'reduced-motion 那条必须同时包含蓝档与紫档（与绿色同待遇，不能只停一个）：' + (reduced === null ? '' : reduced[0]));
 
-	/* ⑧-4b 环心占用数字的 CSS 必须存在：字号 / 填充 / pointer-events 缺一不可（用户 3.0.7） */
+	/* ⑧-4b 环心占用数字的 CSS 必须存在：字号 / 颜色 / pointer-events / 居中都不可少（HTML 覆盖层方案） */
 	assert.ok(/\.dsb-ring-percent\{[^}]*pointer-events:none/.test(cssSource),
 		'环心数字 .dsb-ring-percent 必须 pointer-events:none（否则挡住圆环按钮的点击/悬停）');
-	assert.ok(/\.dsb-ring-percent\{[^}]*font-size:/.test(cssSource), '环心数字必须显式给字号，否则 SVG text 默认 16px 会溢出 14px 环');
-	assert.ok(/\.dsb-ring-percent\{[^}]*fill:/.test(cssSource), '环心数字必须有显式填充色（跟随主题文字色）');
-
+	assert.ok(/\.dsb-ring-percent\{[^}]*font-size:12px/.test(cssSource), '环心数字必须显式给字号 12px（宿主最小字号放大后靠 transform scale(0.5) 视觉仍是 6px）');
+	assert.ok(/\.dsb-ring-percent\{[^}]*color:/.test(cssSource), '环心数字必须有显式颜色（跟随主题文字色）');
+	assert.ok(/\.dsb-ring-percent\{[^}]*transform:scale\(0?\.5\)/.test(cssSource), '环心数字 transform 必须是 scale(.5)（视觉缩到 6px，不再带 translateY 补偿）');
+	assert.strictEqual(/translateY/.test(cssSource.match(/\.dsb-ring-percent\{[^}]*\}/)[0]), false, '环心数字不再含 translateY（之前偏上，已去掉负的向下补偿）');
+	assert.ok(/\.dsb-ring-percent\{[^}]*transform-origin:center center/.test(cssSource), '环心数字 transform-origin 必须是 center center');
+	assert.ok(/\.dsb-ring-percent\{[^}]*display:flex[^}]*align-items:center[^}]*justify-content:center/.test(cssSource),
+		'环心数字必须用 flex 强制水平+垂直居中（不依赖 SVG 基线）');
+	assert.ok(/\.dsb-ring-wrap\{[^}]*position:relative/.test(cssSource), '外层 .dsb-ring-wrap 必须是相对定位，作为数字覆盖层的定位基准');
+	assert.ok(/\.dsb-ring-wrap\{[^}]*width:14px/.test(cssSource), '外层 .dsb-ring-wrap 尺寸固定 14px');
+	assert.ok(/\.dsb-ring\{[^}]*position:absolute[^}]*inset:0/.test(cssSource), '内层 .dsb-ring SVG 绝对铺满外层');
 
 	/* ⑧-5 弧长：teamRunning 用成员级最大（55），不是 Lead 自己的占用 */
 	const circumference = api.METER_CIRCUMFERENCE;

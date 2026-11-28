@@ -111,14 +111,21 @@ assert.strictEqual(dash.window, '-', '空态窗口给横杠');
 assert.deepStrictEqual(Array.from(dash.rows), [], '空态没有图例行');
 assert.deepStrictEqual(Array.from(dash.segments), [], '空态没有分段');
 assert.strictEqual(dash.compact, null, '空态没有压缩点缺口');
-const dashRing = api.contextRing(dash.percent, 'idle');
-assert.strictEqual(Array.from(dashRing.children).length, 3, '圆环 = 底环 + 进度弧 + 环心数字');
-assert.strictEqual(Array.from(dashRing.children)[1].props.strokeDashoffset, 2 * Math.PI * 5.5, '0% 时进度弧整段留空');
-assert.strictEqual(Array.from(dashRing.children)[2].props.className, 'dsb-ring-percent', '第三项是环心占用数字');
-/* 空态（没有占用数据）环心留空：contextMeter.empty === true / 没有数据时都不显示数字 */
-assert.strictEqual(String(Array.from(dashRing.children)[2].children[0]), '', '空态环心留空');
-assert.strictEqual(Array.from(api.contextRing(0, 'idle', null, null).children)[2].children[0], '', '没有 labelPercent 数据时环心也留空');
-console.log('= 缺占用数据 → 空环 + 横杠（不再整块消失）');
+/* ring 现在是外层 span（.dsb-ring-wrap）；SVG 与数字都是它的子节点，先解构出来 */
+const ringParts = (wrap) => {
+	const kids = Array.from(wrap.children).flat(Infinity);
+	const svg = kids.find((k) => k && k.props && typeof k.props.className === 'string' && k.props.className.indexOf('dsb-ring') === 0 && k.type === 'svg');
+	const pct = kids.find((k) => k && k.props && k.props.className === 'dsb-ring-percent');
+	const circles = svg ? Array.from(svg.children) : [];
+	return { wrap, svg, circles, pct };
+};
+const dashRing = ringParts(api.contextRing(dash.percent, 'idle'));
+assert.strictEqual(dashRing.wrap.type, 'span', '圆环外层是 span（HTML 覆盖层）');
+assert.strictEqual(dashRing.circles.length, 2, 'SVG = 底环 + 进度弧');
+assert.strictEqual(dashRing.circles[1].props.strokeDashoffset, 2 * Math.PI * 5.5, '0% 时进度弧整段留空');
+/* 空态（没有占用数据）不渲染数字 span：contextMeter.empty === true / 没有数据时都不显示数字 */
+assert.strictEqual(dashRing.pct, undefined, '空态环心不渲染数字 span');
+assert.strictEqual(ringParts(api.contextRing(0, 'idle', null, null)).pct, undefined, '没有 labelPercent 数据时环心也不渲染数字');
 
 /* ------------------------------------------------------------- 段渲染 */
 const baseSrc = {
@@ -145,38 +152,44 @@ assert.strictEqual(contextMeter.compact, null, '没有 capacity 时压缩点为�
 console.log('= 圆环带上下文占用气泡；压缩点随模型自适应；token 计数段已并入总计，峰谷可点');
 
 /* ------------------------------------------------------------- 圆环几何 */
-const ring = api.contextRing(62, 'idle', null, 62);
-assert.strictEqual(ring.type, 'svg', '圆环是 svg');
-assert.ok(String(ring.props.className).indexOf('dsb-ring') === 0, '圆环类名');
-const circles = Array.from(ring.children);
+const ring = ringParts(api.contextRing(62, 'idle', null, 62));
+assert.strictEqual(ring.wrap.type, 'span', '圆环外层是 span');
+assert.ok(String(ring.wrap.props.className).indexOf('dsb-ring-wrap') === 0, '外层类名 dsb-ring-wrap');
+assert.strictEqual(ring.svg.type, 'svg', '内部是 svg');
+assert.strictEqual(ring.svg.props.className, 'dsb-ring', 'SVG 类名 dsb-ring');
+assert.strictEqual(ring.svg.props.viewBox, '0 0 14 14', 'SVG viewBox 不变');
+const circles = ring.circles;
 assert.strictEqual(circles[0].props.className, 'dsb-ring-track', '底环');
 assert.strictEqual(circles[1].props.className, 'dsb-ring-fill', '进度弧');
 assert.strictEqual(circles[1].props.transform, 'rotate(-90 7 7)', '起点在 12 点方向（整体转 -90°）');
 assert.strictEqual(Math.round(circles[1].props.strokeDasharray), Math.round(2 * Math.PI * 5.5), '周长 = 2πr');
 assert.strictEqual(Math.round(circles[1].props.strokeDashoffset), Math.round(2 * Math.PI * 5.5 * 0.38), '62% 时留 38% 的缺口');
-/* 环心数字：显示**主会话自己**的占用（第 4 参 labelPercent），与弧长（第 1 参 percent）不同源。
-   用户拍板：弧长在团队运行时切到成员/深层数据，环心数字永远只显示主会话自己的百分比。 */
-assert.strictEqual(circles[2].props.className, 'dsb-ring-percent', '环心是占用数字 text');
-assert.strictEqual(String(circles[2].children[0]), '62', '环心数字 = labelPercent（无 % 号）');
-assert.strictEqual(circles[2].props.fontSize, undefined, '不再写动态 fontSize（字号只由 CSS 固定 6px）');
-assert.strictEqual(circles[2].props['aria-hidden'], 'true', '环心数字对读屏隐藏（气泡已读百分比）');
+/* 环心数字：HTML span 覆盖层，显示**主会话自己**的占用（第 4 参 labelPercent），与弧长不同源。 */
+assert.strictEqual(ring.pct.props.className, 'dsb-ring-percent', '环心是占用数字 span');
+assert.strictEqual(String(ring.pct.children[0]), '62', '环心数字 = labelPercent（无 % 号）');
+assert.strictEqual(ring.pct.props['aria-hidden'], 'true', '环心数字对读屏隐藏（气泡已读百分比）');
+/* 不再依赖 SVG 基线：数字不是 SVG text，不带 dy / dominantBaseline / fontSize */
+assert.strictEqual(ring.pct.type, 'span', '环心数字是 HTML span 而非 svg text');
+assert.strictEqual(ring.pct.props.dy, undefined, '不再写 SVG dy 基线微调');
+assert.strictEqual(ring.pct.props.dominantBaseline, undefined, '不再写 dominantBaseline');
+assert.strictEqual(ring.pct.props.fontSize, undefined, '不再写动态 fontSize（字号只由 CSS 固定 6px）');
 /* 主会话百分比 vs 团队弧长不同源：弧长 55% 但环心数字显示主会话自己的 20 */
-const mixed = Array.from(api.contextRing(55, 'teamRunning', null, 20).children);
-assert.ok(Math.abs(mixed[1].props.strokeDashoffset - 2 * Math.PI * 5.5 * 0.45) < 1e-9, '弧长按第 1 参 55%（团队级）');
-assert.strictEqual(String(mixed[2].children[0]), '20', '环心数字按第 4 参 20（主会话自己），不是团队的 55');
+const mixed = ringParts(api.contextRing(55, 'teamRunning', null, 20));
+assert.ok(Math.abs(mixed.circles[1].props.strokeDashoffset - 2 * Math.PI * 5.5 * 0.45) < 1e-9, '弧长按第 1 参 55%（团队级）');
+assert.strictEqual(String(mixed.pct.children[0]), '20', '环心数字按第 4 参 20（主会话自己），不是团队的 55');
 /* 小数取整：32.6 → 33（四舍五入，不显示小数点） */
-assert.strictEqual(String(Array.from(api.contextRing(32.6, 'idle', null, 32.6).children)[2].children[0]), '33', '小数四舍五入成整数');
-assert.strictEqual(String(Array.from(api.contextRing(33.4, 'idle', null, 33.4).children)[2].children[0]), '33', '33.4 向下取整为 33');
+assert.strictEqual(String(ringParts(api.contextRing(32.6, 'idle', null, 32.6)).pct.children[0]), '33', '小数四舍五入成整数');
+assert.strictEqual(String(ringParts(api.contextRing(33.4, 'idle', null, 33.4)).pct.children[0]), '33', '33.4 向下取整为 33');
 /* 100 留空：14px 环心塞不下三位 */
-assert.strictEqual(String(Array.from(api.contextRing(100, 'idle', null, 100).children)[2].children[0]), '', '达到 100 时环心留空');
-assert.strictEqual(String(Array.from(api.contextRing(99.6, 'idle', null, 99.6).children)[2].children[0]), '', '99.6 四舍五入成 100 后同样留空');
-assert.ok(String(api.contextRing(62, 'running').props.className).includes('dsb-ring-running'), '运行中 → 绿色');
+assert.strictEqual(ringParts(api.contextRing(100, 'idle', null, 100)).pct, undefined, '达到 100 时不渲染数字');
+assert.strictEqual(ringParts(api.contextRing(99.6, 'idle', null, 99.6)).pct, undefined, '99.6 四舍五入成 100 后同样不留数字');
+assert.ok(String(api.contextRing(62, 'running').props.className).includes('dsb-ring-running'), '运行中 → 绿色（state class 挂在外层 wrap）');
 assert.ok(String(api.contextRing(62, 'error').props.className).includes('dsb-ring-error'), '报错 → 红色');
 assert.ok(String(api.contextRing(62, 'approval').props.className).includes('dsb-ring-approval'), '待审批 → 黄色');
 /* 底环：没有压缩点时整圈（不旋转、不设 dasharray）；有压缩点时在压缩点处开一个圆头缺口 */
 assert.strictEqual(circles[0].props.transform, undefined, '没有压缩点时底环不旋转');
 assert.strictEqual(circles[0].props.strokeDasharray, undefined, '没有压缩点时底环整圈');
-const notchTrack = Array.from(api.contextRing(62, 'idle', 55.0464).children)[0];
+const notchTrack = ringParts(api.contextRing(62, 'idle', 55.0464)).circles[0];
 assert.strictEqual(notchTrack.props.transform, 'rotate(-90 7 7)', '开缺口时底环转到 12 点起（与进度弧同一口径）');
 assert.strictEqual(notchTrack.props.strokeLinecap, 'round', '缺口两端是圆头');
 const notchDashes = notchTrack.props.strokeDasharray.split(' ').map(Number);
@@ -184,7 +197,7 @@ assert.strictEqual(notchDashes.length, 3, '缺口 = 画-空-画 三段');
 assert.strictEqual(notchDashes[1], 3, '空洞 = 净宽 1 + 描边 2（圆头各向洞内啃半个线宽）');
 assert.ok(Math.abs(notchDashes[0] + notchDashes[1] + notchDashes[2] - 2 * Math.PI * 5.5) < 1e-12, '三段之和精确等于周长');
 assert.ok(Math.abs((notchDashes[0] + notchDashes[1] / 2) - 2 * Math.PI * 5.5 * 0.550464) < 1e-12, '缺口中心落在压缩点上');
-console.log('= 圆环：12 点起、周长与进度正确、颜色随状态；压缩点处开圆头缺口；环心同源显示占用数字');
+console.log('= 圆环：外层 span + 内部 SVG/数字 span；12 点起、周长与进度正确、颜色随状态；压缩点处开圆头缺口；环心同源显示占用数字');
 
 /* 点击与收起的契约：圆环包在按钮里（hover/展开有灰底），面板点别处收起 */
 const source = fs.readFileSync(PLUGIN, 'utf8');

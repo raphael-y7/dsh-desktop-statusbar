@@ -520,7 +520,7 @@ const bookOf = (entry) => ({ x: entry });
 	   ② MutationObserver 只在新增节点匹配（或包含匹配）官方选择器时重扫一次，普通流式文字变化
 	      不触发，避免卡顿；卸载只还原被我们藏过的官方节点。 */
 	assert.ok(/new MutationObserver\(/.test(clientCode), '藏官方底栏必须用 MutationObserver（不能只跑一次）');
-	assert.ok(/observer\.observe\(dock,\s*\{\s*childList:\s*true/.test(clientCode), '观察 dock 的 childList 变动（不观察 attributes，避免自激）');
+	assert.ok(/observer\.observe\(observeRoot,\s*\{\s*childList:\s*true,\s*subtree:\s*true\s*\}\)/.test(clientCode), '观察 body/documentElement 的 childList+subtree（侧栏重构/深层子树插入也能压住）');
 	assert.ok(/observer\.disconnect\(\)/.test(clientCode), '卸载时必须断开 observer');
 	assert.ok(/hidden\.forEach\(\(prev, el\) => \{ el\.style\.display = prev; \}\)/.test(clientCode),
 		'卸载时把藏过的节点逐个还原（关侧栏/关插件都不留异常）');
@@ -541,6 +541,34 @@ const bookOf = (entry) => ({ x: entry });
 	assert.ok(/const touchesOfficial = \(node\)/.test(clientCode), 'observer 回调必须有"是否牵涉官方节点"的过滤函数');
 	assert.ok(/record\.addedNodes/.test(clientCode), 'observer 只检查 addedNodes（新增节点）');
 	assert.ok(/if \(relevant\) sweep\(\);/.test(clientCode), '只有新增节点牵涉官方节点时才重扫（普通文字变化不触发）');
+	/* ③ 官方 dock 根 [data-composer-dock]：dockOf 优先查它；sweep 还要藏它除 .dsb-root/含 .dsb-root 外的直接子节点 */
+	assert.ok(/querySelector\("\[data-composer-dock\]"\)/.test(clientCode), 'dockOf 必须优先查 [data-composer-dock]（官方 ContextMeter/图标是它的直接子节点）');
+	assert.ok(/\|\| document\.querySelector\('\[data-slot="conversation\.composer\.dock"\]'\)/.test(clientCode), '没有 [data-composer-dock] 时退回 slot（老结构不退化）');
+	assert.ok(/officials\.forEach\(\(node\) => \{/.test(clientCode), 'sweep 对每个官方节点向上找直属 dock 的包装层（不再无条件遍历隐藏全部直接子节点）');
+	assert.ok(/cur\.classList\.contains\("dsb-root"\)/.test(clientCode), '向上找包装层时跳过 .dsb-root（自己的根不藏）');
+	assert.ok(!/child\.querySelector\("\.dsb-root"\) !== null\) return/.test(clientCode), '不再用「直接子节点是否含 .dsb-root」来决定隐藏（那会误藏/误留）');
+	assert.ok(/\[data-composer-dock\] > \*:not\(\.dsb-root\):not\(:has\(\.dsb-root\)\):has\(\[data-composer-stat\]/.test(clientCode), 'CSS 只藏含官方特征的直接子节点（:has 官方标记），第三方直接子节点不藏');
+	assert.ok(/\[data-slot="conversation\.composer\.dock"\] > \*:not\(\.dsb-root\):not\(:has\(\.dsb-root\)\):has\(\[data-composer-stat\]/.test(clientCode), '[data-slot] 规则同样只藏含官方特征的直接子节点');
+	assert.ok(/attributeFilter: \["class"\]/.test(clientCode) && /classObserver\.observe\(document\.documentElement/.test(clientCode), '额外盯 documentElement 的 class 变化（dsb-on 被移除时补回）');
+	assert.ok(/document\.body !== null && document\.body !== undefined\)\s*\?\s*document\.body\s*:\s*document\.documentElement/.test(clientCode), '观察目标优先 body，没有时退回 documentElement');
+	/* ④ 官方 StatsPills（活动/数据库用量 pill）根节点带 data-composer-stat：CSS 隐藏 + 进 OFFICIAL_SELECTORS */
+	assert.ok(/html\.dsb-on \[data-composer-stat\]\{display:none !important\}/.test(clientCode), 'CSS 要有 [data-composer-stat] 隐藏规则');
+	assert.ok(/const OFFICIAL_SELECTORS = \[[\s\S]*?'\[data-composer-stat\]'/.test(clientCode), 'OFFICIAL_SELECTORS 必须包含 [data-composer-stat]（sweep 与 observer 都能识别）');
+	/* ⑤ 消息操作行 [data-clock="end"] 的官方 TurnUsagePanel：两条行作用域 CSS + 进 OFFICIAL_SELECTORS */
+	assert.ok(/html\.dsb-on \[data-clock="end"\] span\[class\$="_root"\]\{display:none !important\}/.test(clientCode), 'CSS 要有 [data-clock=end] span[class$=_root] 隐藏规则');
+	assert.ok(/html\.dsb-on \[data-clock="end"\] span:has\(>button\[aria-haspopup="dialog"\]\)\{display:none !important\}/.test(clientCode), 'CSS 要有 [data-clock=end] span:has(>button[aria-haspopup]) 隐藏规则');
+	assert.ok(/const OFFICIAL_SELECTORS = \[[\s\S]*?\[data-clock="end"\] span:has\(>button\[aria-haspopup="dialog"\]\)/.test(clientCode), 'OFFICIAL_SELECTORS 必须含 [data-clock=end] span:has(>button[aria-haspopup])');
+	console.log('      只认官方选择器、无兄弟全隐藏循环；observer 有官方节点过滤，卸载只还原官方节点');
+	/* ⑥ 建议修-1：sweep 不再无条件藏 dock 全部直接子节点，只藏官方节点 + 其直属 dock 的包装层。
+	   这里断言「先藏官方节点，再按官方节点向上找直属 dock 的包装层一起藏」的结构都在，
+	   且不再有「遍历 dock.children 直接 hide」那种会误藏第三方节点的写法。 */
+	assert.ok(/const officials = Array\.from\(dock\.querySelectorAll\(OFFICIAL\)\)/.test(clientCode),
+		'sweep 先收集官方节点（querySelectorAll(OFFICIAL)）');
+	assert.ok(/officials\.forEach\(hideNode\)/.test(clientCode), 'sweep 藏每个官方节点');
+	assert.ok(/cur\.parentNode !== dock/.test(clientCode), 'sweep 按官方节点向上找到 parent 恰为 dock 的包装层（只藏这一层）');
+	/* 包装层若**包含** .dsb-root（官方与本插件根同层）绝不能藏 —— 否则连状态栏一起藏掉。 */
+	assert.ok(/cur\.querySelector\("\.dsb-root"\) !== null\)\) \{/.test(clientCode),
+		'向上找到的包装层若包含 .dsb-root 则不隐藏（避免同层带本插件根时误藏整层）');
 	console.log('      只认官方选择器、无兄弟全隐藏循环；observer 有官方节点过滤，卸载只还原官方节点');
 
 	console.log('\nFIX REGRESSION CHECKS PASSED');

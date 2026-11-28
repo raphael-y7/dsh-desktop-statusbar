@@ -1,4 +1,4 @@
-# 官方模型目录（2026-11-04 核实；2026-11-10 补录 Anthropic Fable 5.2）
+# 官方模型目录（2026-11-04 核实；2026-11-10 补录 Anthropic Fable 5.2；2026-11-22 补录 OpenAI GPT-6.2）
 
 数据来源均为各厂商官网定价页原文，价格单位为**每百万 tokens**，币种见表格。
 表格列含义：input = 缓存未命中的输入价；cacheRead = 缓存命中价；cacheWrite = 缓存写入价（Anthropic 取 5m TTL，Kimi 取 5min TTL）；output = 输出价。`—` 表示官网未公布，未做任何推算。
@@ -20,7 +20,7 @@
 | xAI Grok | 1 | 1 | https://docs.x.ai/docs/pricing |
 | 小米 MiMo | 3 | 3 | https://mimo.mi.com/static/docs/price/pay-as-you-go.md |
 | Muse (Meta) | 2 | 2 | https://dev.meta.ai/docs/pricing-rate-limits |
-| OpenAI | 4 | 4 | https://platform.openai.com/docs/pricing |
+| OpenAI | 6 | 6 | https://platform.openai.com/docs/pricing |
 
 ## DeepSeek
 
@@ -142,10 +142,12 @@
 
 来源：https://platform.openai.com/docs/pricing
 
-保留依据：官网“最新”折叠组 4 条：GPT-6 Astra 旗舰 + GPT-6.1 的 sol/terra + gpt-6-luna 轻量档；gpt-6-sol 被 6.1-sol 取代，5.x/4.x/o 系列及 cyber/rosalind/realtime 等专用档已删。
+保留依据：官网“最新”折叠组 4 条 + 2026-11-22 补录的 GPT-6.2 Astra/Sol 两条（共 6 条）：GPT-6 Astra 旗舰 + GPT-6.1 的 sol/terra + gpt-6-luna 轻量档；gpt-6-sol 被 6.1-sol 取代，5.x/4.x/o 系列及 cyber/rosalind/realtime 等专用档已删。
 
 | 模型（API 名） | 币种 | input / cacheRead / cacheWrite / output | 备注 |
 | --- | --- | --- | --- |
+| `gpt-6.2-astra` | USD | 8 / 0.4 / 10 / 40 | Standard 档、短上下文档价格；Batch/Flex 为 5 折，Fast 为 2x，Ultrafast 2027-02-28 前 3x、之后 6x；30m 缓存写入价。 |
+| `gpt-6.2-sol` | USD | 2 / 0.1 / 2.5 / 10 | Standard 档、短上下文档价格；Batch/Flex 为 5 折，Fast 为 2x，Ultrafast 2027-02-28 前 3x、之后 6x；30m 缓存写入价。 |
 | `gpt-6-astra` | USD | 10 / 1 / 12.5 / 50 | Standard 档、短上下文档价格；Batch/Flex 为 5 折，Fast 为 2x，Ultrafast 为 6x；30m 缓存写入价，12h 写入为 30m 的 2 倍。 |
 | `gpt-6.1-sol` | USD | 2 / 0.1 / 2.5 / 10 | Standard 档、短上下文档价格；Batch/Flex 为 5 折，Fast 为 2x，Ultrafast 为 6x；30m 缓存写入价，12h 写入为 30m 的 2 倍。 |
 | `gpt-6.1-terra` | USD | 1 / 0.05 / 1.25 / 5 | Standard 档、短上下文档价格；Batch/Flex 为 5 折，Fast 为 2x，Ultrafast 为 6x；30m 缓存写入价，12h 写入为 30m 的 2 倍。 |

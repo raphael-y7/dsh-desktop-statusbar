@@ -1309,7 +1309,7 @@ assert.strictEqual(saved.currency, 'CNY', '恢复默认设置应恢复**默认�
 assert.strictEqual(saved.contextMeter, true, '恢复默认设置应恢复上下文占用开关');
 assert.deepStrictEqual(segmentNames(renderSettings()), factoryLabels, '恢复默认设置后设置页顺序应等于出厂顺序');
 console.log('恢复默认设置后：', saved.segments.join(' → '));
-/* task-10 起「恢复默认」会把官方目录 27 条全部加回；后面的价格卡用例继续按两条参考价基线跑，
+/* task-10 起「恢复默认」会把官方目录 29 条全部加回；后面的价格卡用例继续按两条参考价基线跑，
    这里把主 fixture 还原成迁移前的两条参考价（播种 / 找回的完整行为由后面的目录用例覆盖）。 */
 const referenceModels = {};
 Object.keys(api.DEFAULT_PRICES).forEach((name) => {
@@ -1985,7 +1985,7 @@ console.log('切币种按今日汇率换算：自建条目连同未保存的草�
 console.log('价格库交互：折叠 / 峰谷 / 草稿 / 顺序全部通过');
 
 /* task-10/16：官方模型默认全部加入价格表（v4 一次性播种），目录里直接显示价格卡；
-   不再有「点名字加入」；删除后「恢复默认」找回。数据源 docs/official-models.json（27 条 / 10 厂商，Kimi K3 与 Fable 5.2 已收录）。 */
+   不再有「点名字加入」；删除后「恢复默认」找回。数据源 docs/official-models.json（29 条 / 10 厂商，Kimi K3、Fable 5.2 与 GPT-6.2 已收录）。 */
 {
 	const catalogPlain = (value) => JSON.parse(JSON.stringify(value));
 	/* ① 内嵌目录必须与数据逐字段一致（含厂商顺序） */
@@ -1995,14 +1995,14 @@ console.log('价格库交互：折叠 / 峰谷 / 草稿 / 顺序全部通过');
 			catalogExpected[model.name] = { manufacturer: vendor.id, price: catalogPriceOf(model) };
 		});
 	});
-	assert.strictEqual(api.PRICE_VERSION, 8, '价格库迁移版本应为 8（v4 播种 / v5 清理 / v6 补播 / v7 基准价 / v8 补 Fable 5.2）');
+	assert.strictEqual(api.PRICE_VERSION, 10, '价格库迁移版本应为 10（v4 播种 / v5 清理 / v6 补播 / v7 基准价 / v8 补 Fable 5.2 / v10 补 GPT-6.2）');
 	assert.deepStrictEqual(catalogPlain(api.MODEL_MANUFACTURERS), AA_VENDOR_ORDER,
 		'厂商顺序必须 = AA 智力指数顺序（docs/vendor-intelligence-order.json）');
 	assert.deepStrictEqual(catalogPlain(api.MODEL_MANUFACTURERS).slice().sort(), OFFICIAL_VENDORS.map((one) => one.id).sort(),
 		'AA 顺序里的厂商集合必须与官方目录数据一致（不许漏也不许多）');
 	assert.deepStrictEqual(catalogPlain(api.MODEL_PRESENTATION), catalogExpected,
 		'内嵌目录必须与 docs/official-models.json 逐字段一致');
-	assert.strictEqual(OFFICIAL_NAMES.length, 27, '数据应为 27 条官方模型');
+	assert.strictEqual(OFFICIAL_NAMES.length, 29, '数据应为 29 条官方模型');
 
 	/* ② 隔离沙箱：模拟老用户（priceVersion 3）→ 加载时按 v4 播种；已有条目一律不动 */
 	const oldConfig = JSON.stringify({
@@ -2068,7 +2068,7 @@ console.log('价格库交互：折叠 / 峰谷 / 草稿 / 顺序全部通过');
 	assert.strictEqual(normalizedOrder.indexOf('unknown'), -1, 'catalogOrder 丢弃未知项');
 	assert.strictEqual(normalizedOrder.filter((id) => id === 'zhipu').length, 1, 'catalogOrder 去重');
 	const seeded = api3.snapshot().models;
-	assert.strictEqual(api3.snapshot().priceVersion, 8, '迁移后价格库版本应为 8');
+	assert.strictEqual(api3.snapshot().priceVersion, 10, '迁移后价格库版本应为 10');
 	OFFICIAL_NAMES.forEach((name) => {
 		assert.ok(seeded[name] !== undefined, '官方模型应默认加入价格库：' + name);
 	});
@@ -2097,7 +2097,7 @@ console.log('价格库交互：折叠 / 峰谷 / 草稿 / 顺序全部通过');
 		'DEFAULT_PRICES 里的键沿用内嵌 CNY 参考价（与恢复默认一致）');
 
 
-	/* ②b v6 补播（老用户自动看到新模型）：priceVersion=5 的价格库（官方目录 27 条里缺 kimi-k3）
+	/* ②b v6 补播（老用户自动看到新模型）：priceVersion=5 的价格库（官方目录 29 条里缺 kimi-k3）
 	   迁移后自动补上 kimi-k3，已有条目（用户价 / feeMultiplier）一律不动，已下架模型不会被加回来。 */
 	const v6Book = {};
 	OFFICIAL_VENDORS.forEach((vendor) => {
@@ -2149,7 +2149,7 @@ console.log('价格库交互：折叠 / 峰谷 / 草稿 / 顺序全部通过');
 		throw new Error('unexpected require: ' + name);
 	}).__test;
 	const backfilled = api6.snapshot().models;
-	assert.strictEqual(api6.snapshot().priceVersion, 8, 'v5 → v8 迁移后版本号升到 8');
+	assert.strictEqual(api6.snapshot().priceVersion, 10, 'v5 → v10 迁移后版本号升到 10');
 	assert.deepStrictEqual(catalogPlain(backfilled['kimi-k3']), {
 		tiered: false, currency: 'CNY',
 		peak: { input: 20, cacheRead: 2, cacheWrite: 20, output: 100 },
@@ -2171,8 +2171,8 @@ console.log('价格库交互：折叠 / 峰谷 / 草稿 / 顺序全部通过');
 	}, 'v6 补播不动自建条目的语义字段（USD 显示折 CNY、原值进 base）');
 	assert.strictEqual(backfilled['GLM-5.2'], undefined, 'v6 补播不会把已下架的官方模型加回来');
 	assert.deepStrictEqual(Object.keys(backfilled).sort(), OFFICIAL_NAMES.concat(['my-catalog-model']).sort(),
-		'v6 补播只补当前官方目录缺失项：27 条官方 + 1 条自建');
-	console.log('v6 补播：v5 价格库自动补上 kimi-k3（27 条），用户条目不动、已下架模型不回流');
+		'v6 补播只补当前官方目录缺失项：29 条官方 + 1 条自建');
+	console.log('v6 补播：v5 价格库自动补上 kimi-k3（29 条），用户条目不动、已下架模型不回流');
 
 	/* ②c v8 补播（2026-11-10）：老用户 priceVersion=7 的价格库自动补上 Claude Fable 5.2；
 	   用户已有条目（改过的价 / feeMultiplier）逐字段不动，已下架的旧模型不会被加回。 */
@@ -2232,7 +2232,7 @@ console.log('价格库交互：折叠 / 峰谷 / 草稿 / 顺序全部通过');
 	const fable52Price = catalogBookEntryOf(fable52);
 	/* normalizeModels 会把单档条目的 offPeak 补成 peak 副本（官网单档价）。 */
 	fable52Price.offPeak = Object.assign({}, fable52Price.peak);
-	assert.strictEqual(apiV8.snapshot().priceVersion, 8, 'v7 → v8 迁移后版本号升到 8');
+	assert.strictEqual(apiV8.snapshot().priceVersion, 10, 'v7 → v10 迁移后版本号升到 10');
 	assert.deepStrictEqual(catalogPlain(upgraded['claude-fable-5.2']), catalogPlain(fable52Price),
 		'v8 补播：老用户 priceVersion 7 自动出现 Claude Fable 5.2（官网价 + 基准价）');
 	assert.deepStrictEqual(catalogPlain(upgraded['claude-fable-5.1']), catalogPlain(v8Book['claude-fable-5.1']),
@@ -2242,6 +2242,84 @@ console.log('价格库交互：折叠 / 峰谷 / 草稿 / 顺序全部通过');
 	assert.deepStrictEqual(Object.keys(upgraded).sort(), OFFICIAL_NAMES.filter((name) => name !== V8_DELETED_OFFICIAL).sort(),
 		'v8 补播只补本次新增的 Fable 5.2，不重播整个官方目录');
 	console.log('v8 补播：priceVersion 7 老用户自动出现 Fable 5.2，已有价格/删除项不被覆盖或加回');
+
+	/* ②d v10 补播（2026-11-22）：老用户 priceVersion=8 的价格库自动补上 GPT-6.2 Astra / Sol；
+	   两条价格须与官网一致（Astra 8/0.4/10/40、Sol 2/0.1/2.5/10，USD 原值进 base），
+	   用户已有条目（改过的价 / feeMultiplier）逐字段不动。 */
+	const v10Book = {};
+	OFFICIAL_VENDORS.forEach((vendor) => {
+		vendor.models.forEach((model) => {
+			if (model.name === 'gpt-6.2-astra' || model.name === 'gpt-6.2-sol') return;
+			v10Book[model.name] = catalogBookEntryOf(model);
+		});
+	});
+	/* 用户改过的 gpt-6.1-sol（99 USD）入库形态：显示值折 CNY、base 保留原 USD。 */
+	const V10_USER_SOL = {
+		tiered: false, currency: 'CNY', feeMultiplier: 2,
+		peak: { input: 667.5, cacheRead: 1.69, cacheWrite: 84.28, output: 337.12 },
+		offPeak: { input: 667.5, cacheRead: 1.69, cacheWrite: 84.28, output: 337.12 },
+		base: {
+			currency: 'USD',
+			peak: { input: 99, cacheRead: 0.1, cacheWrite: 2.5, output: 10 },
+			offPeak: { input: 99, cacheRead: 0.1, cacheWrite: 2.5, output: 10 }
+		}
+	};
+	v10Book['gpt-6.1-sol'] = V10_USER_SOL;
+	/* 缺 gpt-6.2 两条（上面已跳过），priceVersion=8 → 加载触发 v10 补播 */
+	const storeV10 = new Map([[CONFIG_KEY, JSON.stringify({
+		version: 6, priceVersion: 8, currency: 'CNY', models: v10Book,
+		modelOrder: Object.keys(v10Book), holidayDays: []
+	})]]);
+	let capturedV10 = null;
+	const windowV10 = Object.assign({}, fakeWindow, {
+		opened: [],
+		localStorage: {
+			getItem: (k) => (storeV10.has(k) ? storeV10.get(k) : null),
+			setItem: (k, v) => { storeV10.set(k, v); },
+			removeItem: (k) => { storeV10.delete(k); }
+		}
+	});
+	windowV10.__ModuleLoader__ = { load: (entry) => { capturedV10 = entry; } };
+	const sandboxV10 = {
+		window: windowV10,
+		document: {
+			querySelector: () => null,
+			createElement: () => ({ dataset: {}, style: {}, appendChild() {} }),
+			head: { appendChild() {} },
+			addEventListener: () => {}, removeEventListener: () => {}
+		},
+		console, Promise, Date, Math, JSON, Object, Array, Number, String, Boolean, Symbol, Set, Map, Error,
+		setTimeout: () => 0, clearTimeout: () => {}
+	};
+	sandboxV10.globalThis = sandboxV10;
+	vm.createContext(sandboxV10);
+	vm.runInContext(code, sandboxV10, { filename: 'client.js' });
+	const apiV10 = capturedV10.factory((name) => {
+		if (name === 'react') return reactStub;
+		throw new Error('unexpected require: ' + name);
+	}).__test;
+	const upgraded10 = apiV10.snapshot().models;
+	assert.strictEqual(apiV10.snapshot().priceVersion, 10, 'v8 → v10 迁移后版本号升到 10');
+	const v10Astra = catalogBookEntryOf(OFFICIAL_VENDORS.filter((one) => one.id === 'openai')[0].models.filter((one) => one.name === 'gpt-6.2-astra')[0]);
+	/* normalizeModels 会把单档条目的 offPeak 补成 peak 副本（官网单档价）。 */
+	v10Astra.offPeak = Object.assign({}, v10Astra.peak);
+	assert.deepStrictEqual(catalogPlain(upgraded10['gpt-6.2-astra']), catalogPlain(v10Astra),
+		'v10 补播：priceVersion 8 老用户自动出现 GPT-6.2 Astra（官网价 + 基准价）');
+	const v10Sol = catalogBookEntryOf(OFFICIAL_VENDORS.filter((one) => one.id === 'openai')[0].models.filter((one) => one.name === 'gpt-6.2-sol')[0]);
+	v10Sol.offPeak = Object.assign({}, v10Sol.peak);
+	assert.deepStrictEqual(catalogPlain(upgraded10['gpt-6.2-sol']), catalogPlain(v10Sol),
+		'v10 补播：priceVersion 8 老用户自动出现 GPT-6.2 Sol（官网价 + 基准价）');
+	/* 明确钉住官网 USD 原价（base.peak）：Astra 8/0.4/10/40，Sol 2/0.1/2.5/10 */
+	assert.deepStrictEqual(catalogPlain(upgraded10['gpt-6.2-astra'].base.peak), { input: 8, cacheRead: 0.4, cacheWrite: 10, output: 40 },
+		'v10 补播：GPT-6.2 Astra 官网价 8/0.4/10/40 正确');
+	assert.deepStrictEqual(catalogPlain(upgraded10['gpt-6.2-sol'].base.peak), { input: 2, cacheRead: 0.1, cacheWrite: 2.5, output: 10 },
+		'v10 补播：GPT-6.2 Sol 官网价 2/0.1/2.5/10 正确');
+	assert.deepStrictEqual(catalogPlain(upgraded10['gpt-6.1-sol']), V10_USER_SOL,
+		'v10 补播不覆盖用户已有条目（gpt-6.1-sol 的改价 + feeMultiplier 保留）');
+	const v10ExpectedNames = OFFICIAL_NAMES.slice();
+	assert.deepStrictEqual(Object.keys(upgraded10).sort(), v10ExpectedNames.sort(),
+		'v10 补播后模型集合 = 全部官方目录（两条 6.2 补齐，其余不动）');
+	console.log('v10 补播：priceVersion 8 老用户自动出现 GPT-6.2 Astra/Sol，官网价正确、已有条目不被覆盖');
 
 	/* ③ 目录渲染：10 厂商按 AA 智力指数排序、每个官方模型直接是价格卡，没有可点名字 */
 	const hooks3 = makeHooks();
@@ -2306,11 +2384,11 @@ console.log('价格库交互：折叠 / 峰谷 / 草稿 / 顺序全部通过');
 	assert.strictEqual(saved3()['my-catalog-model'].feeMultiplier, 3, '恢复默认保留自建条目的费用倍率');
 	assert.deepStrictEqual(collectByClass(catalogVendorByKey(nextTree, 'zhipu'), 'dsb-model').map((one) => one.props.key),
 		['GLM-5.3', 'GLM-5.3-Flash', 'GLM-5.3-FlashX'], '恢复默认后目录行回来');
-	console.log('目录播种：27 条官方模型默认在价格表；目录只有价格卡；删除后行消失；恢复默认找回');
+	console.log('目录播种：29 条官方模型默认在价格表；目录只有价格卡；删除后行消失；恢复默认找回');
 }
 
 /* 需求 6：用户要求删除的两条官方默认模型（MiniMax-M3.1-Flash / step-5-preview）
-   要从老用户 config.models 里清掉。v8 起 PRICE_RETIRED_PRUNE_VERSION 与 PRICE_VERSION 同步，
+   要从老用户 config.models 里清掉。PRICE_RETIRED_PRUNE_VERSION 当前为 8（不随 PRICE_VERSION 升到 10），
    价格库版本 7 的老用户升级时清理一次。 */
 {
 	const staleBook = {
@@ -2331,7 +2409,7 @@ console.log('价格库交互：折叠 / 峰谷 / 草稿 / 顺序全部通过');
 		}
 	};
 	const storeRetired = new Map([[CONFIG_KEY, JSON.stringify({
-		version: 6, priceVersion: api.PRICE_VERSION - 1, currency: 'CNY',
+		version: 6, priceVersion: api.PRICE_RETIRED_PRUNE_VERSION - 1, currency: 'CNY',
 		models: staleBook, modelOrder: Object.keys(staleBook), holidayDays: []
 	})]]);
 	let capturedRetired = null;
@@ -2362,9 +2440,9 @@ console.log('价格库交互：折叠 / 峰谷 / 草稿 / 顺序全部通过');
 		if (name === 'react') return reactStub;
 		throw new Error('unexpected require: ' + name);
 	}).__test;
-	assert.strictEqual(apiRetired.PRICE_VERSION, 8, '价格库迁移版本应为 8');
-	assert.strictEqual(apiRetired.PRICE_RETIRED_PRUNE_VERSION, 8, '清理门槛应为 8');
-	assert.strictEqual(apiRetired.snapshot().priceVersion, 8, 'v7 → v8 迁移后价格库版本升到 8');
+	assert.strictEqual(apiRetired.PRICE_VERSION, 10, '价格库迁移版本应为 10');
+	assert.strictEqual(apiRetired.PRICE_RETIRED_PRUNE_VERSION, 8, '清理门槛应为 8（PRICE_VERSION 已升 10，但清理门槛保持 8）');
+	assert.strictEqual(apiRetired.snapshot().priceVersion, 10, 'v7 → v10 迁移后价格库版本升到 10');
 	const pruned = apiRetired.snapshot().models;
 	assert.strictEqual(pruned['MiniMax-M3.1-Flash'], undefined, 'MiniMax-M3.1-Flash 应从老用户价格库清掉');
 	assert.strictEqual(pruned['step-5-preview'], undefined, 'step-5-preview 应从老用户价格库清掉');

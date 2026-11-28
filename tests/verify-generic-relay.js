@@ -223,7 +223,10 @@ function headerOf(headers, name) {
       assert.equal(failed.ok, false, '全部候选失败时 ok=false')
       assert.equal(failed.reason, 'relay-endpoint-empty', '失败原因明确为 relay-endpoint-empty')
       assert.equal(failed.provider, 'relay-fail', '失败态标明平台名')
-      assert.equal(calls.length, 7, '失败时也只探测 7 个候选一次')
+      /* 失败后新增了「透传 Magpie 余额」的兜底探测（quotas/models）：这里只断言**候选端点**恰好 7 个，
+         Magpie 探测不计入（用 URL 过滤掉本机 Magpie 网关请求）。 */
+      const candidateCalls = calls.filter((one) => one.url.indexOf('127.0.0.1:3425') < 0 && one.url.indexOf('/magpie/') < 0)
+      assert.equal(candidateCalls.length, 7, '失败时也只探测 7 个候选一次（Magpie 兜底探测不计），实际 ' + candidateCalls.length)
       const afterFail = JSON.parse(fs.readFileSync(configPath, 'utf8'))
       const failChannel = afterFail.channels.find((one) => one.channelKey === 'relay-fail')
       assert.ok(failChannel !== undefined, '探测失败不清空平台记录')
@@ -234,11 +237,12 @@ function headerOf(headers, name) {
       assert.deepEqual(secretWrites, [], '探测失败不写/删凭据服务')
 
       /* ---- 同一刷新周期内不每轮重试 7 个 ---- */
-      const beforeRetry = calls.length
+      const candidateBefore = calls.filter((one) => one.url.indexOf('127.0.0.1:3425') < 0 && one.url.indexOf('/magpie/') < 0).length
       const again = await mod.queryBalanceForTest(ctx, false, 'relay-fail', 'any-model', null, null)
       assert.equal(again.ok, false, '冷却期内仍然 ok=false')
       assert.equal(again.reason, 'relay-endpoint-empty', '冷却期内原因不变')
-      assert.equal(calls.length, beforeRetry, '冷却期内不重复发 7 个候选，实际增加 ' + (calls.length - beforeRetry) + ' 次')
+      const candidateAfter = calls.filter((one) => one.url.indexOf('127.0.0.1:3425') < 0 && one.url.indexOf('/magpie/') < 0).length
+      assert.equal(candidateAfter, candidateBefore, '冷却期内不重复发 7 个候选，实际增加 ' + (candidateAfter - candidateBefore) + ' 次')
       console.log('GENERIC RELAY DISCOVERY CHECKS PASSED')
     } finally {
       globalThis.fetch = realFetch
@@ -313,6 +317,9 @@ function headerOf(headers, name) {
       }
 
       const calls = []
+      /* 本机 Magpie 透传探测（127.0.0.1:3425）单列，不计入「候选端点」次数。 */
+      const isMagpieProbe = (one) => one.url.indexOf('127.0.0.1:3425') >= 0 || one.url.indexOf('/magpie/') >= 0
+      const candCount = () => calls.filter((one) => isMagpieProbe(one) !== true).length
       const realFetch = globalThis.fetch
       const jsonOk = (body) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
       const jsonNo = () => new Response(JSON.stringify({ error: 'not-found' }), { status: 404, headers: { 'content-type': 'application/json' } })
@@ -333,7 +340,7 @@ function headerOf(headers, name) {
         const first = await mod.queryBalanceForTest(ctx, false, 'relay-default', 'any-model', null, null)
         assert.equal(first.ok, true, '默认 balancePath 首次探测应成功: ' + JSON.stringify(first))
         assert.equal(first.total, '10.00', 'quota 5000000 / 500000 = 10.00')
-        assert.equal(calls.length, 7, '首次并发探测 7 个候选，实际 ' + calls.length)
+        assert.equal(candCount(), 7, '首次并发探测 7 个候选，实际 ' + candCount())
         const savedDefault = JSON.parse(fs.readFileSync(configPath, 'utf8')).channels.find((one) => one.channelKey === 'relay-default')
         assert.equal(savedDefault.endpoint, 'https://default.example/api/user/self', '命中 endpoint 写回')
         assert.equal(savedDefault.balancePath, 'data.quota', '解析字段 balancePath 一并写回（旧 bug：不写，第二次按 $.balance 失败）')
@@ -342,8 +349,8 @@ function headerOf(headers, name) {
         const second = await mod.queryBalanceForTest(ctx, false, 'relay-default', 'any-model', null, null)
         assert.equal(second.ok, true, '第二次查询必须仍然成功: ' + JSON.stringify(second))
         assert.equal(second.total, '10.00', '第二次查询余额与首次一致（按写回的 balancePath 解析）')
-        assert.equal(calls.length, 1, '第二次查询只请求缓存 endpoint，实际 ' + calls.length)
-        assert.equal(calls[0].url, 'https://default.example/api/user/self', '只打缓存 endpoint')
+        assert.equal(candCount(), 1, '第二次查询只请求缓存 endpoint，实际 ' + candCount())
+        assert.equal(calls.filter((one) => isMagpieProbe(one) !== true)[0].url, 'https://default.example/api/user/self', '只打缓存 endpoint')
         console.log('GENERIC RELAY DEFAULT-BALANCEPATH REGRESSION PASSED')
 
         /* ---- ①-b credits（total-usage 减法）：首次探测命中后第二次查询仍返回正确余额 ---- */
@@ -351,7 +358,7 @@ function headerOf(headers, name) {
         const cred1 = await mod.queryBalanceForTest(ctx, false, 'relay-credits', 'any-model', null, null)
         assert.equal(cred1.ok, true, 'credits 首次探测应成功: ' + JSON.stringify(cred1))
         assert.equal(cred1.total, '7.00', 'credits = total_credits 10 - total_usage 3 = 7.00')
-        assert.equal(calls.length, 7, '首次并发探测 7 个候选，实际 ' + calls.length)
+        assert.equal(candCount(), 7, '首次并发探测 7 个候选，实际 ' + candCount())
         const savedCredits = JSON.parse(fs.readFileSync(configPath, 'utf8')).channels.find((one) => one.channelKey === 'relay-credits')
         assert.equal(savedCredits.endpoint, 'https://credits.example/v1/credits', 'credits 命中 endpoint 写回')
         assert.equal(savedCredits.balanceKind, 'credits', 'credits 持久化解析 kind（减法无法用 balancePath 表达）')
@@ -360,8 +367,8 @@ function headerOf(headers, name) {
         const cred2 = await mod.queryBalanceForTest(ctx, false, 'relay-credits', 'any-model', null, null)
         assert.equal(cred2.ok, true, 'credits 第二次查询必须成功（旧 bug：按 $.balance 解析 invalid-balance）: ' + JSON.stringify(cred2))
         assert.equal(cred2.total, '7.00', 'credits 第二次查询余额仍正确（total-used 减法）')
-        assert.equal(calls.length, 1, '第二次查询只请求缓存 endpoint，实际 ' + calls.length)
-        assert.equal(calls[0].url, 'https://credits.example/v1/credits', '只打缓存 credits endpoint')
+        assert.equal(candCount(), 1, '第二次查询只请求缓存 endpoint，实际 ' + candCount())
+        assert.equal(calls.filter((one) => isMagpieProbe(one) !== true)[0].url, 'https://credits.example/v1/credits', '只打缓存 credits endpoint')
         console.log('GENERIC RELAY CREDITS SECOND-QUERY PASSED')
 
         /* ---- ② 外域不泄露：平台无自身 baseURL 时绝不借用别的 provider 域名 ---- */
@@ -369,7 +376,10 @@ function headerOf(headers, name) {
         const noBase = await mod.queryBalanceForTest(ctx, false, 'other-provider', 'any-model', 'relay-nobase', null)
         assert.equal(noBase.ok, false, '无自身 baseURL 时 ok=false')
         assert.equal(noBase.reason, 'relay-endpoint-empty', '报 relay-endpoint-empty')
-        assert.equal(calls.length, 0, '绝不向 other-provider 的域名发探测请求，实际 ' + calls.length)
+        /* 新增：失败后还会探本机 Magpie（127.0.0.1:3425）透传余额 —— 这不是跨域，过滤掉再断言。
+           关键是**别的 provider 域名一次都不能被请求**（下面的显式断言盯死）。 */
+        const foreignCalls = calls.filter((one) => one.url.indexOf('127.0.0.1:3425') < 0 && one.url.indexOf('/magpie/') < 0)
+        assert.equal(foreignCalls.length, 0, '除本机 Magpie 探测外不发任何外域请求，实际 ' + foreignCalls.length)
         assert.equal(calls.some((one) => one.url.indexOf('other.example') !== -1), false, 'other.example 一次都没被请求')
         console.log('GENERIC RELAY FOREIGN-DOMAIN NO-LEAK PASSED')
 
@@ -378,8 +388,8 @@ function headerOf(headers, name) {
         const redirected = await mod.queryBalanceForTest(ctx, false, 'relay-redirect', 'any-model', null, null)
         assert.equal(redirected.ok, false, '全部 3xx 时 ok=false')
         assert.equal(redirected.reason, 'relay-endpoint-empty', '3xx 不解析出余额 ⇒ relay-endpoint-empty')
-        assert.equal(calls.length, 7, '探测 7 个候选各一次，实际 ' + calls.length)
-        assert.equal(calls.every((one) => one.redirect === 'manual'), true, '每个探测请求都必须 redirect=manual')
+        assert.equal(candCount(), 7, '探测 7 个候选各一次，实际 ' + candCount())
+        assert.equal(calls.filter((one) => isMagpieProbe(one) !== true).every((one) => one.redirect === 'manual'), true, '每个候选探测请求都必须 redirect=manual')
         assert.equal(calls.some((one) => one.url.indexOf('evil.example') !== -1), false, '绝不跟随 302 到 evil.example')
         console.log('GENERIC RELAY REDIRECT NO-LEAK PASSED')
 
@@ -387,17 +397,17 @@ function headerOf(headers, name) {
         calls.length = 0
         const cool1 = await mod.queryBalanceForTest(ctx, false, 'relay-cool', 'any-model', null, null)
         assert.equal(cool1.ok, false, '第一次探测失败')
-        assert.equal(calls.length, 7, '第一次失败探测 7 个候选，实际 ' + calls.length)
+        assert.equal(candCount(), 7, '第一次失败探测 7 个候选，实际 ' + candCount())
         calls.length = 0
         const cool2 = await mod.queryBalanceForTest(ctx, false, 'relay-cool', 'any-model', null, null)
         assert.equal(cool2.ok, false, '冷却期内仍失败')
-        assert.equal(calls.length, 0, '同凭据冷却期内不重复探测，实际 ' + calls.length)
+        assert.equal(candCount(), 0, '同凭据冷却期内不重复探测，实际 ' + candCount())
         /* 换成同长度（4 字符）但不同值的 token */
         secrets.set(refOf('relay-cool'), envelope('bbbb', 'cool-user'))
         calls.length = 0
         const cool3 = await mod.queryBalanceForTest(ctx, false, 'relay-cool', 'any-model', null, null)
         assert.equal(cool3.ok, false, '换凭据后仍失败')
-        assert.equal(calls.length, 7, '同长度不同凭据必须重新探测（旧指纹只看长度会误共享冷却），实际 ' + calls.length)
+        assert.equal(candCount(), 7, '同长度不同凭据必须重新探测（旧指纹只看长度会误共享冷却），实际 ' + candCount())
         console.log('GENERIC RELAY CREDENTIAL-FINGERPRINT PASSED')
 
         /* ---- ⑤ 指纹本身：稳定、非明文、同长度不同值不同 ---- */

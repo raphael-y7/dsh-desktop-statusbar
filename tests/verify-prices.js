@@ -161,7 +161,7 @@ const V7_FABLE = {
 };
 const v7 = boot({ version: 6, priceVersion: 7, currency: 'CNY', models: { 'claude-fable-5.1': V7_FABLE } });
 const v7Cfg = v7.loadConfig();
-assert.strictEqual(v7Cfg.priceVersion, api.PRICE_VERSION, '2d) priceVersion 7 升到 8');
+assert.strictEqual(v7Cfg.priceVersion, api.PRICE_VERSION, '2d) priceVersion 7 升到当前版本（10）');
 assert.deepStrictEqual(JSON.parse(JSON.stringify(v7Cfg.models['claude-fable-5.2'])), {
 	/* v8 起官方 USD 源表入价格库时：显示值按实时汇率折成 CNY，基准价保留官网 USD 原值 */
 	tiered: false, currency: 'CNY',

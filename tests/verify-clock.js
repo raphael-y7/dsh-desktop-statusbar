@@ -100,7 +100,8 @@ function renderBar({ running, timeRange, stats, error }) {
 	return { clocks, timeouts: timeouts.slice(), ringClass: ring === null ? null : ring.props.className, tree: tree, cleanup: () => cleanups.forEach((fn) => fn()), all: intervals.slice() };
 }
 
-/** 渲染树里第一个上下文占用圆环（svg）的 props：没有占用数据时应当整个缺席 */
+/** 渲染树里第一个上下文占用圆环的外层 span（.dsb-ring-wrap）的 props：没有占用数据时应当整个缺席。
+    state 颜色类（dsb-ring-running/error/…）现在挂在这个外层 wrap 上，不再挂在内部 SVG。 */
 function findRing(node) {
 	if (node === null || node === undefined || typeof node !== 'object') return null;
 	if (Array.isArray(node)) {
@@ -110,7 +111,7 @@ function findRing(node) {
 		}
 		return null;
 	}
-	if (node.type === 'svg') return node;
+	if (typeof node.props?.className === 'string' && node.props.className.indexOf('dsb-ring-wrap') === 0) return node;
 	return findRing(node.children);
 }
 
